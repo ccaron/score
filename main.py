@@ -1,212 +1,209 @@
-from fastapi import FastAPI, Form, Request
+import threading
+import time
+import json
+import os
+import sys
+from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
-from typing import Optional, List
-import asyncio
-import datetime
+import webview
+import sqlite3
 
+# ---------- FastAPI setup ----------
 app = FastAPI()
-templates = Jinja2Templates(directory="templates")
 
-def parse_time_to_seconds(time_str: str) -> int:
-    try:
-        if ":" in time_str:
-            minutes, seconds = map(int, time_str.split(":"))
-            return minutes * 60 + seconds
-        else:
-            return int(time_str)
-    except ValueError:
-        return 0 # Should ideally raise an HTTPException
+# ---------- Inline HTML + JS ----------
+html = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Game Clock</title>
+<style>
+body { font-family: sans-serif; text-align: center; background: #f5f5f5; }
+.clock { font-size: 5em; margin: 1em; cursor: pointer; user-select: none; }
+button { font-size: 1.2em; margin: 0.5em; padding: 0.5em 1em; }
+.stats { font-size: 1.5em; margin: 1em; }
+</style>
+</head>
+<body>
 
-def format_seconds_to_time_str(seconds: int) -> str:
-    minutes = seconds // 60
-    secs = seconds % 60
-    return f"{minutes:02d}:{secs:02d}"
+<div class="clock" id="clock">20:00</div>
 
-class GameEngine:
-    def __init__(self):
-        self.period = 1
-        self.time = 1200  # 20 minutes in seconds
-        self.clock_running = False
-        self.home_score = 0
-        self.away_score = 0
-        self.penalties = []  # list of dicts
-        self.event_log = []
-        self.clock_task = None
-        self.next_penalty_id = 1
-        self.game_over = False
+<div class="stats">
+    <div>Home: <span id="home_score">0</span></div>
+    <div>Away: <span id="away_score">0</span></div>
+    <div>Period: <span id="period">1</span></div>
+</div>
 
-    async def _clock_tick(self):
-        while self.time > 0 and self.clock_running:
-            await asyncio.sleep(1)
-            self.time -= 1
-            for penalty in self.penalties:
-                penalty["remaining"] -= 1
-            self.penalties = [p for p in self.penalties if p["remaining"] > 0]
-        
-        if self.time == 0:
-            self.stop_clock()
-            if self.period < 3:
-                self.period += 1
-                self.time = 1200
-            else:
-                self.game_over = True
-        
-        if not self.game_over:
-            self.clock_running = False
+<div>
+    <button onclick="toggleGame(this)">▶ Start</button>
+    <button onclick="debugEvents()">🐞 Debug Events</button>
+</div>
 
-    def start_clock(self):
-        if not self.clock_running and not self.game_over:
-            self.clock_running = True
-            self.clock_task = asyncio.create_task(self._clock_tick())
+<script>
+const ws = new WebSocket(`ws://${location.host}/ws`);
 
-    def stop_clock(self):
-        self.clock_running = False
-        if self.clock_task:
-            self.clock_task.cancel()
+ws.onmessage = (event) => {
+    const data = JSON.parse(event.data).state;
 
-    def _format_event_message(self, event):
-        game_time_str = format_seconds_to_time_str(event["game_time"])
-        if event["type"] == "goal":
-            goal_info = f"GOAL for {event['team'].upper()} by {event['player']}"
-            if event['assists']:
-                goal_info += f" (Assists: {', '.join(event['assists'])})"
-            return f"Period {event['period']} {game_time_str} - {goal_info}!"
-        elif event["type"] == "penalty":
-            duration_formatted = format_seconds_to_time_str(event["duration"])
-            return f"Period {event['period']} {game_time_str} - PENALTY for {event['player']} ({event['team']}) - {duration_formatted}"
-        return f"Period {event['period']} {game_time_str} - {event['type']} event"
+    const mins = Math.floor(data.seconds / 60);
+    const secs = data.seconds % 60;
+    document.getElementById("clock").textContent = `${mins}:${secs.toString().padStart(2,'0')}`;
 
+    document.getElementById("home_score").textContent = data.home_score;
+    document.getElementById("away_score").textContent = data.away_score;
+    document.getElementById("period").textContent = data.period;
 
-    def goal_scored(self, team: str, player: str, assists: Optional[List[str]] = None):
-        if team == "home":
-            self.home_score += 1
-        else:
-            self.away_score += 1
-        self.event_log.append({"type": "goal", "team": team, "player": player, "assists": assists or [], "game_time": self.time, "period": self.period})
+    document.querySelector("button").textContent = data.running ? "⏸ Pause" : "▶ Start";
+};
 
-        # Infer power play: if opposing team has penalties, clear the oldest one
-        if team == "home":
-            opposing_team = "away"
-        else:
-            opposing_team = "home"
-        
-        # Sort by oldest penalty first (lower ID means older)
-        opposing_penalties = sorted([p for p in self.penalties if p.get("team") == opposing_team], key=lambda x: x['id'])
-        
-        if opposing_penalties:
-            self.remove_penalty(opposing_penalties[0]['id'])
+// Toggle start/pause
+function toggleGame(btn) {
+    const running = btn.textContent.includes("Pause");
+    fetch(running ? '/pause' : '/start', {method:'POST'});
+}
 
+// Double-click clock to set time
+document.getElementById("clock").addEventListener("dblclick", async () => {
+    const current = document.getElementById("clock").textContent;
+    const timeStr = prompt("Enter time (MM:SS):", current);
+    if (timeStr) await fetch(`/set_time?time_str=${encodeURIComponent(timeStr)}`, {method:'POST'});
+});
 
-    def add_penalty(self, player, duration_seconds, team):
-        penalty_id = self.next_penalty_id
-        self.penalties.append({"id": penalty_id, "player": player, "remaining": duration_seconds, "team": team})
-        self.event_log.append(
-            {"type": "penalty", "id": penalty_id, "player": player, "duration": duration_seconds, "team": team, "game_time": self.time, "period": self.period}
+// Debug button
+function debugEvents() { fetch('/debug_events', {method:'POST'}); }
+</script>
+
+</body>
+</html>
+"""
+
+# ---------- SQLite setup ----------
+DB_PATH = "game.db"
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+# Initialize DB
+def init_db():
+    db = get_db()
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
         )
-        self.next_penalty_id += 1
-        
-    def remove_penalty(self, penalty_id: int):
-        self.penalties = [p for p in self.penalties if p.get("id") != penalty_id]
+    """)
+    db.commit()
+    db.close()
 
-    def reset(self):
-        self.stop_clock()
-        self.period = 1
-        self.time = 1200
+init_db()
+
+# ---------- Game state ----------
+class GameState:
+    def __init__(self):
+        self.seconds = 20*60
+        self.running = False
         self.home_score = 0
         self.away_score = 0
-        self.penalties = []
-        self.event_log = []
-        self.next_penalty_id = 1
-        self.game_over = False
+        self.period = 1
+        self.clients = []
 
-engine = GameEngine()
+    def add_event(self, event_type, payload=None):
+        db = get_db()
+        db.execute(
+            "INSERT INTO events (type, payload, created_at) VALUES (?, ?, ?)",
+            (event_type, json.dumps(payload or {}), int(time.time()))
+        )
+        db.commit()
+        db.close()
 
+state = GameState()
+
+# ---------- Routes ----------
 @app.get("/", response_class=HTMLResponse)
-async def root(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request, "engine": engine})
+def root():
+    return html
 
 @app.post("/start")
-async def start():
-    engine.start_clock()
-    return {"status": "clock started"}
+def start_game():
+    if not state.running:
+        state.running = True
+        state.add_event("GAME_STARTED")
+    return {"status":"ok"}
 
-@app.post("/stop")
-async def stop():
-    engine.stop_clock()
-    return {"status": "clock stopped"}
+@app.post("/pause")
+def pause_game():
+    if state.running:
+        state.running = False
+        state.add_event("GAME_PAUSED")
+    return {"status":"ok"}
 
-@app.post("/goal")
-async def goal(
-    team: str = Form(...),
-    player: str = Form(...),
-    assist1: Optional[str] = Form(None),
-    assist2: Optional[str] = Form(None)
-):
-    assists = [a for a in [assist1, assist2] if a]
-    engine.goal_scored(team, player, assists)
-    return {"status": f"goal for {team} by {player}"}
+@app.post("/set_time")
+def set_time(time_str: str):
+    try:
+        mins, secs = map(int, time_str.split(":"))
+        state.seconds = mins*60 + secs
+        state.add_event("CLOCK_SET", {"seconds": state.seconds})
+        broadcast_state()
+    except:
+        return {"status":"error","msg":"Invalid format"}
+    return {"status":"ok"}
 
-@app.post("/penalty")
-async def penalty(player: str = Form(...), duration: str = Form(...), team: str = Form(...)):
-    duration_seconds = parse_time_to_seconds(duration)
-    engine.add_penalty(player, duration_seconds, team)
-    return {"status": f"penalty for {player} on {team}"}
-    
-@app.delete("/penalty/{penalty_id}")
-async def delete_penalty(penalty_id: int):
-    engine.remove_penalty(penalty_id)
-    return {"status": f"penalty {penalty_id} removed"}
+@app.post("/debug_events")
+def debug_events():
+    db = get_db()
+    rows = db.execute("SELECT * FROM events ORDER BY created_at ASC").fetchall()
+    db.close()
+    print("\n===== DEBUG EVENTS =====")
+    print(f"{'ID':>3} | {'TYPE':<15} | {'PAYLOAD':<40} | {'TIME'}")
+    print("-"*80)
+    for r in rows:
+        print(f"{r['id']:03d} | {r['type']:<15} | {r['payload']:<40} | {time.ctime(r['created_at'])}")
+    print("="*80+"\n")
+    return {"status":"events printed"}
 
-@app.get("/time")
-async def time():
-    return {"time": engine.time, "running": engine.clock_running}
-    
-@app.get("/game_status")
-async def game_status():
-    return {"period": engine.period, "game_over": engine.game_over}
+# ---------- WebSocket ----------
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    await ws.accept()
+    state.clients.append(ws)
+    try:
+        await ws.send_text(json.dumps({"state": vars(state)}))
+        while True:
+            await ws.receive_text()
+    except:
+        pass
+    finally:
+        state.clients.remove(ws)
 
-@app.get("/home_penalties")
-async def home_penalties():
-    formatted_penalties = [
-        {**p, "remaining_formatted": format_seconds_to_time_str(p["remaining"])}
-        for p in engine.penalties if p["team"] == "home"
-    ]
-    return {"penalties": formatted_penalties}
+def broadcast_state():
+    data = json.dumps({"state": vars(state)})
+    for ws in list(state.clients):
+        try:
+            import asyncio
+            asyncio.create_task(ws.send_text(data))
+        except:
+            state.clients.remove(ws)
 
-@app.get("/away_penalties")
-async def away_penalties():
-    formatted_penalties = [
-        {**p, "remaining_formatted": format_seconds_to_time_str(p["remaining"])}
-        for p in engine.penalties if p["team"] == "away"
-    ]
-    return {"penalties": formatted_penalties}
+# ---------- Game loop ----------
+def game_loop():
+    while True:
+        if state.running and state.seconds > 0:
+            state.seconds -= 1
+            broadcast_state()
+        time.sleep(1)
 
-@app.get("/scores")
-async def scores():
-    return {"home_score": engine.home_score, "away_score": engine.away_score}
+# ---------- Run server + GUI ----------
+def start_server():
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
 
-@app.get("/home_goal_log")
-async def home_goal_log():
-    formatted_home_goal_log = [engine._format_event_message(event) for event in engine.event_log if event["type"] == "goal" and event["team"] == "home"]
-    return {"home_goal_log": formatted_home_goal_log}
+if __name__ == "__main__":
+    threading.Thread(target=game_loop, daemon=True).start()
+    threading.Thread(target=start_server, daemon=True).start()
+    webview.create_window("Game Clock", "http://127.0.0.1:8000")
+    webview.start()
 
-@app.get("/away_goal_log")
-async def away_goal_log():
-    formatted_away_goal_log = [engine._format_event_message(event) for event in engine.event_log if event["type"] == "goal" and event["team"] == "away"]
-    return {"away_goal_log": formatted_away_goal_log}
-
-@app.get("/home_penalty_log")
-async def home_penalty_log():
-    formatted_home_penalty_log = [engine._format_event_message(event) for event in engine.event_log if event["type"] == "penalty" and event["team"] == "home"]
-    return {"home_penalty_log": formatted_home_penalty_log}
-
-@app.get("/away_penalty_log")
-async def away_penalty_log():
-    formatted_away_penalty_log = [engine._format_event_message(event) for event in engine.event_log if event["type"] == "penalty" and event["team"] == "away"]
-    return {"away_penalty_log": formatted_away_penalty_log}
-
-@app.post("/reset")
-async def reset():
-    engine.reset()
-    return {"status": "game reset"}

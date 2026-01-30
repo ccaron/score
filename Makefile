@@ -1,4 +1,4 @@
-.PHONY: install run test clean lint format check help
+.PHONY: install run test clean lint format check help build
 
 help:
 	@echo "Available commands:"
@@ -12,14 +12,17 @@ help:
 
 check: install
 	uv run ty check .
-	uv run ruff check .
+	uv run ruff check --fix .
 	uv run ruff format .
 
 install:
 	uv sync --group dev
 
 run: install
-	uv run uvicorn main:app --reload --reload-include "templates/**/*.html"
+	uv run python main.py
+
+build:
+	uv run pyinstaller --onefile --windowed --name game_clock --add-data "static:static" main.py
 
 test:
 	uv run pytest
