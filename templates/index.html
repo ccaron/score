@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Game Score</title>
+    <style>
+        body { font-family: sans-serif; }
+        .score { font-size: 2em; font-weight: bold; }
+        .penalties { list-style-type: none; padding: 0; }
+        .penalty { border-left: 5px solid red; padding-left: 10px; margin-bottom: 5px; }
+    </style>
+</head>
+<body>
+    <h1>Game Score</h1>
+    <div>Period: <span id="period">{{ engine.period }}</span></div>
+    <div>Clock: <span id="clock">{{ "Running" if engine.clock_running else "Stopped" }}</span></div>
+    <div>
+        Home: <span id="home_score" class="score">{{ engine.home_score }}</span>
+        Away: <span id="away_score" class="score">{{ engine.away_score }}</span>
+    </div>
+
+    <h2>Penalties</h2>
+    <ul id="penalties" class="penalties">
+        {% for penalty in engine.penalties %}
+        <li class="penalty">{{ penalty.player }} - {{ penalty.remaining }}s</li>
+        {% endfor %}
+    </ul>
+
+    <h2>Controls</h2>
+    <button onclick="startClock()">Start Clock</button>
+    <button onclick="stopClock()">Stop Clock</button>
+    <br><br>
+    <button onclick="goal('home')">Home Goal</button>
+    <button onclick="goal('away')">Away Goal</button>
+
+    <h2>Add Penalty</h2>
+    <form onsubmit="addPenalty(event)">
+        <input type="text" id="player" placeholder="Player">
+        <input type="number" id="duration" placeholder="Duration (s)">
+        <button type="submit">Add Penalty</button>
+    </form>
+
+    <script>
+        async function startClock() {
+            await fetch('/start', { method: 'POST' });
+            location.reload();
+        }
+
+        async function stopClock() {
+            await fetch('/stop', { method: 'POST' });
+            location.reload();
+        }
+
+        async function goal(team) {
+            const formData = new FormData();
+            formData.append('team', team);
+            await fetch('/goal', { method: 'POST', body: formData });
+            location.reload();
+        }
+
+        async function addPenalty(event) {
+            event.preventDefault();
+            const player = document.getElementById('player').value;
+            const duration = document.getElementById('duration').value;
+            const formData = new FormData();
+            formData.append('player', player);
+            formData.append('duration', duration);
+            await fetch('/penalty', { method: 'POST', body: formData });
+            location.reload();
+        }
+    </script>
+</body>
+</html>
