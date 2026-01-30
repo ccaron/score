@@ -19,7 +19,7 @@ install:
 	uv sync --group dev
 
 run: install
-	uv run uvicorn main:app --reload
+	uv run uvicorn main:app --reload --reload-include "templates/**/*.html"
 
 test:
 	uv run pytest
