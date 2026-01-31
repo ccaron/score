@@ -5,7 +5,6 @@ import logging.handlers
 import multiprocessing
 import time
 import sqlite3
-import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket
@@ -13,7 +12,6 @@ from fastapi.responses import HTMLResponse
 from rich.console import ConsoleRenderable
 from rich.logging import RichHandler
 import uvicorn
-import webview
 
 # Set up logger for this module
 logger = logging.getLogger(__name__)
@@ -653,18 +651,14 @@ def main():
     pusher_process.start()
     logger.info(f"Event pusher process started (PID: {pusher_process.pid})")
 
-    def run_server():
-        uvicorn.run(app, host="127.0.0.1", port=8000, log_config=None)
+    logger.info("Starting web server on http://0.0.0.0:8000")
 
-    threading.Thread(target=run_server, daemon=True).start()
-    time.sleep(0.5)
-
-    logger.info("Opening webview window")
     try:
-        webview.create_window("Game Clock", "http://127.0.0.1:8000")
-        webview.start()
+        # Run uvicorn directly (blocking call)
+        # Bind to 0.0.0.0 so it's accessible from outside the container
+        uvicorn.run(app, host="0.0.0.0", port=8000, log_config=None)
     finally:
-        logger.info("Main window closed, terminating event pusher")
+        logger.info("Server stopped, terminating event pusher")
         pusher_process.terminate()
         pusher_process.join(timeout=5)
         queue_listener.stop()
