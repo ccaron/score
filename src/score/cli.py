@@ -1,5 +1,8 @@
 import asyncio
 import json
+import logging
+import subprocess
+import sys
 import time
 import sqlite3
 import threading
@@ -9,6 +12,9 @@ from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
 import uvicorn
 import webview
+
+# Set up logger for this module
+logger = logging.getLogger(__name__)
 
 # ---------- Inline HTML + JS ----------
 html = """
@@ -282,6 +288,7 @@ def get_db():
     return conn
 
 def init_db():
+    logger.info("Initializing database...")
     db = get_db()
     db.execute("""
         CREATE TABLE IF NOT EXISTS events (
@@ -292,13 +299,27 @@ def init_db():
         )
     """)
 
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS deliveries (
+            event_id INTEGER NOT NULL,
+            destination TEXT NOT NULL,
+            delivered INTEGER NOT NULL DEFAULT 0,
+            delivered_at INTEGER,
+            PRIMARY KEY (event_id, destination),
+            FOREIGN KEY (event_id) REFERENCES events(id)
+        )
+    """)
+
     # Add initial clock setting if this is a new database
     count = db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
     if count == 0:
+        logger.info("New database - adding initial CLOCK_SET event")
         db.execute(
             "INSERT INTO events (type, payload, created_at) VALUES (?, ?, ?)",
             ("CLOCK_SET", json.dumps({"seconds": 20 * 60}), int(time.time()))
         )
+    else:
+        logger.info(f"Database initialized with {count} existing events")
 
     db.commit()
     db.close()
@@ -314,6 +335,7 @@ class GameState:
         self.clients: list[WebSocket] = []
 
     def add_event(self, event_type, payload=None):
+        logger.debug(f"Adding event: {event_type} with payload: {payload}")
         db = get_db()
         db.execute(
             "INSERT INTO events (type, payload, created_at) VALUES (?, ?, ?)",
@@ -332,19 +354,23 @@ state = GameState()
 
 # ---------- State replay ----------
 def load_state_from_events():
+    logger.info("Loading state from events...")
     db = get_db()
     rows = db.execute(
         "SELECT type, payload, created_at FROM events ORDER BY created_at ASC"
     ).fetchall()
     db.close()
 
+    logger.info(f"Replaying {len(rows)} events")
     for r in rows:
         payload = json.loads(r["payload"])
         if r["type"] == "CLOCK_SET":
             state.seconds = payload["seconds"]
+            logger.debug(f"Replayed CLOCK_SET: {state.seconds}s")
         elif r["type"] == "GAME_STARTED":
             state.running = True
             state.last_update = r["created_at"]
+            logger.debug("Replayed GAME_STARTED")
         elif r["type"] == "GAME_PAUSED":
             # Calculate how much time elapsed while running
             if state.running:
@@ -352,11 +378,15 @@ def load_state_from_events():
                 state.seconds = max(0, state.seconds - elapsed)
             state.running = False
             state.last_update = r["created_at"]
+            logger.debug(f"Replayed GAME_PAUSED: {state.seconds}s remaining")
 
     # Correct for elapsed wall time if still running
     if state.running:
         elapsed = int(time.time()) - state.last_update
         state.seconds = max(0, state.seconds - elapsed)
+        logger.info(f"Game is running - adjusted for {elapsed}s elapsed time")
+
+    logger.info(f"State loaded: {state.seconds}s, running={state.running}")
 
 # ---------- Broadcast ----------
 async def broadcast_state():
@@ -372,6 +402,9 @@ async def broadcast_state():
     for ws in dead:
         state.clients.remove(ws)
 
+    if dead:
+        logger.debug(f"Removed {len(dead)} disconnected client(s)")
+
 # ---------- Game loop ----------
 async def game_loop():
     while True:
@@ -383,10 +416,13 @@ async def game_loop():
 
 # ---------- Lifespan ----------
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
+    logger.info("Starting application...")
     load_state_from_events()
     asyncio.create_task(game_loop())
+    logger.info("Application started")
     yield
+    logger.info("Application shutting down")
 
 app = FastAPI(lifespan=lifespan)
 
@@ -398,6 +434,7 @@ async def root():
 @app.post("/start")
 async def start_game():
     if not state.running:
+        logger.info("Starting game")
         state.running = True
         state.last_update = int(time.time())
         state.add_event("GAME_STARTED")
@@ -407,6 +444,7 @@ async def start_game():
 @app.post("/pause")
 async def pause_game():
     if state.running:
+        logger.info(f"Pausing game at {state.seconds}s")
         state.running = False
         state.add_event("GAME_PAUSED")
         await broadcast_state()
@@ -416,7 +454,9 @@ async def pause_game():
 async def set_time(request: dict):
     time_str = request.get("time_str", "20:00")
     mins, secs = map(int, time_str.split(":"))
-    state.seconds = mins * 60 + secs
+    new_seconds = mins * 60 + secs
+    logger.info(f"Setting clock to {time_str} ({new_seconds}s)")
+    state.seconds = new_seconds
     state.last_update = int(time.time())
     state.add_event("CLOCK_SET", {"seconds": state.seconds})
     await broadcast_state()
@@ -424,6 +464,7 @@ async def set_time(request: dict):
 
 @app.post("/debug_events")
 async def debug_events():
+    logger.info("Debug events requested")
     db = get_db()
     rows = db.execute(
         "SELECT * FROM events ORDER BY created_at ASC"
@@ -445,6 +486,7 @@ async def debug_events():
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     state.clients.append(ws)
+    logger.info(f"WebSocket client connected (total: {len(state.clients)})")
 
     await ws.send_text(json.dumps({"state": state.to_dict()}))
 
@@ -453,17 +495,65 @@ async def websocket_endpoint(ws: WebSocket):
             await asyncio.sleep(3600)
     finally:
         state.clients.remove(ws)
+        logger.info(f"WebSocket client disconnected (total: {len(state.clients)})")
 
 def main():
+    # Configure logging first, before spawning subprocess
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    logger.info("Starting Game Clock application")
+
+    # Start event pusher in a separate process
+    # Call the score-push-events command that's defined in pyproject.toml
+    pusher_process = subprocess.Popen(
+        ["score-push-events"],
+        stdout=sys.stdout,
+        stderr=sys.stderr
+    )
+    logger.info(f"Event pusher process started (PID: {pusher_process.pid})")
+
     def run_server():
         uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
 
     threading.Thread(target=run_server, daemon=True).start()
     time.sleep(0.5)
 
-    webview.create_window("Game Clock", "http://127.0.0.1:8000")
-    webview.start()
-    
+    logger.info("Opening webview window")
+    try:
+        webview.create_window("Game Clock", "http://127.0.0.1:8000")
+        webview.start()
+    finally:
+        logger.info("Main window closed, terminating event pusher")
+        pusher_process.terminate()
+        pusher_process.wait(timeout=5)
+
+
+def push_events():
+    """Start the event pusher worker process."""
+    import logging
+    from score.event_pusher import FileEventPusher
+
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    pusher = FileEventPusher(
+        db_path=DB_PATH,
+        output_path="events.log"
+    )
+
+    try:
+        pusher.run()
+    except KeyboardInterrupt:
+        logging.info("Shutting down gracefully...")
+
 
 # ---------- Run ----------
 if __name__ == "__main__":
