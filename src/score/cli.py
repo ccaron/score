@@ -18,41 +18,199 @@ html = """
 <meta charset="UTF-8">
 <title>Game Clock</title>
 <style>
-body { font-family: sans-serif; text-align: center; background: #f5f5f5; }
-.clock { font-size: 5em; margin: 1em; cursor: pointer; user-select: none; }
-button { font-size: 1.2em; margin: 0.5em; padding: 0.5em 1em; }
-.stats { font-size: 1.5em; margin: 1em; }
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+}
+
+.clock {
+    font-size: 8em;
+    font-weight: 700;
+    margin: 0.5em;
+    cursor: pointer;
+    user-select: none;
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    padding: 0.3em 0.6em;
+    border-radius: 20px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    border: 2px solid rgba(255, 255, 255, 0.2);
+}
+
+.clock:hover {
+    transform: scale(1.05);
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.4);
+}
+
+.clock:active {
+    transform: scale(0.98);
+}
+
+button {
+    font-size: 1.2em;
+    margin: 0.5em;
+    padding: 0.8em 2em;
+    background: rgba(255, 255, 255, 0.2);
+    backdrop-filter: blur(10px);
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50px;
+    color: #fff;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    font-weight: 600;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+button:hover {
+    background: rgba(255, 255, 255, 0.3);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+}
+
+button:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.controls {
+    display: flex;
+    gap: 1em;
+    margin-top: 2em;
+}
+
+.hint {
+    margin-top: 2em;
+    font-size: 0.9em;
+    opacity: 0.7;
+    font-style: italic;
+}
+
+.modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(5px);
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.modal.active {
+    display: flex;
+}
+
+.modal-content {
+    background: rgba(255, 255, 255, 0.95);
+    padding: 2em;
+    border-radius: 20px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    text-align: center;
+    min-width: 300px;
+}
+
+.modal-content h3 {
+    color: #333;
+    margin-bottom: 1em;
+    font-size: 1.5em;
+}
+
+.modal-content input {
+    width: 100%;
+    padding: 0.8em;
+    font-size: 1.5em;
+    border: 2px solid #667eea;
+    border-radius: 10px;
+    text-align: center;
+    font-weight: 600;
+    margin-bottom: 1em;
+    color: #333;
+}
+
+.modal-content input:focus {
+    outline: none;
+    border-color: #764ba2;
+    box-shadow: 0 0 0 3px rgba(118, 75, 162, 0.1);
+}
+
+.modal-buttons {
+    display: flex;
+    gap: 1em;
+    justify-content: center;
+}
+
+.modal-buttons button {
+    margin: 0;
+    background: #667eea;
+    color: #fff;
+    border: none;
+}
+
+.modal-buttons button:hover {
+    background: #764ba2;
+}
+
+.modal-buttons button:last-child {
+    background: rgba(0, 0, 0, 0.1);
+    color: #333;
+}
+
+.modal-buttons button:last-child:hover {
+    background: rgba(0, 0, 0, 0.2);
+}
 </style>
 </head>
 <body>
 
 <div class="clock" id="clock">20:00</div>
 
-<div class="stats">
-    <div>Home: <span id="home_score">0</span></div>
-    <div>Away: <span id="away_score">0</span></div>
-    <div>Period: <span id="period">1</span></div>
-</div>
-
-<div>
+<div class="controls">
     <button onclick="toggleGame(this)">▶ Start</button>
     <button onclick="debugEvents()">🐞 Debug Events</button>
+</div>
+
+<div class="hint">Double-click the clock to set time</div>
+
+<div class="modal" id="timeModal">
+    <div class="modal-content">
+        <h3>Set Time</h3>
+        <input type="text" id="timeInput" placeholder="MM:SS" />
+        <div class="modal-buttons">
+            <button onclick="applyTime()">Set</button>
+            <button onclick="closeModal()">Cancel</button>
+        </div>
+    </div>
 </div>
 
 <script>
 const ws = new WebSocket(`ws://${location.host}/ws`);
 
+let currentSeconds = 1200; // Track current clock value
+
 ws.onmessage = (event) => {
     const data = JSON.parse(event.data).state;
 
+    currentSeconds = data.seconds;
     const mins = Math.floor(data.seconds / 60);
     const secs = data.seconds % 60;
     document.getElementById("clock").textContent =
         `${mins}:${secs.toString().padStart(2,'0')}`;
-
-    document.getElementById("home_score").textContent = data.home_score;
-    document.getElementById("away_score").textContent = data.away_score;
-    document.getElementById("period").textContent = data.period;
 
     document.querySelector("button").textContent =
         data.running ? "⏸ Pause" : "▶ Start";
@@ -66,6 +224,49 @@ function toggleGame(btn) {
 function debugEvents() {
     fetch('/debug_events', { method: 'POST' });
 }
+
+function closeModal() {
+    document.getElementById('timeModal').classList.remove('active');
+}
+
+function applyTime() {
+    const newTime = document.getElementById('timeInput').value;
+    if (newTime) {
+        fetch('/set_time', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ time_str: newTime })
+        });
+    }
+    closeModal();
+}
+
+document.getElementById("clock").addEventListener("dblclick", () => {
+    const mins = Math.floor(currentSeconds / 60);
+    const secs = currentSeconds % 60;
+    const currentTime = `${mins}:${secs.toString().padStart(2,'0')}`;
+
+    document.getElementById('timeInput').value = currentTime;
+    document.getElementById('timeModal').classList.add('active');
+    document.getElementById('timeInput').focus();
+    document.getElementById('timeInput').select();
+});
+
+// Close modal on Escape key
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        closeModal();
+    } else if (e.key === 'Enter' && document.getElementById('timeModal').classList.contains('active')) {
+        applyTime();
+    }
+});
+
+// Close modal when clicking outside
+document.getElementById('timeModal').addEventListener('click', (e) => {
+    if (e.target.id === 'timeModal') {
+        closeModal();
+    }
+});
 </script>
 
 </body>
@@ -109,9 +310,6 @@ class GameState:
     def __init__(self):
         self.seconds = 20 * 60
         self.running = False
-        self.home_score = 0
-        self.away_score = 0
-        self.period = 1
         self.last_update = int(time.time())
         self.clients: list[WebSocket] = []
 
@@ -128,9 +326,6 @@ class GameState:
         return {
             "seconds": self.seconds,
             "running": self.running,
-            "home_score": self.home_score,
-            "away_score": self.away_score,
-            "period": self.period,
         }
 
 state = GameState()
@@ -218,7 +413,8 @@ async def pause_game():
     return {"status": "ok"}
 
 @app.post("/set_time")
-async def set_time(time_str: str):
+async def set_time(request: dict):
+    time_str = request.get("time_str", "20:00")
     mins, secs = map(int, time_str.split(":"))
     state.seconds = mins * 60 + secs
     state.last_update = int(time.time())
