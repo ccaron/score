@@ -32,93 +32,91 @@ def temp_db():
     os.unlink(db_path)
 
 
-def test_load_state_from_events_with_pause(temp_db):
-    """Test that state is correctly restored when game is paused."""
-    from score.cli import GameState, load_state_from_events
+def create_events(db_path, events, base_time=None):
+    """Helper to create events with relative timestamps.
 
-    with patch('score.cli.DB_PATH', temp_db):
-        # Setup: Create a test state and add events
-        test_state = GameState()
+    Args:
+        db_path: Path to the test database
+        events: List of tuples (relative_time, event_type, payload_dict)
+                relative_time is seconds from base_time
+        base_time: Optional base timestamp. Defaults to 1000 seconds ago
+    """
+    from score.cli import GameState
+
+    if base_time is None:
         base_time = int(time.time()) - 1000
 
-        # Initial clock set to 20:00
-        with patch('time.time', return_value=base_time):
-            test_state.add_event("CLOCK_SET", {"seconds": 1200})
+    with patch('score.cli.DB_PATH', db_path):
+        test_state = GameState()
+        for relative_time, event_type, payload in events:
+            timestamp = base_time + relative_time
+            with patch('time.time', return_value=timestamp):
+                test_state.add_event(event_type, payload)
 
-        # Game started at base_time + 10
-        with patch('time.time', return_value=base_time + 10):
-            test_state.add_event("GAME_STARTED")
 
-        # Game paused 300 seconds later (5 minutes elapsed)
-        with patch('time.time', return_value=base_time + 310):
-            test_state.add_event("GAME_PAUSED")
+def load_and_get_state(db_path):
+    """Load state from events and return the loaded state.
 
-        # Load state from events
-        with patch('score.cli.state', GameState()) as mock_state:
+    Args:
+        db_path: Path to the test database
+
+    Returns:
+        The GameState object after loading events
+    """
+    from score.cli import GameState, load_state_from_events
+
+    with patch('score.cli.DB_PATH', db_path):
+        state = GameState()
+        with patch('score.cli.state', state):
             load_state_from_events()
+        return state
 
-            # Verify: Clock should be at 15:00 (1200 - 300 = 900 seconds)
-            assert mock_state.seconds == 900
-            assert mock_state.running is False
+
+def test_load_state_from_events_with_pause(temp_db):
+    """Test that state is correctly restored when game is paused."""
+    create_events(temp_db, [
+        (0, "CLOCK_SET", {"seconds": 1200}),
+        (10, "GAME_STARTED", {}),
+        (310, "GAME_PAUSED", {}),  # 300 seconds elapsed
+    ])
+
+    state = load_and_get_state(temp_db)
+
+    # Clock should be at 15:00 (1200 - 300 = 900 seconds)
+    assert state.seconds == 900
+    assert state.running is False
 
 
 def test_load_state_from_events_still_running(temp_db):
     """Test that state is correctly restored when game is still running."""
-    from score.cli import GameState, load_state_from_events
+    create_events(temp_db, [
+        (-10, "CLOCK_SET", {"seconds": 1200}),
+        (0, "GAME_STARTED", {}),
+    ], base_time=int(time.time()) - 100)  # Started 100 seconds ago
 
-    with patch('score.cli.DB_PATH', temp_db):
-        # Setup: Create a test state and add events
-        test_state = GameState()
-        base_time = int(time.time()) - 100  # Started 100 seconds ago
+    state = load_and_get_state(temp_db)
 
-        # Initial clock set to 20:00
-        with patch('time.time', return_value=base_time - 10):
-            test_state.add_event("CLOCK_SET", {"seconds": 1200})
-
-        # Game started
-        with patch('time.time', return_value=base_time):
-            test_state.add_event("GAME_STARTED")
-
-        # Load state from events
-        with patch('score.cli.state', GameState()) as mock_state:
-            load_state_from_events()
-
-            # Verify: Clock should account for ~100 seconds elapsed
-            # Allow 2 second tolerance for test execution time
-            assert 1098 <= mock_state.seconds <= 1102
-            assert mock_state.running is True
+    # Clock should account for ~100 seconds elapsed
+    # Allow 2 second tolerance for test execution time
+    assert 1098 <= state.seconds <= 1102
+    assert state.running is True
 
 
 def test_load_state_from_events_multiple_start_pause_cycles(temp_db):
     """Test state restoration with multiple start/pause cycles."""
-    from score.cli import GameState, load_state_from_events
-
-    with patch('score.cli.DB_PATH', temp_db):
-        # Setup: Create a test state and add events
-        test_state = GameState()
-        base_time = int(time.time()) - 1000
-
-        # Initial clock set to 20:00
-        with patch('time.time', return_value=base_time):
-            test_state.add_event("CLOCK_SET", {"seconds": 1200})
-
+    create_events(temp_db, [
+        (0, "CLOCK_SET", {"seconds": 1200}),
         # First cycle: run for 60 seconds
-        with patch('time.time', return_value=base_time + 10):
-            test_state.add_event("GAME_STARTED")
-        with patch('time.time', return_value=base_time + 70):
-            test_state.add_event("GAME_PAUSED")
-
+        (10, "GAME_STARTED", {}),
+        (70, "GAME_PAUSED", {}),
         # Second cycle: run for 40 seconds
-        with patch('time.time', return_value=base_time + 100):
-            test_state.add_event("GAME_STARTED")
-        with patch('time.time', return_value=base_time + 140):
-            test_state.add_event("GAME_PAUSED")
+        (100, "GAME_STARTED", {}),
+        (140, "GAME_PAUSED", {}),
+    ])
 
-        # Load state from events
-        with patch('score.cli.state', GameState()) as mock_state:
-            load_state_from_events()
+    state = load_and_get_state(temp_db)
 
-            # Verify: Clock should be at 18:20 (1200 - 60 - 40 = 1100 seconds)
-            assert mock_state.seconds == 1100
-            assert mock_state.running is False
+    # Clock should be at 18:20 (1200 - 60 - 40 = 1100 seconds)
+    assert state.seconds == 1100
+    assert state.running is False
 
