@@ -148,6 +148,48 @@ button:active {
     font-style: italic;
 }
 
+.status-indicator {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    padding: 10px 20px;
+    border-radius: 50px;
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    font-size: 0.9em;
+}
+
+.status-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #888;
+    transition: background 0.3s ease;
+}
+
+.status-dot.healthy {
+    background: #4ade80;
+    box-shadow: 0 0 10px rgba(74, 222, 128, 0.5);
+}
+
+.status-dot.pending {
+    background: #fbbf24;
+    box-shadow: 0 0 10px rgba(251, 191, 36, 0.5);
+}
+
+.status-dot.dead {
+    background: #ef4444;
+    box-shadow: 0 0 10px rgba(239, 68, 68, 0.5);
+}
+
+.status-dot.unknown {
+    background: #888;
+}
+
 .modal {
     display: none;
     position: fixed;
@@ -228,6 +270,11 @@ button:active {
 </head>
 <body>
 
+<div class="status-indicator">
+    <div class="status-dot" id="pusherStatus"></div>
+    <span>Event Pusher</span>
+</div>
+
 <div class="clock" id="clock">20:00</div>
 
 <div class="controls">
@@ -264,6 +311,10 @@ ws.onmessage = (event) => {
 
     document.querySelector("button").textContent =
         data.running ? "⏸ Pause" : "▶ Start";
+
+    // Update pusher status indicator
+    const pusherStatus = document.getElementById("pusherStatus");
+    pusherStatus.className = `status-dot ${data.pusher_status}`;
 };
 
 function toggleGame(btn) {
@@ -377,6 +428,7 @@ class GameState:
         self.running = False
         self.last_update = int(time.time())
         self.clients: list[WebSocket] = []
+        self.pusher_status = "unknown"  # "healthy", "pending", "dead", "unknown"
 
     def add_event(self, event_type, payload=None):
         logger.debug(f"Adding event: {event_type} with payload: {payload}")
@@ -388,13 +440,28 @@ class GameState:
         db.commit()
         db.close()
 
+    def has_undelivered_events(self, destination="events.log"):
+        """Check if there are any undelivered events for the given destination."""
+        db = get_db()
+        count = db.execute("""
+            SELECT COUNT(*) FROM events e
+            LEFT JOIN deliveries d ON e.id = d.event_id AND d.destination = ?
+            WHERE d.event_id IS NULL OR d.delivered IN (0, 2)
+        """, (destination,)).fetchone()[0]
+        db.close()
+        return count > 0
+
     def to_dict(self):
         return {
             "seconds": self.seconds,
             "running": self.running,
+            "pusher_status": self.pusher_status,
         }
 
 state = GameState()
+
+# Global reference to pusher process for health checks
+pusher_process = None
 
 # ---------- State replay ----------
 def load_state_from_events():
@@ -452,10 +519,26 @@ async def broadcast_state():
 # ---------- Game loop ----------
 async def game_loop():
     while True:
+        # Check pusher health and delivery status
+        if pusher_process is not None:
+            is_alive = pusher_process.is_alive()
+            if not is_alive:
+                state.pusher_status = "dead"
+            elif state.has_undelivered_events():
+                state.pusher_status = "pending"
+            else:
+                state.pusher_status = "healthy"
+        else:
+            state.pusher_status = "unknown"
+
         if state.running and state.seconds > 0:
             state.seconds -= 1
             state.last_update = int(time.time())
             await broadcast_state()
+        else:
+            # Even if not running, broadcast occasionally to update pusher status
+            await broadcast_state()
+
         await asyncio.sleep(1)
 
 # ---------- Lifespan ----------
@@ -542,6 +625,8 @@ async def websocket_endpoint(ws: WebSocket):
         logger.info(f"WebSocket client disconnected (total: {len(state.clients)})")
 
 def main():
+    global pusher_process
+
     # Configure logging first - this will handle all log records
     init_logging()
 
