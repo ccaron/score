@@ -1,15 +1,14 @@
 [project]
 name = "score"
 version = "0.1.0"
-description = "A game scoreboard app with FastAPI backend and optional PySide6 GUI."
+description = "Add your description here"
 readme = "README.md"
+authors = [
+    { name = "Christian Caron", email = "c_caron@apple.com" }
+]
 requires-python = ">=3.13"
 dependencies = [
     "fastapi>=0.128.0",
-    "httpx>=0.28.1",
-    "pyinstaller>=6.18.0",
-    "pytest>=9.0.2",
-    "pytest-asyncio>=1.3.0",
     "pywebview>=6.1",
     "uvicorn>=0.40.0",
     "websockets>=16.0",
@@ -17,9 +16,12 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "ruff",
-    "ty",
-    "pyinstaller",
+    "pytest>=8.0.0",
 ]
 
+[project.scripts]
+score = "score.cli:main"
 
+[build-system]
+requires = ["uv_build>=0.9.6,<0.10.0"]
+build-backend = "uv_build"

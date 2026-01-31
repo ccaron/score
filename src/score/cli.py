@@ -90,6 +90,15 @@ def init_db():
             created_at INTEGER NOT NULL
         )
     """)
+
+    # Add initial clock setting if this is a new database
+    count = db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    if count == 0:
+        db.execute(
+            "INSERT INTO events (type, payload, created_at) VALUES (?, ?, ?)",
+            ("CLOCK_SET", json.dumps({"seconds": 20 * 60}), int(time.time()))
+        )
+
     db.commit()
     db.close()
 
@@ -135,16 +144,21 @@ def load_state_from_events():
     db.close()
 
     for r in rows:
+        payload = json.loads(r["payload"])
         if r["type"] == "CLOCK_SET":
-            state.seconds = json.loads(r["payload"])["seconds"]
+            state.seconds = payload["seconds"]
         elif r["type"] == "GAME_STARTED":
             state.running = True
             state.last_update = r["created_at"]
         elif r["type"] == "GAME_PAUSED":
+            # Calculate how much time elapsed while running
+            if state.running:
+                elapsed = r["created_at"] - state.last_update
+                state.seconds = max(0, state.seconds - elapsed)
             state.running = False
             state.last_update = r["created_at"]
 
-    # Correct for elapsed wall time
+    # Correct for elapsed wall time if still running
     if state.running:
         elapsed = int(time.time()) - state.last_update
         state.seconds = max(0, state.seconds - elapsed)
@@ -244,8 +258,7 @@ async def websocket_endpoint(ws: WebSocket):
     finally:
         state.clients.remove(ws)
 
-# ---------- Run ----------
-if __name__ == "__main__":
+def main():
     def run_server():
         uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
 
@@ -254,3 +267,9 @@ if __name__ == "__main__":
 
     webview.create_window("Game Clock", "http://127.0.0.1:8000")
     webview.start()
+    
+
+# ---------- Run ----------
+if __name__ == "__main__":
+    main()
+
