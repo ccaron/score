@@ -12,6 +12,7 @@ dependencies = [
     "pywebview>=6.1",
     "uvicorn>=0.40.0",
     "websockets>=16.0",
+    "rich>=13.0.0",
 ]
 
 [dependency-groups]

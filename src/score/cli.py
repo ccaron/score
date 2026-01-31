@@ -1,8 +1,8 @@
 import asyncio
 import json
 import logging
-import subprocess
-import sys
+import logging.handlers
+import multiprocessing
 import time
 import sqlite3
 import threading
@@ -10,11 +10,55 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
+from rich.console import ConsoleRenderable
+from rich.logging import RichHandler
 import uvicorn
 import webview
 
 # Set up logger for this module
 logger = logging.getLogger(__name__)
+
+
+class RichHandlerWithLoggerName(RichHandler):
+    """Custom RichHandler that displays logger name in the path."""
+
+    def render(
+        self,
+        *,
+        record: logging.LogRecord,
+        traceback,
+        message_renderable: ConsoleRenderable,
+    ):
+        # Add logger name to the path
+        path = f"{record.name}"
+        record.pathname = path
+        record.filename = path
+        record.lineno = 0
+        return super().render(
+            record=record,
+            traceback=traceback,
+            message_renderable=message_renderable,
+        )
+
+
+def init_logging():
+    """Configure Rich logging with process/thread info and logger names."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[dim cyan][PID: %(process)d TID: %(thread)d][/dim cyan] %(message)s",
+        datefmt="[%X]",
+        handlers=[RichHandlerWithLoggerName(markup=True)],
+        force=True,
+    )
+
+    # Configure uvicorn's loggers to use our Rich handler
+    for logger_name in ["uvicorn", "uvicorn.error"]:
+        uvicorn_logger = logging.getLogger(logger_name)
+        uvicorn_logger.handlers = []
+        uvicorn_logger.propagate = True
+
+    # Reduce noise from access logs (comment out if you want to see all requests)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 # ---------- Inline HTML + JS ----------
 html = """
@@ -498,26 +542,34 @@ async def websocket_endpoint(ws: WebSocket):
         logger.info(f"WebSocket client disconnected (total: {len(state.clients)})")
 
 def main():
-    # Configure logging first, before spawning subprocess
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+    # Configure logging first - this will handle all log records
+    init_logging()
 
     logger.info("Starting Game Clock application")
 
-    # Start event pusher in a separate process
-    # Call the score-push-events command that's defined in pyproject.toml
-    pusher_process = subprocess.Popen(
-        ["score-push-events"],
-        stdout=sys.stdout,
-        stderr=sys.stderr
+    # Create a queue for the child process to send log records
+    log_queue = multiprocessing.Queue()
+
+    # Create a listener to process log records from the queue
+    queue_listener = logging.handlers.QueueListener(
+        log_queue,
+        *logging.getLogger().handlers,  # Use the handlers from root logger
+        respect_handler_level=True
     )
+    queue_listener.start()
+    logger.info("Log queue listener started")
+
+    # Start event pusher in a separate process
+    pusher_process = multiprocessing.Process(
+        target=push_events,
+        args=(log_queue,),
+        name="EventPusher"
+    )
+    pusher_process.start()
     logger.info(f"Event pusher process started (PID: {pusher_process.pid})")
 
     def run_server():
-        uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
+        uvicorn.run(app, host="127.0.0.1", port=8000, log_config=None)
 
     threading.Thread(target=run_server, daemon=True).start()
     time.sleep(0.5)
@@ -529,20 +581,25 @@ def main():
     finally:
         logger.info("Main window closed, terminating event pusher")
         pusher_process.terminate()
-        pusher_process.wait(timeout=5)
+        pusher_process.join(timeout=5)
+        queue_listener.stop()
+        logger.info("Shutdown complete")
 
 
-def push_events():
-    """Start the event pusher worker process."""
-    import logging
+def push_events(log_queue):
+    """
+    Start the event pusher worker process.
+
+    Args:
+        log_queue: multiprocessing.Queue for sending log records to main process
+    """
     from score.event_pusher import FileEventPusher
 
-    # Configure logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+    # Configure logging to send records to the queue
+    queue_handler = logging.handlers.QueueHandler(log_queue)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(queue_handler)
 
     pusher = FileEventPusher(
         db_path=DB_PATH,
