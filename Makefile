@@ -22,10 +22,10 @@ run: install
 	uv run python main.py
 
 build:
-	uv run pyinstaller --onefile --windowed --name game_clock --add-data "static:static" main.py
+	uv run pyinstaller --windowed --noconsole --onedir -y --name game_clock --add-data "static:static" main.py --debug=all
 
 test:
-	uv run pytest
+	uv run pytest tests
 
 
 clean:

@@ -3,3 +3,4 @@ build
 dist
 *.db
 .DS_Store
+game_clock.spec
