@@ -1,4 +1,4 @@
-.PHONY: run run-cloud run-both test kill kill-app kill-cloud
+.PHONY: run run-cloud run-both test
 
 run:
 	@uv pip install -e .

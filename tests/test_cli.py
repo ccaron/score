@@ -19,6 +19,7 @@ def temp_db():
         CREATE TABLE events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             type TEXT NOT NULL,
+            game_id TEXT,
             payload TEXT,
             created_at INTEGER NOT NULL
         )
@@ -74,62 +75,113 @@ def load_and_get_state(db_path):
     Returns:
         The GameState object after loading events
     """
-    from score.cli import GameState, load_state_from_events
+    from score.cli import load_state_from_events
 
     with patch('score.cli.DB_PATH', db_path):
-        state = GameState()
-        with patch('score.cli.state', state):
-            load_state_from_events()
+        # Import state after patching DB_PATH
+        from score.cli import state
+        # Reset state to defaults before loading
+        state.seconds = 20 * 60
+        state.running = False
+        state.last_update = int(time.time())
+        state.mode = "clock"
+        state.current_game = None
+        load_state_from_events()
         return state
 
 
 def test_load_state_from_events_with_pause(temp_db):
-    """Test that state is correctly restored when game is paused."""
-    create_events(temp_db, [
-        (0, "CLOCK_SET", {"seconds": 1200}),
-        (10, "GAME_STARTED", {}),
-        (310, "GAME_PAUSED", {}),  # 300 seconds elapsed
-    ])
+    """Test that game state is correctly restored when game is paused."""
+    # Create events for a specific game
+    conn = sqlite3.connect(temp_db)
+    base_time = int(time.time()) - 1000
+    events = [
+        (base_time, "CLOCK_SET", "game-001", {"seconds": 1200}),
+        (base_time + 10, "GAME_STARTED", "game-001", {}),
+        (base_time + 310, "GAME_PAUSED", "game-001", {}),  # 300 seconds elapsed
+    ]
+    for timestamp, event_type, game_id, payload in events:
+        conn.execute(
+            "INSERT INTO events (type, game_id, payload, created_at) VALUES (?, ?, ?, ?)",
+            (event_type, game_id, json.dumps(payload or {}), timestamp)
+        )
+    conn.commit()
+    conn.close()
 
-    state = load_and_get_state(temp_db)
+    from score.cli import load_game_state
 
-    # Clock should be at 15:00 (1200 - 300 = 900 seconds)
-    assert state.seconds == 900
-    assert state.running is False
+    with patch('score.cli.DB_PATH', temp_db):
+        from score.cli import state
+        state.mode = "game-001"
+        load_game_state("game-001")
+
+        # Clock should be at 15:00 (1200 - 300 = 900 seconds)
+        assert state.seconds == 900
+        assert state.running is False
 
 
 def test_load_state_from_events_still_running(temp_db):
-    """Test that state is correctly restored when game is still running."""
-    create_events(temp_db, [
-        (-10, "CLOCK_SET", {"seconds": 1200}),
-        (0, "GAME_STARTED", {}),
-    ], base_time=int(time.time()) - 100)  # Started 100 seconds ago
+    """Test that game state is correctly restored when game is still running."""
+    # Create events for a specific game
+    conn = sqlite3.connect(temp_db)
+    base_time = int(time.time()) - 100  # Started 100 seconds ago
+    events = [
+        (base_time - 10, "CLOCK_SET", "game-001", {"seconds": 1200}),
+        (base_time, "GAME_STARTED", "game-001", {}),
+    ]
+    for timestamp, event_type, game_id, payload in events:
+        conn.execute(
+            "INSERT INTO events (type, game_id, payload, created_at) VALUES (?, ?, ?, ?)",
+            (event_type, game_id, json.dumps(payload or {}), timestamp)
+        )
+    conn.commit()
+    conn.close()
 
-    state = load_and_get_state(temp_db)
+    from score.cli import load_game_state
 
-    # Clock should account for ~100 seconds elapsed
-    # Allow 2 second tolerance for test execution time
-    assert 1098 <= state.seconds <= 1102
-    assert state.running is True
+    with patch('score.cli.DB_PATH', temp_db):
+        from score.cli import state
+        state.mode = "game-001"
+        load_game_state("game-001")
+
+        # Clock should account for ~100 seconds elapsed
+        # Allow 2 second tolerance for test execution time
+        assert 1098 <= state.seconds <= 1102
+        assert state.running is True
 
 
 def test_load_state_from_events_multiple_start_pause_cycles(temp_db):
     """Test state restoration with multiple start/pause cycles."""
-    create_events(temp_db, [
-        (0, "CLOCK_SET", {"seconds": 1200}),
+    # Create events for a specific game
+    conn = sqlite3.connect(temp_db)
+    base_time = int(time.time()) - 1000
+    events = [
+        (base_time, "CLOCK_SET", "game-001", {"seconds": 1200}),
         # First cycle: run for 60 seconds
-        (10, "GAME_STARTED", {}),
-        (70, "GAME_PAUSED", {}),
+        (base_time + 10, "GAME_STARTED", "game-001", {}),
+        (base_time + 70, "GAME_PAUSED", "game-001", {}),
         # Second cycle: run for 40 seconds
-        (100, "GAME_STARTED", {}),
-        (140, "GAME_PAUSED", {}),
-    ])
+        (base_time + 100, "GAME_STARTED", "game-001", {}),
+        (base_time + 140, "GAME_PAUSED", "game-001", {}),
+    ]
+    for timestamp, event_type, game_id, payload in events:
+        conn.execute(
+            "INSERT INTO events (type, game_id, payload, created_at) VALUES (?, ?, ?, ?)",
+            (event_type, game_id, json.dumps(payload or {}), timestamp)
+        )
+    conn.commit()
+    conn.close()
 
-    state = load_and_get_state(temp_db)
+    from score.cli import load_game_state
 
-    # Clock should be at 18:20 (1200 - 60 - 40 = 1100 seconds)
-    assert state.seconds == 1100
-    assert state.running is False
+    with patch('score.cli.DB_PATH', temp_db):
+        from score.cli import state
+        state.mode = "game-001"
+        load_game_state("game-001")
+
+        # Clock should be at 18:20 (1200 - 60 - 40 = 1100 seconds)
+        assert state.seconds == 1100
+        assert state.running is False
 
 
 # ---------- Tests for has_undelivered_events() ----------
@@ -411,62 +463,56 @@ def test_pusher_status_dead_takes_priority_over_undelivered(temp_db):
 
 # ---------- Tests for mode functionality ----------
 
-def test_default_mode_is_game(temp_db):
-    """Test that default mode is 'game'."""
+def test_default_mode_is_clock(temp_db):
+    """Test that default mode is 'clock'."""
     from score.cli import GameState
 
     with patch('score.cli.DB_PATH', temp_db):
         state = GameState()
-        assert state.mode == "game"
+        assert state.mode == "clock"
 
 
-def test_mode_changed_event_creation(temp_db):
-    """Test that mode changes create MODE_CHANGED events."""
+def test_mode_changed_event_no_longer_exists(temp_db):
+    """Test that changing mode does not create MODE_CHANGED events (removed)."""
     from score.cli import GameState
 
     with patch('score.cli.DB_PATH', temp_db):
         state = GameState()
 
-        # Change mode to clock
-        state.mode = "clock"
-        state.add_event("MODE_CHANGED", {"mode": "clock"})
+        # Change mode (just in memory, no event)
+        state.mode = "game-001"
 
-        # Verify event was created
+        # Verify NO MODE_CHANGED event was created
         conn = sqlite3.connect(temp_db)
         event = conn.execute(
-            "SELECT type, payload FROM events WHERE type='MODE_CHANGED'"
+            "SELECT type FROM events WHERE type='MODE_CHANGED'"
         ).fetchone()
         conn.close()
 
-        assert event is not None
-        assert event[0] == "MODE_CHANGED"
-        assert json.loads(event[1]) == {"mode": "clock"}
+        assert event is None
 
 
-def test_load_state_with_mode_change(temp_db):
-    """Test that mode is correctly restored from MODE_CHANGED events."""
-    create_events(temp_db, [
-        (0, "CLOCK_SET", {"seconds": 1200}),
-        (10, "MODE_CHANGED", {"mode": "clock"}),
-    ])
+def test_app_starts_in_clock_mode(temp_db):
+    """Test that the app always starts in clock mode regardless of events."""
+    # Create events for a game
+    conn = sqlite3.connect(temp_db)
+    base_time = int(time.time()) - 1000
+    events = [
+        (base_time, "CLOCK_SET", "game-001", {"seconds": 1200}),
+        (base_time + 10, "GAME_STARTED", "game-001", {}),
+    ]
+    for timestamp, event_type, game_id, payload in events:
+        conn.execute(
+            "INSERT INTO events (type, game_id, payload, created_at) VALUES (?, ?, ?, ?)",
+            (event_type, game_id, json.dumps(payload or {}), timestamp)
+        )
+    conn.commit()
+    conn.close()
 
+    # Load state on startup
     state = load_and_get_state(temp_db)
 
-    assert state.mode == "clock"
-
-
-def test_load_state_with_multiple_mode_changes(temp_db):
-    """Test that mode is correctly restored with multiple mode changes."""
-    create_events(temp_db, [
-        (0, "CLOCK_SET", {"seconds": 1200}),
-        (10, "MODE_CHANGED", {"mode": "clock"}),
-        (20, "MODE_CHANGED", {"mode": "game"}),
-        (30, "MODE_CHANGED", {"mode": "clock"}),
-    ])
-
-    state = load_and_get_state(temp_db)
-
-    # Last mode should be clock
+    # Should be in clock mode despite game events existing
     assert state.mode == "clock"
 
 
@@ -488,36 +534,32 @@ def test_to_dict_includes_mode_and_time(temp_db):
         assert result["current_time"][2] == ":"
 
 
-def test_mode_persists_across_game_actions(temp_db):
-    """Test that mode persists correctly alongside game events."""
-    create_events(temp_db, [
-        (0, "CLOCK_SET", {"seconds": 1200}),
-        (10, "MODE_CHANGED", {"mode": "clock"}),
-        (20, "GAME_STARTED", {}),
-        (80, "GAME_PAUSED", {}),
-    ])
+def test_app_always_starts_in_clock_mode(temp_db):
+    """Test that app always starts in clock mode, regardless of game events."""
+    # Create events for a specific game
+    conn = sqlite3.connect(temp_db)
+    base_time = int(time.time()) - 1000
+    events = [
+        (base_time, "CLOCK_SET", "game-001", {"seconds": 1200}),
+        (base_time + 20, "GAME_STARTED", "game-001", {}),
+        (base_time + 80, "GAME_PAUSED", "game-001", {}),
+    ]
+    for timestamp, event_type, game_id, payload in events:
+        conn.execute(
+            "INSERT INTO events (type, game_id, payload, created_at) VALUES (?, ?, ?, ?)",
+            (event_type, game_id, json.dumps(payload or {}), timestamp)
+        )
+    conn.commit()
+    conn.close()
 
     state = load_and_get_state(temp_db)
 
-    # Mode should still be clock
+    # App should always start in clock mode
     assert state.mode == "clock"
-    # Game state should also be correct
-    assert state.seconds == 1140  # 1200 - 60 seconds elapsed
+    # Default state values should be used (not from game events)
+    assert state.seconds == 20 * 60  # Default
     assert state.running is False
 
-
-def test_mode_defaults_to_game_without_mode_change_event(temp_db):
-    """Test that mode remains 'game' if no MODE_CHANGED events exist."""
-    create_events(temp_db, [
-        (0, "CLOCK_SET", {"seconds": 1200}),
-        (10, "GAME_STARTED", {}),
-        (70, "GAME_PAUSED", {}),
-    ])
-
-    state = load_and_get_state(temp_db)
-
-    # Mode should default to game
-    assert state.mode == "game"
 
 
 

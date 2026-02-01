@@ -7,7 +7,9 @@ import time
 import sqlite3
 import warnings
 from contextlib import asynccontextmanager
+from typing import Optional
 
+import requests
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
 from rich.console import ConsoleRenderable
@@ -149,6 +151,43 @@ button:disabled:hover {
     display: flex;
     gap: 1em;
     margin-top: 2em;
+    align-items: center;
+}
+
+select {
+    font-size: 1.2em;
+    padding: 0.8em 2em;
+    background: rgba(255, 255, 255, 0.2);
+    backdrop-filter: blur(10px);
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50px;
+    color: #fff;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    font-weight: 600;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+    appearance: none;
+    padding-right: 3em;
+    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12"><path fill="white" d="M6 9L1 4h10z"/></svg>');
+    background-repeat: no-repeat;
+    background-position: right 1em center;
+}
+
+select:hover {
+    background: rgba(255, 255, 255, 0.3);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+}
+
+select:focus {
+    outline: none;
+    border-color: rgba(255, 255, 255, 0.5);
+}
+
+select option {
+    background: #667eea;
+    color: #fff;
+    padding: 0.5em;
 }
 
 .hint {
@@ -282,14 +321,17 @@ button:disabled:hover {
 
 <div class="status-indicator">
     <div class="status-dot" id="pusherStatus"></div>
-    <span>Event Pusher</span>
+    <span>Cloud Push</span>
 </div>
 
 <div class="clock" id="clock">20:00</div>
 
 <div class="controls">
     <button onclick="toggleGame(this)">▶ Start</button>
-    <button onclick="toggleMode()">🕐 Clock Mode</button>
+    <select id="modeSelect" onchange="selectMode(this.value)">
+        <option value="clock">🕐 Clock</option>
+        <!-- Games will be populated here -->
+    </select>
     <button onclick="debugEvents()">🐞 Debug Events</button>
 </div>
 
@@ -310,13 +352,46 @@ button:disabled:hover {
 const ws = new WebSocket(`ws://${location.host}/ws`);
 
 let currentSeconds = 1200; // Track current clock value
-let currentMode = 'game'; // Track current mode
+let currentMode = 'clock'; // Track current mode
+
+// Fetch games and populate dropdown on page load
+async function loadGames() {
+    try {
+        const response = await fetch('/games');
+        const data = await response.json();
+        const select = document.getElementById('modeSelect');
+
+        // Clear existing game options (keep clock option)
+        while (select.options.length > 1) {
+            select.remove(1);
+        }
+
+        // Add game options
+        data.games.forEach(game => {
+            const option = document.createElement('option');
+            option.value = game.game_id;
+            option.textContent = `🎮 ${game.home_team} vs ${game.away_team}`;
+            select.appendChild(option);
+        });
+    } catch (error) {
+        console.error('Failed to load games:', error);
+    }
+}
+
+// Load games on startup
+loadGames();
 
 ws.onmessage = (event) => {
     const data = JSON.parse(event.data).state;
 
     currentSeconds = data.seconds;
     currentMode = data.mode;
+
+    // Update dropdown selection
+    const modeSelect = document.getElementById('modeSelect');
+    if (modeSelect.value !== data.mode) {
+        modeSelect.value = data.mode;
+    }
 
     // Update clock display based on mode
     if (data.mode === 'clock') {
@@ -333,19 +408,19 @@ ws.onmessage = (event) => {
     startButton.textContent = data.running ? "⏸ Pause" : "▶ Start";
     startButton.disabled = data.mode === 'clock';
 
-    // Update mode toggle button
-    const modeButton = document.querySelector(".controls button:nth-child(2)");
-    modeButton.textContent = data.mode === 'game' ? "🕐 Clock Mode" : "🎮 Game Mode";
-
     // Update hint text
     const hintElement = document.querySelector(".hint");
     if (data.mode === 'clock') {
         hintElement.textContent = "Showing current time";
     } else {
-        hintElement.textContent = "Double-click the clock to set time";
+        if (data.current_game) {
+            hintElement.textContent = `${data.current_game.home_team} vs ${data.current_game.away_team} - Double-click to set time`;
+        } else {
+            hintElement.textContent = "Double-click the clock to set time";
+        }
     }
 
-    // Update pusher status indicator
+    // Update cloud push status indicator
     const pusherStatus = document.getElementById("pusherStatus");
     pusherStatus.className = `status-dot ${data.pusher_status}`;
 };
@@ -355,8 +430,12 @@ function toggleGame(btn) {
     fetch(running ? '/pause' : '/start', { method: 'POST' });
 }
 
-function toggleMode() {
-    fetch('/toggle_mode', { method: 'POST' });
+function selectMode(mode) {
+    fetch('/select_mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: mode })
+    });
 }
 
 function debugEvents() {
@@ -380,8 +459,8 @@ function applyTime() {
 }
 
 document.getElementById("clock").addEventListener("dblclick", () => {
-    // Only allow setting time in game mode
-    if (currentMode !== 'game') {
+    // Only allow setting time in game mode (not clock mode)
+    if (currentMode === 'clock') {
         return;
     }
 
@@ -418,6 +497,8 @@ document.getElementById('timeModal').addEventListener('click', (e) => {
 
 # ---------- SQLite setup ----------
 DB_PATH = "game.db"
+CLOUD_API_URL = "http://localhost:8001"  # score-cloud API
+RINK_ID = "rink-alpha"  # Default rink ID for fetching schedules
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -431,6 +512,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             type TEXT NOT NULL,
+            game_id TEXT,
             payload TEXT,
             created_at INTEGER NOT NULL
         )
@@ -447,14 +529,17 @@ def init_db():
         )
     """)
 
+    # Check if game_id column exists (for migration)
+    cursor = db.execute("PRAGMA table_info(events)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if "game_id" not in columns:
+        logger.info("Migrating database: adding game_id column to events")
+        db.execute("ALTER TABLE events ADD COLUMN game_id TEXT")
+
     # Add initial clock setting if this is a new database
     count = db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
     if count == 0:
-        logger.info("New database - adding initial CLOCK_SET event")
-        db.execute(
-            "INSERT INTO events (type, payload, created_at) VALUES (?, ?, ?)",
-            ("CLOCK_SET", json.dumps({"seconds": 20 * 60}), int(time.time()))
-        )
+        logger.info("New database - no initial events needed for clock mode")
     else:
         logger.info(f"Database initialized with {count} existing events")
 
@@ -471,14 +556,17 @@ class GameState:
         self.last_update = int(time.time())
         self.clients: list[WebSocket] = []
         self.pusher_status = "unknown"  # "healthy", "pending", "dead", "unknown"
-        self.mode = "game"  # "game" or "clock"
+        self.mode = "clock"  # "clock" or game_id
+        self.current_game: Optional[dict] = None  # Current game metadata (if mode is a game_id)
 
     def add_event(self, event_type, payload=None):
-        logger.debug(f"Adding event: {event_type} with payload: {payload}")
+        # Determine game_id: use mode if it's a game, otherwise None (for clock mode)
+        game_id = self.mode if self.mode != "clock" else None
+        logger.debug(f"Adding event: {event_type} (game_id={game_id}) with payload: {payload}")
         db = get_db()
         db.execute(
-            "INSERT INTO events (type, payload, created_at) VALUES (?, ?, ?)",
-            (event_type, json.dumps(payload or {}), int(time.time()))
+            "INSERT INTO events (type, game_id, payload, created_at) VALUES (?, ?, ?, ?)",
+            (event_type, game_id, json.dumps(payload or {}), int(time.time()))
         )
         db.commit()
         db.close()
@@ -495,29 +583,72 @@ class GameState:
         return count > 0
 
     def to_dict(self):
-        return {
+        result = {
             "seconds": self.seconds,
             "running": self.running,
             "pusher_status": self.pusher_status,
             "mode": self.mode,
             "current_time": time.strftime("%H:%M"),
         }
+        if self.current_game:
+            result["current_game"] = self.current_game
+        return result
 
 state = GameState()
 
-# Global reference to pusher process for health checks
+# Global reference to cloud push process for health checks
 pusher_process = None
+
+
+# ---------- Cloud API Client ----------
+def fetch_games_from_cloud():
+    """Fetch today's games from the score-cloud API."""
+    try:
+        response = requests.get(
+            f"{CLOUD_API_URL}/v1/rinks/{RINK_ID}/schedule",
+            timeout=5
+        )
+        response.raise_for_status()
+        data = response.json()
+        logger.info(f"Fetched {len(data.get('games', []))} games from cloud API")
+        return data.get("games", [])
+    except Exception as e:
+        logger.warning(f"Failed to fetch games from cloud API: {e}")
+        return []
 
 # ---------- State replay ----------
 def load_state_from_events():
+    """Load state from events - used on startup (defaults to clock mode)."""
     logger.info("Loading state from events...")
     db = get_db()
     rows = db.execute(
-        "SELECT type, payload, created_at FROM events ORDER BY created_at ASC"
+        "SELECT type, game_id, payload, created_at FROM events ORDER BY created_at ASC"
     ).fetchall()
     db.close()
 
-    logger.info(f"Replaying {len(rows)} events")
+    # App always starts in clock mode
+    logger.info(f"Found {len(rows)} total events across all games")
+    logger.info(f"Starting in clock mode (default)")
+
+    # Note: Individual game states will be loaded when switching to that game
+
+
+def load_game_state(game_id: str):
+    """Load state for a specific game by replaying its events."""
+    logger.info(f"Loading state for game {game_id}...")
+    db = get_db()
+    rows = db.execute(
+        "SELECT type, payload, created_at FROM events WHERE game_id = ? ORDER BY created_at ASC",
+        (game_id,)
+    ).fetchall()
+    db.close()
+
+    # Reset to fresh game state - clear everything
+    state.seconds = 0  # Reset timer (will be set by CLOCK_SET event if it exists)
+    state.running = False
+    state.last_update = int(time.time())
+
+    logger.info(f"Replaying {len(rows)} events for game {game_id}")
     for r in rows:
         payload = json.loads(r["payload"])
         if r["type"] == "CLOCK_SET":
@@ -535,17 +666,15 @@ def load_state_from_events():
             state.running = False
             state.last_update = r["created_at"]
             logger.debug(f"Replayed GAME_PAUSED: {state.seconds}s remaining")
-        elif r["type"] == "MODE_CHANGED":
-            state.mode = payload["mode"]
-            logger.debug(f"Replayed MODE_CHANGED: {state.mode}")
 
     # Correct for elapsed wall time if still running
     if state.running:
         elapsed = int(time.time()) - state.last_update
         state.seconds = max(0, state.seconds - elapsed)
-        logger.info(f"Game is running - adjusted for {elapsed}s elapsed time")
+        logger.info(f"Game {game_id} is running - adjusted for {elapsed}s elapsed time")
 
-    logger.info(f"State loaded: {state.seconds}s, running={state.running}")
+    logger.info(f"Game state loaded: {state.seconds}s, running={state.running}")
+    return len(rows)  # Return number of events found
 
 # ---------- Broadcast ----------
 async def broadcast_state():
@@ -567,7 +696,7 @@ async def broadcast_state():
 # ---------- Game loop ----------
 async def game_loop():
     while True:
-        # Check pusher health and delivery status
+        # Check cloud push health and delivery status
         if pusher_process is not None:
             is_alive = pusher_process.is_alive()
             if not is_alive:
@@ -584,7 +713,7 @@ async def game_loop():
             state.last_update = int(time.time())
             await broadcast_state()
         else:
-            # Even if not running, broadcast occasionally to update pusher status
+            # Even if not running, broadcast occasionally to update cloud push status
             await broadcast_state()
 
         await asyncio.sleep(1)
@@ -644,14 +773,60 @@ async def set_time(request: dict):
     await broadcast_state()
     return {"status": "ok"}
 
-@app.post("/toggle_mode")
-async def toggle_mode():
-    new_mode = "clock" if state.mode == "game" else "game"
-    logger.info(f"Toggling mode from {state.mode} to {new_mode}")
-    state.mode = new_mode
-    state.add_event("MODE_CHANGED", {"mode": state.mode})
+@app.get("/games")
+async def get_games():
+    """Get available games from the cloud API."""
+    games = fetch_games_from_cloud()
+    return {"games": games}
+
+@app.post("/select_mode")
+async def select_mode(request: dict):
+    """Select a mode (clock or a specific game)."""
+    new_mode = request.get("mode", "clock")
+
+    logger.info(f"Selecting mode: {new_mode}")
+
+    # If we're currently in a game and it's running, pause it first to save state
+    if state.mode != "clock" and state.mode != new_mode and state.running:
+        logger.info(f"Auto-pausing current game {state.mode} before switching")
+        state.running = False
+        state.add_event("GAME_PAUSED")
+
+    if new_mode == "clock":
+        # Switch to clock mode
+        state.mode = "clock"
+        state.current_game = None
+        state.running = False
+    else:
+        # Switch to a game mode - fetch game details
+        games = fetch_games_from_cloud()
+        selected_game = next((g for g in games if g["game_id"] == new_mode), None)
+
+        if selected_game:
+            # First update mode and game metadata
+            state.mode = new_mode
+            state.current_game = selected_game
+
+            # Replay all events for this game to restore its state
+            num_events = load_game_state(new_mode)
+
+            # If no events were found for this game, initialize with default period length
+            if num_events == 0:
+                state.seconds = selected_game["period_length_min"] * 60
+                state.last_update = int(time.time())
+                # Create CLOCK_SET event to record the initial state
+                state.add_event("CLOCK_SET", {"seconds": state.seconds})
+                logger.info(f"No prior state found, initializing game with {state.seconds}s")
+
+            logger.info(f"Selected game: {selected_game['home_team']} vs {selected_game['away_team']}")
+        else:
+            logger.warning(f"Game {new_mode} not found, switching to clock mode")
+            state.mode = "clock"
+            state.current_game = None
+            state.running = False
+
     await broadcast_state()
-    return {"status": "ok"}
+    return {"status": "ok", "mode": state.mode}
 
 @app.post("/debug_events")
 async def debug_events():
@@ -664,8 +839,9 @@ async def debug_events():
 
     print("\n===== DEBUG EVENTS =====")
     for r in rows:
+        game_id_str = r['game_id'] if r['game_id'] else 'None'
         print(
-            f"{r['id']:03d} | {r['type']:<15} | "
+            f"{r['id']:03d} | {r['type']:<15} | game:{game_id_str:<15} | "
             f"{r['payload']:<30} | {time.ctime(r['created_at'])}"
         )
     print("========================\n")
@@ -712,14 +888,14 @@ def main():
     queue_listener.start()
     logger.info("Log queue listener started")
 
-    # Start event pusher in a separate process
+    # Start cloud push worker in a separate process
     pusher_process = multiprocessing.Process(
         target=push_events,
         args=(log_queue,),
-        name="EventPusher"
+        name="CloudPush"
     )
     pusher_process.start()
-    logger.info(f"Event pusher process started (PID: {pusher_process.pid})")
+    logger.info(f"Cloud push process started (PID: {pusher_process.pid})")
 
     logger.info("Starting web server on http://0.0.0.0:8000")
 
@@ -728,15 +904,15 @@ def main():
         # Bind to 0.0.0.0 so it's accessible from outside the container
         uvicorn.run(app, host="0.0.0.0", port=8000, log_config=None)
     finally:
-        logger.info("Server stopped, waiting for event pusher to finish")
+        logger.info("Server stopped, waiting for cloud push to finish")
 
-        # The event pusher should have received SIGTERM from the shell's trap
+        # The cloud push worker should have received SIGTERM from the shell's trap
         # Just wait for it to exit gracefully
         pusher_process.join(timeout=5)
 
         # Force kill only if it's still alive after timeout
         if pusher_process.is_alive():
-            logger.warning("Event pusher did not exit, forcing termination...")
+            logger.warning("Cloud push did not exit, forcing termination...")
             pusher_process.terminate()
             pusher_process.join(timeout=2)
 
@@ -759,7 +935,7 @@ def main():
 
 def push_events(log_queue):
     """
-    Start the event pusher worker process.
+    Start the cloud push worker process.
 
     Args:
         log_queue: multiprocessing.Queue for sending log records to main process
