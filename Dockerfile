@@ -6,8 +6,8 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install system deps (only if needed later)
-# RUN apt-get update && apt-get install -y <deps> && rm -rf /var/lib/apt/lists/*
+# Install system deps for Grafana Agent download
+RUN apt-get update && apt-get install -y wget unzip && rm -rf /var/lib/apt/lists/*
 
 # Copy dependency metadata first for caching
 COPY pyproject.toml README.md /app/
@@ -25,9 +25,23 @@ ENV PYTHONPATH=/app/src
 # Editable install of your package (after source is copied)
 RUN uv pip install --system -e .
 
-# Expose the app port
+# Download Grafana Agent (ARM64 Linux)
+RUN wget https://github.com/grafana/agent/releases/download/v0.37.2/grafana-agent-linux-arm64.zip \
+    && apt-get install -y unzip \
+    && unzip grafana-agent-linux-arm64.zip \
+    && mv grafana-agent-linux-arm64 /usr/local/bin/grafana-agent \
+    && chmod +x /usr/local/bin/grafana-agent \
+    && rm -rf grafana-agent-linux-arm64.zip
+
+# Copy startup script and agent config
+COPY start.sh /app/start.sh
+COPY agent-config.yaml /etc/agent-config.yaml
+RUN chmod +x /app/start.sh
+
+# Expose the app port (uvicorn metrics) and agent port (optional)
+# Default ports as build-time environment variables
 EXPOSE 8000
+EXPOSE 3100
 
-# Auto-start the app
-CMD ["uv", "run", "score", "--host", "0.0.0.0", "--port", "8000"]
-
+# Start both the app and the Grafana Agent
+CMD ["/app/start.sh"]
