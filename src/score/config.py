@@ -18,7 +18,7 @@ class AppConfig:
 
     # Cloud API integration
     CLOUD_API_URL = os.getenv("CLOUD_API_URL", "http://localhost:8001")
-    RINK_ID = os.getenv("RINK_ID", "rink-alpha")  # Fallback, overridden by cloud config
+    RINK_ID = os.getenv("RINK_ID", "rink-tsc")  # Fallback, overridden by cloud config
 
     # Device ID persistence path
     DEVICE_ID_PATH = os.getenv("DEVICE_ID_PATH", "/tmp/score-device-id")

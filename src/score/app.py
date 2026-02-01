@@ -158,14 +158,21 @@ select option {
     top: 20px;
     right: 20px;
     display: flex;
-    align-items: center;
-    gap: 10px;
+    flex-direction: column;
+    gap: 8px;
     background: rgba(255, 255, 255, 0.1);
     backdrop-filter: blur(10px);
-    padding: 10px 20px;
-    border-radius: 50px;
+    padding: 15px 20px;
+    border-radius: 15px;
     border: 2px solid rgba(255, 255, 255, 0.2);
-    font-size: 0.9em;
+    font-size: 0.85em;
+    min-width: 200px;
+}
+
+.status-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
 }
 
 .status-dot {
@@ -174,6 +181,7 @@ select option {
     border-radius: 50%;
     background: #888;
     transition: background 0.3s ease;
+    flex-shrink: 0;
 }
 
 .status-dot.healthy {
@@ -193,78 +201,6 @@ select option {
 
 .status-dot.unknown {
     background: #888;
-}
-
-.device-id-indicator {
-    position: fixed;
-    top: 20px;
-    left: 20px;
-    background: rgba(255, 255, 255, 0.1);
-    backdrop-filter: blur(10px);
-    padding: 10px 20px;
-    border-radius: 50px;
-    border: 2px solid rgba(255, 255, 255, 0.2);
-    font-size: 0.9em;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-.device-id-label {
-    font-size: 0.75em;
-    opacity: 0.7;
-}
-
-.device-id-value {
-    font-weight: 700;
-    font-size: 1.1em;
-    letter-spacing: 1px;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    padding: 4px 8px;
-    border-radius: 6px;
-    position: relative;
-}
-
-.device-id-value:hover {
-    background: rgba(255, 255, 255, 0.2);
-    transform: scale(1.05);
-}
-
-.device-id-value:active {
-    transform: scale(0.98);
-}
-
-.copy-tooltip {
-    position: absolute;
-    top: -30px;
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(74, 222, 128, 0.95);
-    color: #fff;
-    padding: 4px 12px;
-    border-radius: 6px;
-    font-size: 0.85em;
-    white-space: nowrap;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.3s ease;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-}
-
-.copy-tooltip.show {
-    opacity: 1;
-}
-
-.sheet-name {
-    font-size: 0.85em;
-    opacity: 0.9;
-    font-style: italic;
-}
-
-.unassigned-warning {
-    color: #fbbf24;
-    font-weight: 600;
 }
 
 .modal {
@@ -347,18 +283,19 @@ select option {
 </head>
 <body>
 
-<div class="device-id-indicator" id="deviceInfo">
-    <div class="device-id-label">Device ID (click to copy)</div>
-    <div class="device-id-value" id="deviceId" onclick="copyDeviceId()">
-        Loading...
-        <div class="copy-tooltip" id="copyTooltip">Copied!</div>
-    </div>
-    <div class="sheet-name" id="sheetName"></div>
-</div>
-
 <div class="status-indicator">
-    <div class="status-dot" id="pusherStatus"></div>
-    <span>Cloud Push</span>
+    <div class="status-item">
+        <div class="status-dot" id="assignmentStatus"></div>
+        <span>Device Assignment</span>
+    </div>
+    <div class="status-item">
+        <div class="status-dot" id="scheduleStatus"></div>
+        <span>Day Schedule</span>
+    </div>
+    <div class="status-item">
+        <div class="status-dot" id="pusherStatus"></div>
+        <span>Cloud Push</span>
+    </div>
 </div>
 
 <div class="clock" id="clock">20:00</div>
@@ -390,28 +327,7 @@ const ws = new WebSocket(`ws://${location.host}/ws`);
 
 let currentSeconds = 1200; // Track current clock value
 let currentMode = 'clock'; // Track current mode
-
-// Copy device ID to clipboard
-function copyDeviceId() {
-    const deviceIdElement = document.getElementById('deviceId');
-    const tooltip = document.getElementById('copyTooltip');
-
-    // Get the text content (without the tooltip)
-    const deviceId = deviceIdElement.childNodes[0].textContent.trim();
-
-    // Copy to clipboard
-    navigator.clipboard.writeText(deviceId).then(() => {
-        // Show tooltip
-        tooltip.classList.add('show');
-
-        // Hide tooltip after 2 seconds
-        setTimeout(() => {
-            tooltip.classList.remove('show');
-        }, 2000);
-    }).catch(err => {
-        console.error('Failed to copy device ID:', err);
-    });
-}
+let wasAssigned = false; // Track if device was previously assigned
 
 
 // Fetch games and populate dropdown on page load
@@ -484,21 +400,21 @@ ws.onmessage = (event) => {
     const pusherStatus = document.getElementById("pusherStatus");
     pusherStatus.className = `status-dot ${data.pusher_status}`;
 
-    // Update device ID display
-    const deviceIdElement = document.getElementById("deviceId");
-    const sheetNameElement = document.getElementById("sheetName");
+    // Update assignment status indicator
+    const assignmentStatus = document.getElementById("assignmentStatus");
+    assignmentStatus.className = `status-dot ${data.assignment_status}`;
 
-    if (data.device_id) {
-        // Update only the text node, preserving the tooltip element
-        deviceIdElement.childNodes[0].textContent = data.device_id + ' ';
+    // Update schedule status indicator
+    const scheduleStatus = document.getElementById("scheduleStatus");
+    scheduleStatus.className = `status-dot ${data.schedule_status}`;
 
-        if (data.device_assigned && data.sheet_name) {
-            sheetNameElement.textContent = data.sheet_name;
-            sheetNameElement.className = "sheet-name";
-        } else {
-            sheetNameElement.textContent = "⚠ Not Assigned (checking...)";
-            sheetNameElement.className = "sheet-name unassigned-warning";
-        }
+    // If device just got assigned, reload games
+    if (data.device_assigned && !wasAssigned) {
+        console.log('Device just got assigned - loading games...');
+        loadGames();
+        wasAssigned = true;
+    } else if (!data.device_assigned) {
+        wasAssigned = false;
     }
 };
 
@@ -621,8 +537,9 @@ def fetch_device_config():
         return config
 
     except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to fetch device config from cloud: {e}")
-        logger.warning(f"Falling back to RINK_ID from environment: {RINK_ID}")
+        # Use warning level since this is expected if cloud isn't ready yet
+        logger.warning(f"Could not connect to cloud API: {type(e).__name__}")
+        logger.debug(f"Connection error details: {e}")
         return None
 
 def get_db():
@@ -681,6 +598,8 @@ class GameState:
         self.last_update = int(time.time())
         self.clients: list[WebSocket] = []
         self.pusher_status = "unknown"  # "healthy", "pending", "dead", "unknown"
+        self.assignment_status = "unknown"  # "healthy", "pending", "unknown"
+        self.schedule_status = "unknown"  # "healthy", "pending", "dead", "unknown"
         self.mode = "clock"  # "clock" or game_id
         self.current_game: Optional[dict] = None  # Current game metadata (if mode is a game_id)
 
@@ -714,6 +633,8 @@ class GameState:
             "seconds": self.seconds,
             "running": self.running,
             "pusher_status": self.pusher_status,
+            "assignment_status": self.assignment_status,
+            "schedule_status": self.schedule_status,
             "mode": self.mode,
             "current_time": time.strftime("%H:%M"),
             "device_id": format_device_id_for_display(DEVICE_ID),
@@ -740,10 +661,26 @@ def fetch_games_from_cloud():
         )
         response.raise_for_status()
         data = response.json()
-        logger.info(f"Fetched {len(data.get('games', []))} games from cloud API")
-        return data.get("games", [])
+        games = data.get("games", [])
+        logger.info(f"Fetched {len(games)} games from cloud API")
+
+        # Only update schedule status if device is assigned
+        if DEVICE_CONFIG and DEVICE_CONFIG.get("is_assigned"):
+            if games:
+                state.schedule_status = "healthy"
+            else:
+                state.schedule_status = "dead"
+        else:
+            state.schedule_status = "unknown"
+
+        return games
     except Exception as e:
         logger.warning(f"Failed to fetch games from cloud API: {e}")
+        # Only set to "dead" if device is assigned (otherwise keep "unknown")
+        if DEVICE_CONFIG and DEVICE_CONFIG.get("is_assigned"):
+            state.schedule_status = "dead"
+        else:
+            state.schedule_status = "unknown"
         return []
 
 # ---------- State replay ----------
@@ -799,9 +736,38 @@ async def broadcast_state():
 # ---------- Game loop ----------
 async def game_loop():
     last_config_check = 0
+    last_games_check = -60  # Start negative so first check happens immediately
     config_check_interval = 30  # Check every 30 seconds if unassigned
+    games_check_interval = 60  # Check for games every 60 seconds
 
     while True:
+        # Check device assignment status
+        if DEVICE_CONFIG is None:
+            state.assignment_status = "pending"  # Still trying to connect to cloud
+        elif DEVICE_CONFIG.get("is_assigned"):
+            state.assignment_status = "healthy"  # Assigned
+        else:
+            state.assignment_status = "pending"  # Registered but not assigned
+
+        # Check schedule status (are games available for today?)
+        current_time = int(time.time())
+        if current_time - last_games_check >= games_check_interval:
+            last_games_check = current_time
+
+            # Only check if device is assigned
+            if DEVICE_CONFIG and DEVICE_CONFIG.get("is_assigned"):
+                try:
+                    games = fetch_games_from_cloud()
+                    if games:
+                        state.schedule_status = "healthy"  # Games available
+                    else:
+                        state.schedule_status = "dead"  # No games for today
+                except Exception as e:
+                    logger.debug(f"Failed to check games: {e}")
+                    state.schedule_status = "dead"  # Failed to fetch
+            else:
+                state.schedule_status = "unknown"  # Not assigned yet
+
         # Check cloud push health and delivery status
         if pusher_process is not None:
             is_alive = pusher_process.is_alive()
@@ -815,7 +781,6 @@ async def game_loop():
             state.pusher_status = "unknown"
 
         # Periodically retry fetching device config if unassigned
-        current_time = int(time.time())
         if current_time - last_config_check >= config_check_interval:
             last_config_check = current_time
 
@@ -848,9 +813,10 @@ async def lifespan(_app: FastAPI):
     # Fetch device configuration from cloud
     config = fetch_device_config()
     if config is None:
-        logger.warning("Could not fetch device config on startup - will retry automatically every 30 seconds")
+        logger.warning("Cloud API not available - will retry automatically every 30 seconds")
+        logger.info(f"Using fallback rink: {RINK_ID}")
     elif not config.get("is_assigned"):
-        logger.warning("Device is not assigned - will check for assignment every 30 seconds")
+        logger.info("Device registered but not assigned - will check for assignment every 30 seconds")
 
     load_state_from_events()
 

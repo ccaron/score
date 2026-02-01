@@ -647,7 +647,7 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
 
     devices_html = ""
     for d in device_list:
-        status_badge = '<span class="badge assigned">✓ Assigned</span>' if d["is_assigned"] else '<span class="badge unassigned">⚠ Not Assigned</span>'
+        status_badge = '<span class="badge assigned">Assigned</span>' if d["is_assigned"] else '<span class="badge unassigned">Not Assigned</span>'
 
         devices_html += f"""
         <tr data-device-id="{d['device_id']}">
@@ -667,9 +667,9 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
             <td class="timestamp">{format_timestamp(d['last_seen_at'])}</td>
             <td><textarea class="notes-input" data-device-id="{d['device_id']}" placeholder="Notes...">{d['notes'] or ''}</textarea></td>
             <td class="actions">
-                <button class="btn-save" onclick="saveDevice('{d['device_id']}')">💾 Save</button>
-                <button class="btn-unassign" onclick="unassignDevice('{d['device_id']}')">✗ Unassign</button>
-                <button class="btn-delete" onclick="deleteDevice('{d['device_id']}')">🗑️ Delete</button>
+                <button class="btn-save" onclick="saveDevice('{d['device_id']}')">Save</button>
+                <button class="btn-unassign" onclick="unassignDevice('{d['device_id']}')">Unassign</button>
+                <button class="btn-delete" onclick="deleteDevice('{d['device_id']}')">Delete</button>
             </td>
         </tr>
         """
@@ -688,6 +688,26 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
                 min-height: 100vh;
                 padding: 20px;
             }}
+            .nav {{
+                background: rgba(255, 255, 255, 0.95);
+                padding: 15px 30px;
+                border-radius: 10px;
+                margin-bottom: 20px;
+                box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+            }}
+            .nav a {{
+                color: #667eea;
+                text-decoration: none;
+                margin-right: 20px;
+                font-weight: 500;
+            }}
+            .nav a:hover {{
+                text-decoration: underline;
+            }}
+            .nav a.active {{
+                color: #764ba2;
+                font-weight: 700;
+            }}
             .container {{
                 max-width: 1400px;
                 margin: 0 auto;
@@ -697,14 +717,67 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
                 overflow: hidden;
             }}
             .header {{
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
                 padding: 30px;
-                text-align: center;
+                border-bottom: 1px solid #e9ecef;
             }}
-            .header h1 {{ font-size: 2.5em; margin-bottom: 10px; }}
-            .header p {{ opacity: 0.9; font-size: 1.1em; }}
+            .header h1 {{
+                font-size: 1.8em;
+                margin-bottom: 5px;
+                color: #333;
+            }}
+            .header p {{
+                color: #6c757d;
+                font-size: 0.95em;
+            }}
             .content {{ padding: 30px; }}
+            .rink-section {{
+                margin-bottom: 30px;
+                padding: 20px;
+                background: #f8f9fa;
+                border-radius: 8px;
+            }}
+            .rink-section h3 {{
+                font-size: 1.1em;
+                margin-bottom: 15px;
+                color: #495057;
+            }}
+            .rink-list {{
+                display: flex;
+                gap: 15px;
+                flex-wrap: wrap;
+                margin-bottom: 15px;
+            }}
+            .rink-item {{
+                padding: 8px 16px;
+                background: white;
+                border: 1px solid #dee2e6;
+                border-radius: 6px;
+                font-size: 0.9em;
+                color: #495057;
+            }}
+            .add-rink-form {{
+                display: flex;
+                gap: 10px;
+                align-items: flex-end;
+            }}
+            .add-rink-form input {{
+                padding: 8px 12px;
+                border: 1px solid #ced4da;
+                border-radius: 4px;
+                font-size: 0.9em;
+            }}
+            .add-rink-form button {{
+                padding: 8px 16px;
+                background: #667eea;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 0.9em;
+            }}
+            .add-rink-form button:hover {{
+                background: #5568d3;
+            }}
             table {{
                 width: 100%;
                 border-collapse: collapse;
@@ -747,10 +820,10 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
             }}
             .badge {{
                 display: inline-block;
-                padding: 4px 12px;
-                border-radius: 20px;
+                padding: 4px 10px;
+                border-radius: 4px;
                 font-size: 12px;
-                font-weight: 600;
+                font-weight: 500;
             }}
             .badge.assigned {{
                 background: #d4edda;
@@ -766,16 +839,14 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
             }}
             .actions {{
                 display: flex;
-                gap: 8px;
+                gap: 5px;
             }}
             button {{
-                padding: 8px 16px;
+                padding: 6px 12px;
                 border: none;
-                border-radius: 6px;
+                border-radius: 4px;
                 cursor: pointer;
-                font-weight: 600;
                 font-size: 13px;
-                transition: all 0.2s;
             }}
             .btn-save {{
                 background: #28a745;
@@ -783,7 +854,6 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
             }}
             .btn-save:hover {{
                 background: #218838;
-                transform: translateY(-2px);
             }}
             .btn-unassign {{
                 background: #dc3545;
@@ -791,7 +861,6 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
             }}
             .btn-unassign:hover {{
                 background: #c82333;
-                transform: translateY(-2px);
             }}
             .btn-delete {{
                 background: #6c757d;
@@ -799,21 +868,10 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
             }}
             .btn-delete:hover {{
                 background: #5a6268;
-                transform: translateY(-2px);
-            }}
-            .btn-refresh {{
-                background: #667eea;
-                color: white;
-                padding: 12px 24px;
-                font-size: 16px;
-                margin-bottom: 20px;
-            }}
-            .btn-refresh:hover {{
-                background: #5568d3;
             }}
             .message {{
-                padding: 15px;
-                border-radius: 8px;
+                padding: 12px;
+                border-radius: 4px;
                 margin-bottom: 20px;
                 display: none;
             }}
@@ -827,153 +885,42 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
                 color: #721c24;
                 border: 1px solid #f5c6cb;
             }}
-            .stats {{
-                display: flex;
-                gap: 20px;
-                margin-bottom: 30px;
-            }}
-            .stat-card {{
-                flex: 1;
-                background: #f8f9fa;
-                padding: 20px;
-                border-radius: 10px;
-                text-align: center;
-            }}
-            .stat-value {{
-                font-size: 2.5em;
-                font-weight: 700;
-                color: #667eea;
-            }}
-            .stat-label {{
+            .hint {{
+                margin-bottom: 15px;
                 color: #6c757d;
-                margin-top: 5px;
-            }}
-            .add-device-form {{
-                background: #f8f9fa;
-                padding: 20px;
-                border-radius: 10px;
-                margin-bottom: 30px;
-                border: 2px solid #dee2e6;
-            }}
-            .add-device-form h3 {{
-                color: #495057;
-                margin-bottom: 15px;
-                font-size: 1.2em;
-            }}
-            .form-row {{
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                gap: 15px;
-                margin-bottom: 15px;
-            }}
-            .form-group {{
-                display: flex;
-                flex-direction: column;
-                gap: 5px;
-            }}
-            .form-group label {{
-                color: #495057;
-                font-weight: 600;
                 font-size: 0.9em;
-            }}
-            .form-group input,
-            .form-group select,
-            .form-group textarea {{
-                padding: 8px;
-                border: 1px solid #ced4da;
-                border-radius: 4px;
-                font-size: 14px;
-            }}
-            .form-actions {{
-                display: flex;
-                gap: 10px;
-            }}
-            .btn-add {{
-                background: #667eea;
-                color: white;
-                padding: 10px 20px;
-                border: none;
-                border-radius: 6px;
-                cursor: pointer;
-                font-weight: 600;
-                font-size: 14px;
-                transition: all 0.2s;
-            }}
-            .btn-add:hover {{
-                background: #5568d3;
-                transform: translateY(-2px);
-            }}
-            .btn-clear {{
-                background: #6c757d;
-                color: white;
-                padding: 10px 20px;
-                border: none;
-                border-radius: 6px;
-                cursor: pointer;
-                font-weight: 600;
-                font-size: 14px;
-                transition: all 0.2s;
-            }}
-            .btn-clear:hover {{
-                background: #5a6268;
             }}
         </style>
     </head>
     <body>
+        <div class="nav">
+            <a href="/admin/devices" class="active">Devices</a>
+            <a href="/admin/games/state">Game States</a>
+            <a href="/admin/heartbeats/latest">Heartbeats</a>
+        </div>
         <div class="container">
             <div class="header">
-                <h1>🎮 Device Management</h1>
-                <p>Manage device assignments for all score-app installations</p>
+                <h1>Device Management</h1>
+                <p>Manage device assignments for score-app installations</p>
             </div>
 
             <div class="content">
                 <div id="message" class="message"></div>
 
-                <div class="stats">
-                    <div class="stat-card">
-                        <div class="stat-value">{len(device_list)}</div>
-                        <div class="stat-label">Total Devices</div>
+                <div class="rink-section">
+                    <h3>Rinks</h3>
+                    <div class="rink-list">
+                        {''.join([f'<div class="rink-item"><strong>{r["rink_id"]}</strong>: {r["name"]}</div>' for r in rinks_list]) if rinks_list else '<div class="rink-item" style="color: #6c757d;">No rinks yet</div>'}
                     </div>
-                    <div class="stat-card">
-                        <div class="stat-value">{sum(1 for d in device_list if d['is_assigned'])}</div>
-                        <div class="stat-label">Assigned</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-value">{sum(1 for d in device_list if not d['is_assigned'])}</div>
-                        <div class="stat-label">Unassigned</div>
+                    <div class="add-rink-form">
+                        <input type="text" id="addRinkId" placeholder="Rink ID (e.g., rink-alpha)" style="width: 200px;">
+                        <input type="text" id="addRinkName" placeholder="Rink Name (e.g., Alpha Arena)" style="width: 250px;">
+                        <button onclick="addRink()">Add Rink</button>
                     </div>
                 </div>
 
-                <div class="add-device-form">
-                    <h3>🏒 Rink Management</h3>
-                    <div style="display: flex; gap: 20px; align-items: flex-start;">
-                        <div style="flex: 1;">
-                            <h4 style="color: #495057; margin-bottom: 10px; font-size: 1em;">Existing Rinks</h4>
-                            <div style="max-height: 150px; overflow-y: auto; border: 1px solid #dee2e6; border-radius: 6px; padding: 10px; background: white;">
-                                {''.join([f'<div style="padding: 5px 0; border-bottom: 1px solid #e9ecef;"><strong>{r["rink_id"]}</strong>: {r["name"]}</div>' for r in rinks_list]) if rinks_list else '<div style="color: #6c757d; font-style: italic;">No rinks yet</div>'}
-                            </div>
-                        </div>
-                        <div style="flex: 1;">
-                            <h4 style="color: #495057; margin-bottom: 10px; font-size: 1em;">Add New Rink</h4>
-                            <div class="form-group" style="margin-bottom: 10px;">
-                                <label>Rink ID *</label>
-                                <input type="text" id="addRinkId" placeholder="rink-alpha" required>
-                            </div>
-                            <div class="form-group" style="margin-bottom: 10px;">
-                                <label>Rink Name *</label>
-                                <input type="text" id="addRinkName" placeholder="Alpha Ice Arena" required>
-                            </div>
-                            <div class="form-actions">
-                                <button class="btn-add" onclick="addRink()">➕ Add Rink</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <button class="btn-refresh" onclick="location.reload()">🔄 Refresh</button>
-
-                <div style="margin-bottom: 15px; color: #6c757d; font-size: 0.95em;">
-                    💡 Devices automatically register when they first connect. Use the table below to assign them to rinks and sheets.
+                <div class="hint">
+                    Devices automatically register when they connect. Assign them to rinks and sheets below.
                 </div>
 
                 <table>
@@ -1034,13 +981,13 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
                 const result = await response.json();
 
                 if (response.ok) {{
-                    showMessage(`✓ Device ${{deviceId}} saved successfully`, 'success');
+                    showMessage(`Device ${{deviceId}} saved successfully`, 'success');
                     setTimeout(() => location.reload(), 1500);
                 }} else {{
-                    showMessage(`✗ Error: ${{result.detail || 'Failed to save'}}`, 'error');
+                    showMessage(`Error: ${{result.detail || 'Failed to save'}}`, 'error');
                 }}
             }} catch (error) {{
-                showMessage(`✗ Error: ${{error.message}}`, 'error');
+                showMessage(`Error: ${{error.message}}`, 'error');
             }}
         }}
 
@@ -1057,13 +1004,13 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
                 const result = await response.json();
 
                 if (response.ok) {{
-                    showMessage(`✓ Device ${{deviceId}} unassigned`, 'success');
+                    showMessage(`Device ${{deviceId}} unassigned`, 'success');
                     setTimeout(() => location.reload(), 1500);
                 }} else {{
-                    showMessage(`✗ Error: ${{result.detail || 'Failed to unassign'}}`, 'error');
+                    showMessage(`Error: ${{result.detail || 'Failed to unassign'}}`, 'error');
                 }}
             }} catch (error) {{
-                showMessage(`✗ Error: ${{error.message}}`, 'error');
+                showMessage(`Error: ${{error.message}}`, 'error');
             }}
         }}
 
@@ -1080,13 +1027,13 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
                 const result = await response.json();
 
                 if (response.ok) {{
-                    showMessage(`✓ Device ${{deviceId}} deleted`, 'success');
+                    showMessage(`Device ${{deviceId}} deleted`, 'success');
                     setTimeout(() => location.reload(), 1500);
                 }} else {{
-                    showMessage(`✗ Error: ${{result.detail || 'Failed to delete'}}`, 'error');
+                    showMessage(`Error: ${{result.detail || 'Failed to delete'}}`, 'error');
                 }}
             }} catch (error) {{
-                showMessage(`✗ Error: ${{error.message}}`, 'error');
+                showMessage(`Error: ${{error.message}}`, 'error');
             }}
         }}
 
@@ -1112,15 +1059,15 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
                 const result = await response.json();
 
                 if (response.ok) {{
-                    showMessage(`✓ Rink ${{rinkId}} added successfully`, 'success');
+                    showMessage(`Rink ${{rinkId}} added successfully`, 'success');
                     document.getElementById('addRinkId').value = '';
                     document.getElementById('addRinkName').value = '';
                     setTimeout(() => location.reload(), 1500);
                 }} else {{
-                    showMessage(`✗ Error: ${{result.detail || 'Failed to add rink'}}`, 'error');
+                    showMessage(`Error: ${{result.detail || 'Failed to add rink'}}`, 'error');
                 }}
             }} catch (error) {{
-                showMessage(`✗ Error: ${{error.message}}`, 'error');
+                showMessage(`Error: ${{error.message}}`, 'error');
             }}
         }}
         </script>
@@ -1544,78 +1491,140 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
                 background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                 min-height: 100vh;
                 padding: 20px;
-                color: #fff;
             }
-            .container { max-width: 1200px; margin: 0 auto; }
+            .nav {
+                background: rgba(255, 255, 255, 0.95);
+                padding: 15px 30px;
+                border-radius: 10px;
+                margin-bottom: 20px;
+                box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+            }
+            .nav a {
+                color: #667eea;
+                text-decoration: none;
+                margin-right: 20px;
+                font-weight: 500;
+            }
+            .nav a:hover {
+                text-decoration: underline;
+            }
+            .nav a.active {
+                color: #764ba2;
+                font-weight: 700;
+            }
+            .container {
+                max-width: 1200px;
+                margin: 0 auto;
+                background: white;
+                border-radius: 20px;
+                box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+                overflow: hidden;
+            }
             h1 {
-                text-align: center;
-                margin-bottom: 30px;
-                font-size: 2.5em;
-                text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+                padding: 30px;
+                margin: 0;
+                font-size: 1.8em;
+                color: #333;
+                background: white;
+                border-bottom: 1px solid #e9ecef;
             }
-            .games-grid {
-                display: grid;
-                grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-                gap: 20px;
+            .content {
+                padding: 30px;
+                background: white;
             }
-            .game-card {
-                background: rgba(255, 255, 255, 0.15);
-                backdrop-filter: blur(10px);
-                border-radius: 15px;
-                padding: 20px;
-                border: 2px solid rgba(255, 255, 255, 0.2);
-                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-                transition: transform 0.2s ease;
+            table {
+                width: 100%;
+                border-collapse: collapse;
             }
-            .game-card:hover {
-                transform: translateY(-5px);
+            th {
+                background: #f8f9fa;
+                padding: 12px 15px;
+                text-align: left;
+                font-weight: 600;
+                color: #495057;
+                border-bottom: 2px solid #dee2e6;
+                font-size: 0.9em;
+            }
+            td {
+                padding: 12px 15px;
+                border-bottom: 1px solid #e9ecef;
+                color: #495057;
+            }
+            tr:hover {
+                background: #f8f9fa;
             }
             .game-id {
+                font-family: 'Courier New', monospace;
+                color: #667eea;
                 font-size: 0.85em;
-                opacity: 0.7;
-                margin-bottom: 10px;
-            }
-            .teams {
-                font-size: 1.3em;
-                font-weight: 600;
-                margin-bottom: 15px;
             }
             .clock {
-                font-size: 3em;
-                font-weight: 700;
-                text-align: center;
-                margin: 20px 0;
-                font-variant-numeric: tabular-nums;
+                font-family: 'Courier New', monospace;
+                font-weight: 600;
+                font-size: 1.1em;
             }
             .status {
-                text-align: center;
-                font-size: 1.1em;
-                margin-bottom: 15px;
+                font-size: 0.85em;
             }
-            .status.running { color: #4ade80; }
-            .status.paused { color: #fbbf24; }
-            .info {
-                display: flex;
-                justify-content: space-between;
-                font-size: 0.9em;
-                opacity: 0.8;
-                margin-top: 10px;
-                padding-top: 10px;
-                border-top: 1px solid rgba(255, 255, 255, 0.2);
-            }
+            .status.running { color: #28a745; }
+            .status.paused { color: #6c757d; }
             .no-games {
-                grid-column: 1/-1;
                 text-align: center;
-                padding: 40px;
-                font-size: 1.5em;
+                padding: 60px 20px;
+                color: #6c757d;
+            }
+            .filter-row input {
+                width: 100%;
+                padding: 6px 8px;
+                border: 1px solid #ced4da;
+                border-radius: 4px;
+                font-size: 0.85em;
+            }
+            .filter-row input:focus {
+                outline: none;
+                border-color: #667eea;
+                box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.1);
+            }
+            .filter-row td {
+                padding: 8px 15px;
+                background: #f8f9fa;
             }
         </style>
     </head>
     <body>
+        <div class="nav">
+            <a href="/admin/devices">Devices</a>
+            <a href="/admin/games/state" class="active">Game States</a>
+            <a href="/admin/heartbeats/latest">Heartbeats</a>
+        </div>
         <div class="container">
-            <h1>🎮 Game States</h1>
-            <div class="games-grid" id="gamesGrid">
-                <div class="no-games">Loading...</div>
+            <h1>Game States</h1>
+            <div class="content">
+                <table id="gamesTable">
+                    <thead>
+                        <tr>
+                            <th>Game ID</th>
+                            <th>Teams</th>
+                            <th>Clock</th>
+                            <th>Status</th>
+                            <th>Period Length</th>
+                            <th>Events</th>
+                        </tr>
+                        <tr class="filter-row">
+                            <td><input type="text" id="filterGameId" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterTeams" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterClock" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterStatus" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterPeriod" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterEvents" placeholder="Filter..." onkeyup="filterTable()"></td>
+                        </tr>
+                    </thead>
+                    <tbody id="gamesBody">
+                        <tr>
+                            <td colspan="6" class="no-games">Loading...</td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         </div>
 
@@ -1626,72 +1635,80 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
             return `${mins}:${secs.toString().padStart(2, '0')}`;
         }
 
+        function filterTable() {
+            const filters = {
+                gameId: document.getElementById('filterGameId').value.toLowerCase(),
+                teams: document.getElementById('filterTeams').value.toLowerCase(),
+                clock: document.getElementById('filterClock').value.toLowerCase(),
+                status: document.getElementById('filterStatus').value.toLowerCase(),
+                period: document.getElementById('filterPeriod').value.toLowerCase(),
+                events: document.getElementById('filterEvents').value.toLowerCase()
+            };
+
+            const tbody = document.getElementById('gamesBody');
+            const rows = tbody.getElementsByTagName('tr');
+
+            for (let i = 0; i < rows.length; i++) {
+                const cells = rows[i].getElementsByTagName('td');
+                if (cells.length < 6) continue; // Skip "no games" row
+
+                const gameId = cells[0].textContent.toLowerCase();
+                const teams = cells[1].textContent.toLowerCase();
+                const clock = cells[2].textContent.toLowerCase();
+                const status = cells[3].textContent.toLowerCase();
+                const period = cells[4].textContent.toLowerCase();
+                const events = cells[5].textContent.toLowerCase();
+
+                const match =
+                    gameId.includes(filters.gameId) &&
+                    teams.includes(filters.teams) &&
+                    clock.includes(filters.clock) &&
+                    status.includes(filters.status) &&
+                    period.includes(filters.period) &&
+                    events.includes(filters.events);
+
+                rows[i].style.display = match ? '' : 'none';
+            }
+        }
+
         function updateGameStates() {
             fetch('/admin/games/state?format=json')
                 .then(response => response.json())
                 .then(data => {
-                    const grid = document.getElementById('gamesGrid');
+                    const tbody = document.getElementById('gamesBody');
 
                     if (data.games.length === 0) {
-                        grid.innerHTML = '<div class="no-games">No games found</div>';
+                        tbody.innerHTML = '<tr><td colspan="6" class="no-games">No games found</td></tr>';
                         return;
                     }
 
                     let html = '';
                     data.games.forEach(game => {
                         const status = game.clock_running ? 'running' : 'paused';
-                        const statusIcon = game.clock_running ? '▶' : '⏸';
+                        const statusText = game.clock_running ? 'Running' : 'Paused';
                         const clock = formatClock(game.clock_seconds);
 
                         html += `
-                            <div class="game-card">
-                                <div class="game-id">${game.game_id}</div>
-                                <div class="teams">${game.home_team} vs ${game.away_team}</div>
-                                <div class="clock">${clock}</div>
-                                <div class="status ${status}">${statusIcon} ${status.toUpperCase()}</div>
-                                <div class="info">
-                                    <span>Period: ${game.period_length_min} min</span>
-                                    <span>Events: ${game.event_count}</span>
-                                </div>
-                            </div>
+                            <tr>
+                                <td class="game-id">${game.game_id}</td>
+                                <td>${game.home_team} vs ${game.away_team}</td>
+                                <td class="clock">${clock}</td>
+                                <td><span class="status ${status}">${statusText}</span></td>
+                                <td>${game.period_length_min} min</td>
+                                <td>${game.event_count}</td>
+                            </tr>
                         `;
                     });
 
-                    grid.innerHTML = html;
+                    tbody.innerHTML = html;
                 })
                 .catch(error => {
                     console.error('Error fetching game states:', error);
                 });
         }
 
-        // Connect to WebSocket for real-time updates
-        const ws = new WebSocket(`ws://${location.host}/ws/game-states`);
-
-        ws.onopen = () => {
-            console.log('WebSocket connected - will update on database changes');
-            // Load initial state
-            updateGameStates();
-        };
-
-        ws.onmessage = (event) => {
-            // Server sends "update" when database changes
-            if (event.data === 'update') {
-                console.log('Database changed - updating game states');
-                updateGameStates();
-            }
-        };
-
-        ws.onerror = (error) => {
-            console.error('WebSocket error:', error);
-        };
-
-        ws.onclose = () => {
-            console.log('WebSocket disconnected - attempting to reconnect...');
-            // Attempt to reconnect after 2 seconds
-            setTimeout(() => {
-                location.reload();
-            }, 2000);
-        };
+        // Load game states on page load
+        updateGameStates();
         </script>
     </body>
     </html>
@@ -1733,19 +1750,19 @@ def seed_sample_data():
     # Add sample rink
     db.execute("""
         INSERT OR IGNORE INTO rinks (rink_id, name, created_at)
-        VALUES ('rink-alpha', 'Alpha Ice Arena', ?)
+        VALUES ('rink-tsc', 'TSC Curling Club', ?)
     """, (current_time,))
 
     # Add sample games
     games = [
-        ("game-001", "rink-alpha", "Team A", "Team B", f"{today}T14:00:00Z", 15),
-        ("game-002", "rink-alpha", "Team C", "Team D", f"{today}T15:00:00Z", 15),
-        ("game-003", "rink-alpha", "Team E", "Team F", f"{today}T16:00:00Z", 20),
+        ("game-001", "rink-tsc", "Team A", "Team B", f"{today}T14:00:00Z", 15),
+        ("game-002", "rink-tsc", "Team C", "Team D", f"{today}T15:00:00Z", 15),
+        ("game-003", "rink-tsc", "Team E", "Team F", f"{today}T16:00:00Z", 20),
     ]
 
     for game in games:
         db.execute("""
-            INSERT OR IGNORE INTO games (
+            INSERT OR REPLACE INTO games (
                 game_id, rink_id, home_team, away_team, start_time,
                 period_length_min, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -1755,7 +1772,7 @@ def seed_sample_data():
     version = datetime.now(timezone.utc).isoformat()
     db.execute("""
         INSERT OR REPLACE INTO schedule_versions (rink_id, version, updated_at)
-        VALUES ('rink-alpha', ?, ?)
+        VALUES ('rink-tsc', ?, ?)
     """, (version, current_time))
 
     db.commit()
