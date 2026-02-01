@@ -5,6 +5,7 @@ import logging.handlers
 import multiprocessing
 import time
 import sqlite3
+import warnings
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket
@@ -691,6 +692,9 @@ async def websocket_endpoint(ws: WebSocket):
 def main():
     global pusher_process
 
+    # Suppress harmless multiprocessing semaphore warnings on shutdown
+    warnings.filterwarnings("ignore", ".*resource_tracker.*", UserWarning)
+
     # Configure logging first - this will handle all log records
     init_logging()
 
@@ -724,10 +728,32 @@ def main():
         # Bind to 0.0.0.0 so it's accessible from outside the container
         uvicorn.run(app, host="0.0.0.0", port=8000, log_config=None)
     finally:
-        logger.info("Server stopped, terminating event pusher")
-        pusher_process.terminate()
+        logger.info("Server stopped, waiting for event pusher to finish")
+
+        # The event pusher should have received SIGTERM from the shell's trap
+        # Just wait for it to exit gracefully
         pusher_process.join(timeout=5)
+
+        # Force kill only if it's still alive after timeout
+        if pusher_process.is_alive():
+            logger.warning("Event pusher did not exit, forcing termination...")
+            pusher_process.terminate()
+            pusher_process.join(timeout=2)
+
+            if pusher_process.is_alive():
+                pusher_process.kill()
+                pusher_process.join()
+
+        # Give the queue listener a moment to process any remaining log messages
+        time.sleep(0.2)
+
+        # Stop the queue listener (this drains remaining items)
         queue_listener.stop()
+
+        # Cancel the join thread to avoid blocking, then close the queue
+        log_queue.cancel_join_thread()
+        log_queue.close()
+
         logger.info("Shutdown complete")
 
 

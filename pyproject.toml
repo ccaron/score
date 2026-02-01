@@ -12,16 +12,19 @@ dependencies = [
     "uvicorn>=0.40.0",
     "websockets>=16.0",
     "rich>=13.0.0",
+    "pydantic>=2.0.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",
+    "requests>=2.32.0",
 ]
 
 [project.scripts]
-score = "score.cli:main"
+score-app = "score.cli:main"
 score-push-events = "score.cli:push_events"
+score-cloud = "score.cloud_api:main"
 
 [build-system]
 requires = ["uv_build>=0.9.6,<0.10.0"]

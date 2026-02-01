@@ -1,8 +1,13 @@
-.PHONY: run_score test
+.PHONY: run run-cloud run-both test kill kill-app kill-cloud
 
 run:
-	uv pip install -e .
-	uv run score
+	@uv pip install -e .
+	@echo "Starting score-app and score-cloud..."
+	@bash -c '\
+		trap "echo \"Caught signal, cleaning up...\"; pkill -P $$$$; exit" INT TERM; \
+		uv run score-app & \
+		uv run score-cloud & \
+		wait'
 
 run_container:
 	docker build -t game-engine .
@@ -11,8 +16,3 @@ run_container:
 test:
 	uv pip install -e .
 	uv run pytest tests/
-
-
-
-
-

@@ -29,5 +29,5 @@ RUN uv pip install --system -e .
 EXPOSE 8000
 
 # Auto-start the app
-CMD ["uv", "run", "score", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uv", "run", "score-app", "--host", "0.0.0.0", "--port", "8000"]
 
