@@ -51,6 +51,21 @@ def init_db():
         )
     """)
 
+    # Devices (mini PCs / score-app installations)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS devices (
+            device_id TEXT PRIMARY KEY,
+            rink_id TEXT,
+            sheet_name TEXT,
+            device_name TEXT,
+            is_assigned INTEGER DEFAULT 0,
+            first_seen_at INTEGER NOT NULL,
+            last_seen_at INTEGER NOT NULL,
+            notes TEXT,
+            FOREIGN KEY (rink_id) REFERENCES rinks(rink_id)
+        )
+    """)
+
     # Game schedules
     db.execute("""
         CREATE TABLE IF NOT EXISTS games (
@@ -178,6 +193,57 @@ class HeartbeatResponse(BaseModel):
     server_time: str
 
 
+class DeviceConfigResponse(BaseModel):
+    device_id: str
+    is_assigned: bool
+    rink_id: Optional[str] = None
+    sheet_name: Optional[str] = None
+    device_name: Optional[str] = None
+    message: Optional[str] = None
+
+
+class DeviceInfo(BaseModel):
+    device_id: str
+    rink_id: Optional[str] = None
+    sheet_name: Optional[str] = None
+    device_name: Optional[str] = None
+    is_assigned: bool
+    first_seen_at: int
+    last_seen_at: int
+    notes: Optional[str] = None
+
+
+class CreateDeviceRequest(BaseModel):
+    device_id: str
+    rink_id: Optional[str] = None
+    sheet_name: Optional[str] = None
+    device_name: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class CreateRinkRequest(BaseModel):
+    rink_id: str
+    name: str
+
+
+class AssignDeviceRequest(BaseModel):
+    rink_id: str
+    sheet_name: str
+    device_name: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class UpdateDeviceRequest(BaseModel):
+    rink_id: Optional[str] = None
+    sheet_name: Optional[str] = None
+    device_name: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class DeviceListResponse(BaseModel):
+    devices: list[DeviceInfo]
+
+
 # ---------- WebSocket state tracking ----------
 websocket_clients = []
 
@@ -269,6 +335,71 @@ async def get_schedule(
         schedule_version=schedule_version,
         games=games_list
     )
+
+
+@app.get("/v1/devices/{device_id}/config", response_model=DeviceConfigResponse)
+async def get_device_config(device_id: str = Path(..., description="Device ID")):
+    """
+    Get configuration for a device.
+
+    Returns device assignment (rink_id, sheet_name) if assigned,
+    or registers the device as unassigned if first time seeing it.
+    """
+    logger.info(f"Config request from device_id={device_id}")
+
+    db = get_db()
+    current_time = int(time.time())
+
+    # Check if device exists
+    device = db.execute(
+        "SELECT * FROM devices WHERE device_id = ?",
+        (device_id,)
+    ).fetchone()
+
+    if device:
+        # Update last_seen_at
+        db.execute(
+            "UPDATE devices SET last_seen_at = ? WHERE device_id = ?",
+            (current_time, device_id)
+        )
+        db.commit()
+
+        is_assigned = bool(device["is_assigned"])
+
+        if is_assigned:
+            logger.info(f"Device {device_id} is assigned to rink={device['rink_id']}, sheet={device['sheet_name']}")
+            db.close()
+            return DeviceConfigResponse(
+                device_id=device_id,
+                is_assigned=True,
+                rink_id=device["rink_id"],
+                sheet_name=device["sheet_name"],
+                device_name=device["device_name"],
+                message=f"Assigned to {device['rink_id']} - {device['sheet_name']}"
+            )
+        else:
+            logger.info(f"Device {device_id} exists but is not assigned")
+            db.close()
+            return DeviceConfigResponse(
+                device_id=device_id,
+                is_assigned=False,
+                message="Device registered but not assigned. Please contact admin to assign this device."
+            )
+    else:
+        # First time seeing this device - register it as unassigned
+        logger.info(f"New device {device_id} - registering as unassigned")
+        db.execute("""
+            INSERT INTO devices (device_id, is_assigned, first_seen_at, last_seen_at)
+            VALUES (?, 0, ?, ?)
+        """, (device_id, current_time, current_time))
+        db.commit()
+        db.close()
+
+        return DeviceConfigResponse(
+            device_id=device_id,
+            is_assigned=False,
+            message="Device registered. Please contact admin to assign this device to a rink and sheet."
+        )
 
 
 @app.post("/v1/games/{game_id}/events", response_model=PostEventsResponse)
@@ -413,6 +544,874 @@ async def post_heartbeat(request: HeartbeatRequest):
 
 
 # ---------- Admin/Debug Endpoints ----------
+
+@app.post("/admin/rinks")
+async def create_rink(request: CreateRinkRequest):
+    """
+    Create a new rink.
+
+    Args:
+        rink_id: Unique identifier for the rink (e.g., "rink-alpha")
+        name: Human-readable name (e.g., "Alpha Ice Arena")
+    """
+    logger.info(f"Creating rink {request.rink_id}")
+
+    db = get_db()
+    current_time = int(time.time())
+
+    # Check if rink already exists
+    existing = db.execute(
+        "SELECT rink_id FROM rinks WHERE rink_id = ?",
+        (request.rink_id,)
+    ).fetchone()
+
+    if existing:
+        db.close()
+        raise HTTPException(
+            status_code=409,
+            detail=f"Rink {request.rink_id} already exists"
+        )
+
+    # Insert rink
+    db.execute("""
+        INSERT INTO rinks (rink_id, name, created_at)
+        VALUES (?, ?, ?)
+    """, (request.rink_id, request.name, current_time))
+
+    db.commit()
+    db.close()
+
+    logger.info(f"Successfully created rink {request.rink_id}")
+
+    return {
+        "status": "ok",
+        "message": f"Rink {request.rink_id} created",
+        "rink": {
+            "rink_id": request.rink_id,
+            "name": request.name
+        }
+    }
+
+
+@app.get("/admin/devices")
+async def list_devices(format: Optional[str] = Query(None, description="Response format: 'json' or 'html'")):
+    """
+    List all registered devices and their assignments.
+
+    Returns HTML admin UI by default, or JSON if format=json is specified.
+    """
+    db = get_db()
+
+    devices = db.execute("""
+        SELECT device_id, rink_id, sheet_name, device_name, is_assigned,
+               first_seen_at, last_seen_at, notes
+        FROM devices
+        ORDER BY last_seen_at DESC
+    """).fetchall()
+
+    # Get available rinks for dropdown
+    rinks = db.execute("SELECT rink_id, name FROM rinks ORDER BY name").fetchall()
+
+    db.close()
+
+    device_list = [
+        {
+            "device_id": d["device_id"],
+            "rink_id": d["rink_id"],
+            "sheet_name": d["sheet_name"],
+            "device_name": d["device_name"],
+            "is_assigned": bool(d["is_assigned"]),
+            "first_seen_at": d["first_seen_at"],
+            "last_seen_at": d["last_seen_at"],
+            "notes": d["notes"]
+        }
+        for d in devices
+    ]
+
+    # Return JSON if requested
+    if format == "json":
+        return DeviceListResponse(devices=[DeviceInfo(**d) for d in device_list])
+
+    # Return HTML admin UI
+    from fastapi.responses import HTMLResponse
+    import datetime
+
+    def format_timestamp(ts):
+        if ts:
+            return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+        return "Never"
+
+    rink_options = "".join([f'<option value="{r["rink_id"]}">{r["name"]} ({r["rink_id"]})</option>' for r in rinks])
+
+    rinks_list = [{"rink_id": r["rink_id"], "name": r["name"]} for r in rinks]
+
+    devices_html = ""
+    for d in device_list:
+        status_badge = '<span class="badge assigned">✓ Assigned</span>' if d["is_assigned"] else '<span class="badge unassigned">⚠ Not Assigned</span>'
+
+        devices_html += f"""
+        <tr data-device-id="{d['device_id']}">
+            <td class="device-id">{d['device_id']}</td>
+            <td>
+                <select class="rink-select" data-device-id="{d['device_id']}">
+                    <option value="">-- Select Rink --</option>
+                    {rink_options}
+                </select>
+                <script>
+                document.querySelector('select.rink-select[data-device-id="{d["device_id"]}"]').value = "{d["rink_id"] or ""}";
+                </script>
+            </td>
+            <td><input type="text" class="sheet-input" data-device-id="{d['device_id']}" value="{d['sheet_name'] or ''}" placeholder="Sheet 1"></td>
+            <td><input type="text" class="name-input" data-device-id="{d['device_id']}" value="{d['device_name'] or ''}" placeholder="Display name"></td>
+            <td>{status_badge}</td>
+            <td class="timestamp">{format_timestamp(d['last_seen_at'])}</td>
+            <td><textarea class="notes-input" data-device-id="{d['device_id']}" placeholder="Notes...">{d['notes'] or ''}</textarea></td>
+            <td class="actions">
+                <button class="btn-save" onclick="saveDevice('{d['device_id']}')">💾 Save</button>
+                <button class="btn-unassign" onclick="unassignDevice('{d['device_id']}')">✗ Unassign</button>
+                <button class="btn-delete" onclick="deleteDevice('{d['device_id']}')">🗑️ Delete</button>
+            </td>
+        </tr>
+        """
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Device Management</title>
+        <style>
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                padding: 20px;
+            }}
+            .container {{
+                max-width: 1400px;
+                margin: 0 auto;
+                background: white;
+                border-radius: 20px;
+                box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+                overflow: hidden;
+            }}
+            .header {{
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                padding: 30px;
+                text-align: center;
+            }}
+            .header h1 {{ font-size: 2.5em; margin-bottom: 10px; }}
+            .header p {{ opacity: 0.9; font-size: 1.1em; }}
+            .content {{ padding: 30px; }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 20px;
+            }}
+            th {{
+                background: #f8f9fa;
+                padding: 15px;
+                text-align: left;
+                font-weight: 600;
+                color: #495057;
+                border-bottom: 2px solid #dee2e6;
+            }}
+            td {{
+                padding: 12px 15px;
+                border-bottom: 1px solid #e9ecef;
+            }}
+            tr:hover {{ background: #f8f9fa; }}
+            .device-id {{
+                font-family: 'Courier New', monospace;
+                font-weight: 600;
+                color: #667eea;
+            }}
+            input, select, textarea {{
+                width: 100%;
+                padding: 8px;
+                border: 1px solid #ced4da;
+                border-radius: 4px;
+                font-size: 14px;
+            }}
+            textarea {{
+                resize: vertical;
+                min-height: 40px;
+                font-family: inherit;
+            }}
+            input:focus, select:focus, textarea:focus {{
+                outline: none;
+                border-color: #667eea;
+                box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            }}
+            .badge {{
+                display: inline-block;
+                padding: 4px 12px;
+                border-radius: 20px;
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            .badge.assigned {{
+                background: #d4edda;
+                color: #155724;
+            }}
+            .badge.unassigned {{
+                background: #fff3cd;
+                color: #856404;
+            }}
+            .timestamp {{
+                font-size: 13px;
+                color: #6c757d;
+            }}
+            .actions {{
+                display: flex;
+                gap: 8px;
+            }}
+            button {{
+                padding: 8px 16px;
+                border: none;
+                border-radius: 6px;
+                cursor: pointer;
+                font-weight: 600;
+                font-size: 13px;
+                transition: all 0.2s;
+            }}
+            .btn-save {{
+                background: #28a745;
+                color: white;
+            }}
+            .btn-save:hover {{
+                background: #218838;
+                transform: translateY(-2px);
+            }}
+            .btn-unassign {{
+                background: #dc3545;
+                color: white;
+            }}
+            .btn-unassign:hover {{
+                background: #c82333;
+                transform: translateY(-2px);
+            }}
+            .btn-delete {{
+                background: #6c757d;
+                color: white;
+            }}
+            .btn-delete:hover {{
+                background: #5a6268;
+                transform: translateY(-2px);
+            }}
+            .btn-refresh {{
+                background: #667eea;
+                color: white;
+                padding: 12px 24px;
+                font-size: 16px;
+                margin-bottom: 20px;
+            }}
+            .btn-refresh:hover {{
+                background: #5568d3;
+            }}
+            .message {{
+                padding: 15px;
+                border-radius: 8px;
+                margin-bottom: 20px;
+                display: none;
+            }}
+            .message.success {{
+                background: #d4edda;
+                color: #155724;
+                border: 1px solid #c3e6cb;
+            }}
+            .message.error {{
+                background: #f8d7da;
+                color: #721c24;
+                border: 1px solid #f5c6cb;
+            }}
+            .stats {{
+                display: flex;
+                gap: 20px;
+                margin-bottom: 30px;
+            }}
+            .stat-card {{
+                flex: 1;
+                background: #f8f9fa;
+                padding: 20px;
+                border-radius: 10px;
+                text-align: center;
+            }}
+            .stat-value {{
+                font-size: 2.5em;
+                font-weight: 700;
+                color: #667eea;
+            }}
+            .stat-label {{
+                color: #6c757d;
+                margin-top: 5px;
+            }}
+            .add-device-form {{
+                background: #f8f9fa;
+                padding: 20px;
+                border-radius: 10px;
+                margin-bottom: 30px;
+                border: 2px solid #dee2e6;
+            }}
+            .add-device-form h3 {{
+                color: #495057;
+                margin-bottom: 15px;
+                font-size: 1.2em;
+            }}
+            .form-row {{
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                gap: 15px;
+                margin-bottom: 15px;
+            }}
+            .form-group {{
+                display: flex;
+                flex-direction: column;
+                gap: 5px;
+            }}
+            .form-group label {{
+                color: #495057;
+                font-weight: 600;
+                font-size: 0.9em;
+            }}
+            .form-group input,
+            .form-group select,
+            .form-group textarea {{
+                padding: 8px;
+                border: 1px solid #ced4da;
+                border-radius: 4px;
+                font-size: 14px;
+            }}
+            .form-actions {{
+                display: flex;
+                gap: 10px;
+            }}
+            .btn-add {{
+                background: #667eea;
+                color: white;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 6px;
+                cursor: pointer;
+                font-weight: 600;
+                font-size: 14px;
+                transition: all 0.2s;
+            }}
+            .btn-add:hover {{
+                background: #5568d3;
+                transform: translateY(-2px);
+            }}
+            .btn-clear {{
+                background: #6c757d;
+                color: white;
+                padding: 10px 20px;
+                border: none;
+                border-radius: 6px;
+                cursor: pointer;
+                font-weight: 600;
+                font-size: 14px;
+                transition: all 0.2s;
+            }}
+            .btn-clear:hover {{
+                background: #5a6268;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>🎮 Device Management</h1>
+                <p>Manage device assignments for all score-app installations</p>
+            </div>
+
+            <div class="content">
+                <div id="message" class="message"></div>
+
+                <div class="stats">
+                    <div class="stat-card">
+                        <div class="stat-value">{len(device_list)}</div>
+                        <div class="stat-label">Total Devices</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">{sum(1 for d in device_list if d['is_assigned'])}</div>
+                        <div class="stat-label">Assigned</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">{sum(1 for d in device_list if not d['is_assigned'])}</div>
+                        <div class="stat-label">Unassigned</div>
+                    </div>
+                </div>
+
+                <div class="add-device-form">
+                    <h3>🏒 Rink Management</h3>
+                    <div style="display: flex; gap: 20px; align-items: flex-start;">
+                        <div style="flex: 1;">
+                            <h4 style="color: #495057; margin-bottom: 10px; font-size: 1em;">Existing Rinks</h4>
+                            <div style="max-height: 150px; overflow-y: auto; border: 1px solid #dee2e6; border-radius: 6px; padding: 10px; background: white;">
+                                {''.join([f'<div style="padding: 5px 0; border-bottom: 1px solid #e9ecef;"><strong>{r["rink_id"]}</strong>: {r["name"]}</div>' for r in rinks_list]) if rinks_list else '<div style="color: #6c757d; font-style: italic;">No rinks yet</div>'}
+                            </div>
+                        </div>
+                        <div style="flex: 1;">
+                            <h4 style="color: #495057; margin-bottom: 10px; font-size: 1em;">Add New Rink</h4>
+                            <div class="form-group" style="margin-bottom: 10px;">
+                                <label>Rink ID *</label>
+                                <input type="text" id="addRinkId" placeholder="rink-alpha" required>
+                            </div>
+                            <div class="form-group" style="margin-bottom: 10px;">
+                                <label>Rink Name *</label>
+                                <input type="text" id="addRinkName" placeholder="Alpha Ice Arena" required>
+                            </div>
+                            <div class="form-actions">
+                                <button class="btn-add" onclick="addRink()">➕ Add Rink</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <button class="btn-refresh" onclick="location.reload()">🔄 Refresh</button>
+
+                <div style="margin-bottom: 15px; color: #6c757d; font-size: 0.95em;">
+                    💡 Devices automatically register when they first connect. Use the table below to assign them to rinks and sheets.
+                </div>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Device ID</th>
+                            <th>Rink</th>
+                            <th>Sheet Name</th>
+                            <th>Device Name</th>
+                            <th>Status</th>
+                            <th>Last Seen</th>
+                            <th>Notes</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {devices_html}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <script>
+        function showMessage(text, type) {{
+            const msg = document.getElementById('message');
+            msg.textContent = text;
+            msg.className = `message ${{type}}`;
+            msg.style.display = 'block';
+            setTimeout(() => {{
+                msg.style.display = 'none';
+            }}, 5000);
+        }}
+
+        async function saveDevice(deviceId) {{
+            const row = document.querySelector(`tr[data-device-id="${{deviceId}}"]`);
+            const rinkId = row.querySelector('.rink-select').value;
+            const sheetName = row.querySelector('.sheet-input').value;
+            const deviceName = row.querySelector('.name-input').value;
+            const notes = row.querySelector('.notes-input').value;
+
+            if (!rinkId || !sheetName) {{
+                showMessage('Please select a rink and enter a sheet name', 'error');
+                return;
+            }}
+
+            try {{
+                const response = await fetch(`/admin/devices/${{deviceId}}`, {{
+                    method: 'PUT',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        rink_id: rinkId,
+                        sheet_name: sheetName,
+                        device_name: deviceName || null,
+                        notes: notes || null
+                    }})
+                }});
+
+                const result = await response.json();
+
+                if (response.ok) {{
+                    showMessage(`✓ Device ${{deviceId}} saved successfully`, 'success');
+                    setTimeout(() => location.reload(), 1500);
+                }} else {{
+                    showMessage(`✗ Error: ${{result.detail || 'Failed to save'}}`, 'error');
+                }}
+            }} catch (error) {{
+                showMessage(`✗ Error: ${{error.message}}`, 'error');
+            }}
+        }}
+
+        async function unassignDevice(deviceId) {{
+            if (!confirm(`Unassign device ${{deviceId}}?`)) {{
+                return;
+            }}
+
+            try {{
+                const response = await fetch(`/admin/devices/${{deviceId}}/assignment`, {{
+                    method: 'DELETE'
+                }});
+
+                const result = await response.json();
+
+                if (response.ok) {{
+                    showMessage(`✓ Device ${{deviceId}} unassigned`, 'success');
+                    setTimeout(() => location.reload(), 1500);
+                }} else {{
+                    showMessage(`✗ Error: ${{result.detail || 'Failed to unassign'}}`, 'error');
+                }}
+            }} catch (error) {{
+                showMessage(`✗ Error: ${{error.message}}`, 'error');
+            }}
+        }}
+
+        async function deleteDevice(deviceId) {{
+            if (!confirm(`Delete device ${{deviceId}}? This will permanently remove it from the database.`)) {{
+                return;
+            }}
+
+            try {{
+                const response = await fetch(`/admin/devices/${{deviceId}}`, {{
+                    method: 'DELETE'
+                }});
+
+                const result = await response.json();
+
+                if (response.ok) {{
+                    showMessage(`✓ Device ${{deviceId}} deleted`, 'success');
+                    setTimeout(() => location.reload(), 1500);
+                }} else {{
+                    showMessage(`✗ Error: ${{result.detail || 'Failed to delete'}}`, 'error');
+                }}
+            }} catch (error) {{
+                showMessage(`✗ Error: ${{error.message}}`, 'error');
+            }}
+        }}
+
+        async function addRink() {{
+            const rinkId = document.getElementById('addRinkId').value.trim();
+            const rinkName = document.getElementById('addRinkName').value.trim();
+
+            if (!rinkId || !rinkName) {{
+                showMessage('Rink ID and Name are required', 'error');
+                return;
+            }}
+
+            try {{
+                const response = await fetch('/admin/rinks', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        rink_id: rinkId,
+                        name: rinkName
+                    }})
+                }});
+
+                const result = await response.json();
+
+                if (response.ok) {{
+                    showMessage(`✓ Rink ${{rinkId}} added successfully`, 'success');
+                    document.getElementById('addRinkId').value = '';
+                    document.getElementById('addRinkName').value = '';
+                    setTimeout(() => location.reload(), 1500);
+                }} else {{
+                    showMessage(`✗ Error: ${{result.detail || 'Failed to add rink'}}`, 'error');
+                }}
+            }} catch (error) {{
+                showMessage(`✗ Error: ${{error.message}}`, 'error');
+            }}
+        }}
+        </script>
+    </body>
+    </html>
+    """
+
+    return HTMLResponse(content=html)
+
+
+@app.post("/admin/devices")
+async def create_device(request: CreateDeviceRequest):
+    """
+    Manually register a new device.
+
+    This allows pre-registering devices before they connect.
+    If rink_id and sheet_name are provided, the device will be marked as assigned.
+    """
+    logger.info(f"Creating device {request.device_id}")
+
+    db = get_db()
+    current_time = int(time.time())
+
+    # Check if device already exists
+    existing = db.execute(
+        "SELECT device_id FROM devices WHERE device_id = ?",
+        (request.device_id,)
+    ).fetchone()
+
+    if existing:
+        db.close()
+        raise HTTPException(
+            status_code=409,
+            detail=f"Device {request.device_id} already exists. Use PUT to update it."
+        )
+
+    # Validate rink_id if provided
+    if request.rink_id:
+        rink = db.execute("SELECT rink_id FROM rinks WHERE rink_id = ?", (request.rink_id,)).fetchone()
+        if not rink:
+            db.close()
+            raise HTTPException(status_code=404, detail=f"Rink {request.rink_id} not found")
+
+    # Determine if device should be marked as assigned
+    is_assigned = 1 if (request.rink_id and request.sheet_name) else 0
+
+    # Insert device
+    db.execute("""
+        INSERT INTO devices (
+            device_id, rink_id, sheet_name, device_name, is_assigned,
+            first_seen_at, last_seen_at, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        request.device_id,
+        request.rink_id,
+        request.sheet_name,
+        request.device_name,
+        is_assigned,
+        current_time,
+        current_time,
+        request.notes
+    ))
+
+    db.commit()
+
+    # Fetch created device
+    created = db.execute("""
+        SELECT device_id, rink_id, sheet_name, device_name, is_assigned,
+               first_seen_at, last_seen_at, notes
+        FROM devices
+        WHERE device_id = ?
+    """, (request.device_id,)).fetchone()
+
+    db.close()
+
+    logger.info(f"Successfully created device {request.device_id}")
+
+    return {
+        "status": "ok",
+        "message": f"Device {request.device_id} created",
+        "device": DeviceInfo(
+            device_id=created["device_id"],
+            rink_id=created["rink_id"],
+            sheet_name=created["sheet_name"],
+            device_name=created["device_name"],
+            is_assigned=bool(created["is_assigned"]),
+            first_seen_at=created["first_seen_at"],
+            last_seen_at=created["last_seen_at"],
+            notes=created["notes"]
+        )
+    }
+
+
+@app.get("/admin/devices/{device_id}", response_model=DeviceInfo)
+async def get_device(device_id: str):
+    """Get details for a specific device."""
+    db = get_db()
+
+    device = db.execute("""
+        SELECT device_id, rink_id, sheet_name, device_name, is_assigned,
+               first_seen_at, last_seen_at, notes
+        FROM devices
+        WHERE device_id = ?
+    """, (device_id,)).fetchone()
+
+    db.close()
+
+    if not device:
+        raise HTTPException(status_code=404, detail=f"Device {device_id} not found")
+
+    return DeviceInfo(
+        device_id=device["device_id"],
+        rink_id=device["rink_id"],
+        sheet_name=device["sheet_name"],
+        device_name=device["device_name"],
+        is_assigned=bool(device["is_assigned"]),
+        first_seen_at=device["first_seen_at"],
+        last_seen_at=device["last_seen_at"],
+        notes=device["notes"]
+    )
+
+
+@app.put("/admin/devices/{device_id}")
+async def update_device(device_id: str, request: UpdateDeviceRequest):
+    """
+    Update a device's assignment and details.
+
+    To assign an unassigned device, provide rink_id and sheet_name.
+    To update an existing assignment, provide any fields you want to change.
+    To unassign, use DELETE /admin/devices/{device_id}/assignment instead.
+    """
+    logger.info(f"Updating device {device_id}")
+
+    db = get_db()
+
+    # Check if device exists
+    device = db.execute(
+        "SELECT device_id FROM devices WHERE device_id = ?",
+        (device_id,)
+    ).fetchone()
+
+    if not device:
+        db.close()
+        raise HTTPException(status_code=404, detail=f"Device {device_id} not found. Device must connect at least once before assignment.")
+
+    # Build update query dynamically based on provided fields
+    updates = []
+    params = []
+
+    if request.rink_id is not None:
+        # Validate rink exists
+        rink = db.execute("SELECT rink_id FROM rinks WHERE rink_id = ?", (request.rink_id,)).fetchone()
+        if not rink:
+            db.close()
+            raise HTTPException(status_code=404, detail=f"Rink {request.rink_id} not found")
+        updates.append("rink_id = ?")
+        params.append(request.rink_id)
+
+    if request.sheet_name is not None:
+        updates.append("sheet_name = ?")
+        params.append(request.sheet_name)
+
+    if request.device_name is not None:
+        updates.append("device_name = ?")
+        params.append(request.device_name)
+
+    if request.notes is not None:
+        updates.append("notes = ?")
+        params.append(request.notes)
+
+    # If rink_id and sheet_name are both provided, mark as assigned
+    if request.rink_id is not None and request.sheet_name is not None:
+        updates.append("is_assigned = 1")
+
+    if not updates:
+        db.close()
+        return {"status": "ok", "message": "No changes requested"}
+
+    # Execute update
+    params.append(device_id)
+    query = f"UPDATE devices SET {', '.join(updates)} WHERE device_id = ?"
+    db.execute(query, params)
+    db.commit()
+
+    # Fetch updated device
+    updated = db.execute("""
+        SELECT device_id, rink_id, sheet_name, device_name, is_assigned,
+               first_seen_at, last_seen_at, notes
+        FROM devices
+        WHERE device_id = ?
+    """, (device_id,)).fetchone()
+
+    db.close()
+
+    logger.info(f"Successfully updated device {device_id}")
+
+    return {
+        "status": "ok",
+        "message": f"Device {device_id} updated",
+        "device": DeviceInfo(
+            device_id=updated["device_id"],
+            rink_id=updated["rink_id"],
+            sheet_name=updated["sheet_name"],
+            device_name=updated["device_name"],
+            is_assigned=bool(updated["is_assigned"]),
+            first_seen_at=updated["first_seen_at"],
+            last_seen_at=updated["last_seen_at"],
+            notes=updated["notes"]
+        )
+    }
+
+
+@app.delete("/admin/devices/{device_id}/assignment")
+async def unassign_device(device_id: str):
+    """Clear a device's assignment (unassign from rink and sheet)."""
+    logger.info(f"Unassigning device {device_id}")
+
+    db = get_db()
+
+    # Check if device exists
+    device = db.execute(
+        "SELECT device_id FROM devices WHERE device_id = ?",
+        (device_id,)
+    ).fetchone()
+
+    if not device:
+        db.close()
+        raise HTTPException(status_code=404, detail=f"Device {device_id} not found")
+
+    # Unassign the device
+    db.execute("""
+        UPDATE devices
+        SET rink_id = NULL,
+            sheet_name = NULL,
+            is_assigned = 0
+        WHERE device_id = ?
+    """, (device_id,))
+
+    db.commit()
+    db.close()
+
+    logger.info(f"Successfully unassigned device {device_id}")
+
+    return {
+        "status": "ok",
+        "message": f"Device {device_id} unassigned"
+    }
+
+
+@app.delete("/admin/devices/{device_id}")
+async def delete_device(device_id: str):
+    """Completely delete a device from the database."""
+    logger.info(f"Deleting device {device_id}")
+
+    db = get_db()
+
+    # Check if device exists
+    device = db.execute(
+        "SELECT device_id FROM devices WHERE device_id = ?",
+        (device_id,)
+    ).fetchone()
+
+    if not device:
+        db.close()
+        raise HTTPException(status_code=404, detail=f"Device {device_id} not found")
+
+    # Delete the device (this will cascade delete deliveries if we had FK constraints)
+    db.execute("DELETE FROM devices WHERE device_id = ?", (device_id,))
+
+    db.commit()
+    db.close()
+
+    logger.info(f"Successfully deleted device {device_id}")
+
+    return {
+        "status": "ok",
+        "message": f"Device {device_id} deleted"
+    }
+
+
+# Keep legacy endpoints for backwards compatibility
+@app.post("/admin/devices/{device_id}/assign")
+async def assign_device_legacy(device_id: str, request: AssignDeviceRequest):
+    """Legacy endpoint - use PUT /admin/devices/{device_id} instead."""
+    return await update_device(device_id, UpdateDeviceRequest(
+        rink_id=request.rink_id,
+        sheet_name=request.sheet_name,
+        device_name=request.device_name,
+        notes=request.notes
+    ))
+
 
 @app.get("/admin/heartbeats/latest")
 async def get_latest_heartbeats():

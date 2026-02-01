@@ -195,6 +195,78 @@ select option {
     background: #888;
 }
 
+.device-id-indicator {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    padding: 10px 20px;
+    border-radius: 50px;
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    font-size: 0.9em;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.device-id-label {
+    font-size: 0.75em;
+    opacity: 0.7;
+}
+
+.device-id-value {
+    font-weight: 700;
+    font-size: 1.1em;
+    letter-spacing: 1px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    padding: 4px 8px;
+    border-radius: 6px;
+    position: relative;
+}
+
+.device-id-value:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: scale(1.05);
+}
+
+.device-id-value:active {
+    transform: scale(0.98);
+}
+
+.copy-tooltip {
+    position: absolute;
+    top: -30px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(74, 222, 128, 0.95);
+    color: #fff;
+    padding: 4px 12px;
+    border-radius: 6px;
+    font-size: 0.85em;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.copy-tooltip.show {
+    opacity: 1;
+}
+
+.sheet-name {
+    font-size: 0.85em;
+    opacity: 0.9;
+    font-style: italic;
+}
+
+.unassigned-warning {
+    color: #fbbf24;
+    font-weight: 600;
+}
+
 .modal {
     display: none;
     position: fixed;
@@ -275,6 +347,15 @@ select option {
 </head>
 <body>
 
+<div class="device-id-indicator" id="deviceInfo">
+    <div class="device-id-label">Device ID (click to copy)</div>
+    <div class="device-id-value" id="deviceId" onclick="copyDeviceId()">
+        Loading...
+        <div class="copy-tooltip" id="copyTooltip">Copied!</div>
+    </div>
+    <div class="sheet-name" id="sheetName"></div>
+</div>
+
 <div class="status-indicator">
     <div class="status-dot" id="pusherStatus"></div>
     <span>Cloud Push</span>
@@ -309,6 +390,29 @@ const ws = new WebSocket(`ws://${location.host}/ws`);
 
 let currentSeconds = 1200; // Track current clock value
 let currentMode = 'clock'; // Track current mode
+
+// Copy device ID to clipboard
+function copyDeviceId() {
+    const deviceIdElement = document.getElementById('deviceId');
+    const tooltip = document.getElementById('copyTooltip');
+
+    // Get the text content (without the tooltip)
+    const deviceId = deviceIdElement.childNodes[0].textContent.trim();
+
+    // Copy to clipboard
+    navigator.clipboard.writeText(deviceId).then(() => {
+        // Show tooltip
+        tooltip.classList.add('show');
+
+        // Hide tooltip after 2 seconds
+        setTimeout(() => {
+            tooltip.classList.remove('show');
+        }, 2000);
+    }).catch(err => {
+        console.error('Failed to copy device ID:', err);
+    });
+}
+
 
 // Fetch games and populate dropdown on page load
 async function loadGames() {
@@ -379,6 +483,23 @@ ws.onmessage = (event) => {
     // Update cloud push status indicator
     const pusherStatus = document.getElementById("pusherStatus");
     pusherStatus.className = `status-dot ${data.pusher_status}`;
+
+    // Update device ID display
+    const deviceIdElement = document.getElementById("deviceId");
+    const sheetNameElement = document.getElementById("sheetName");
+
+    if (data.device_id) {
+        // Update only the text node, preserving the tooltip element
+        deviceIdElement.childNodes[0].textContent = data.device_id + ' ';
+
+        if (data.device_assigned && data.sheet_name) {
+            sheetNameElement.textContent = data.sheet_name;
+            sheetNameElement.className = "sheet-name";
+        } else {
+            sheetNameElement.textContent = "⚠ Not Assigned (checking...)";
+            sheetNameElement.className = "sheet-name unassigned-warning";
+        }
+    }
 };
 
 function toggleGame(btn) {
@@ -453,11 +574,56 @@ document.getElementById('timeModal').addEventListener('click', (e) => {
 
 # ---------- Configuration ----------
 from score.config import AppConfig
+from score.device import get_device_id, format_device_id_for_display
 
 # ---------- SQLite setup ----------
 DB_PATH = AppConfig.DB_PATH
 CLOUD_API_URL = AppConfig.CLOUD_API_URL
-RINK_ID = AppConfig.RINK_ID
+
+# Device identification - will be populated from cloud config
+DEVICE_ID = get_device_id(persist_path=AppConfig.DEVICE_ID_PATH)
+RINK_ID = AppConfig.RINK_ID  # Fallback, will be overridden by cloud config
+DEVICE_CONFIG = None  # Will hold full device config from cloud
+
+
+def fetch_device_config():
+    """
+    Fetch device configuration from cloud API.
+
+    Returns device config including rink_id assignment.
+    Falls back to env var RINK_ID if cloud is unavailable.
+    """
+    global DEVICE_CONFIG, RINK_ID
+
+    logger.info(f"Fetching config for device: {DEVICE_ID}")
+
+    try:
+        response = requests.get(
+            f"{CLOUD_API_URL}/v1/devices/{DEVICE_ID}/config",
+            timeout=10
+        )
+        response.raise_for_status()
+        config = response.json()
+
+        DEVICE_CONFIG = config
+        logger.info(f"Device config: {config}")
+
+        if config.get("is_assigned"):
+            # Use rink_id from cloud
+            RINK_ID = config["rink_id"]
+            logger.info(f"Device assigned to rink: {RINK_ID}, sheet: {config.get('sheet_name')}")
+        else:
+            # Device not assigned yet
+            logger.warning(f"Device {DEVICE_ID} is not assigned to a rink yet")
+            logger.warning(f"Message from cloud: {config.get('message')}")
+            # Keep using fallback RINK_ID from env var
+
+        return config
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to fetch device config from cloud: {e}")
+        logger.warning(f"Falling back to RINK_ID from environment: {RINK_ID}")
+        return None
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -550,6 +716,9 @@ class GameState:
             "pusher_status": self.pusher_status,
             "mode": self.mode,
             "current_time": time.strftime("%H:%M"),
+            "device_id": format_device_id_for_display(DEVICE_ID),
+            "device_assigned": DEVICE_CONFIG.get("is_assigned") if DEVICE_CONFIG else False,
+            "sheet_name": DEVICE_CONFIG.get("sheet_name") if DEVICE_CONFIG else None,
         }
         if self.current_game:
             result["current_game"] = self.current_game
@@ -629,6 +798,9 @@ async def broadcast_state():
 
 # ---------- Game loop ----------
 async def game_loop():
+    last_config_check = 0
+    config_check_interval = 30  # Check every 30 seconds if unassigned
+
     while True:
         # Check cloud push health and delivery status
         if pusher_process is not None:
@@ -641,6 +813,21 @@ async def game_loop():
                 state.pusher_status = "healthy"
         else:
             state.pusher_status = "unknown"
+
+        # Periodically retry fetching device config if unassigned
+        current_time = int(time.time())
+        if current_time - last_config_check >= config_check_interval:
+            last_config_check = current_time
+
+            # Retry if config is None or device is not assigned
+            if DEVICE_CONFIG is None or not DEVICE_CONFIG.get("is_assigned"):
+                logger.debug("Device unassigned, retrying config fetch...")
+                new_config = fetch_device_config()
+
+                # If config changed (e.g., device was just assigned), broadcast immediately
+                if new_config and new_config.get("is_assigned"):
+                    logger.info("Device config updated - device is now assigned!")
+                    await broadcast_state()
 
         if state.running and state.seconds > 0:
             state.seconds -= 1
@@ -656,6 +843,15 @@ async def game_loop():
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     logger.info("Starting application...")
+    logger.info(f"Device ID: {DEVICE_ID}")
+
+    # Fetch device configuration from cloud
+    config = fetch_device_config()
+    if config is None:
+        logger.warning("Could not fetch device config on startup - will retry automatically every 30 seconds")
+    elif not config.get("is_assigned"):
+        logger.warning("Device is not assigned - will check for assignment every 30 seconds")
+
     load_state_from_events()
 
     # Log available endpoints
@@ -893,6 +1089,7 @@ def push_events(log_queue):
         log_queue: multiprocessing.Queue for sending log records to main process
     """
     from score.pusher import CloudEventPusher
+    from score.device import get_device_id
 
     # Configure logging to send records to the queue
     queue_handler = logging.handlers.QueueHandler(log_queue)
@@ -900,10 +1097,13 @@ def push_events(log_queue):
     root_logger.setLevel(logging.INFO)
     root_logger.addHandler(queue_handler)
 
+    # Get device ID (will read from persisted file)
+    device_id = get_device_id(persist_path=AppConfig.DEVICE_ID_PATH)
+
     pusher = CloudEventPusher(
         db_path=DB_PATH,
         cloud_api_url=CLOUD_API_URL,
-        device_id=AppConfig.DEVICE_ID
+        device_id=device_id
     )
 
     try:
