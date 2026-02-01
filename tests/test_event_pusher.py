@@ -97,7 +97,8 @@ def test_basic_event_processing(temp_db, temp_output):
     # Process each event
     for event in events:
         pusher.deliver(event)
-        pusher.mark_delivered(event['id'], success=True)
+        retry_count = event['retry_count'] or 0
+        pusher.mark_delivered(event['id'], success=True, retry_count=retry_count)
 
     # Verify output file
     with open(temp_output) as f:
@@ -172,7 +173,8 @@ def test_no_duplicate_deliveries(temp_db, temp_output):
     assert len(events) == 2
 
     for event in events:
-        pusher.mark_delivered(event['id'], success=True)
+        retry_count = event['retry_count'] or 0
+        pusher.mark_delivered(event['id'], success=True, retry_count=retry_count)
 
     # Second pass - should find no events
     events = pusher.get_unprocessed_events()
@@ -180,7 +182,9 @@ def test_no_duplicate_deliveries(temp_db, temp_output):
 
 
 def test_delivery_retry_on_failure(temp_db, temp_output):
-    """Test that failed deliveries are retried."""
+    """Test that failed deliveries are retried after backoff period."""
+    from unittest.mock import patch
+
     create_test_events(temp_db, [
         (0, "CLOCK_SET", {"seconds": 1200}),
     ])
@@ -191,26 +195,37 @@ def test_delivery_retry_on_failure(temp_db, temp_output):
     events = pusher.get_unprocessed_events()
     assert len(events) == 1
 
-    pusher.mark_delivered(events[0]['id'], success=False)
+    retry_count = events[0]['retry_count'] or 0
+    current_time = int(time.time())
+
+    pusher.mark_delivered(events[0]['id'], success=False, retry_count=retry_count)
 
     # Verify marked as failed in database
     conn = sqlite3.connect(temp_db)
     delivery = conn.execute(
-        "SELECT delivered FROM deliveries WHERE event_id=1 AND destination=?",
+        "SELECT delivered, retry_count FROM deliveries WHERE event_id=1 AND destination=?",
         (temp_output,)
     ).fetchone()
     conn.close()
 
     assert delivery[0] == 2  # delivered = failed
+    assert delivery[1] == 1  # retry_count incremented to 1
 
-    # Second attempt - should still be in unprocessed
+    # Immediately after - should NOT be in unprocessed (still in backoff period)
     events = pusher.get_unprocessed_events()
-    assert len(events) == 1
+    assert len(events) == 0
 
-    # Mark as success
-    pusher.mark_delivered(events[0]['id'], success=True)
+    # Mock time to advance past backoff period (2 seconds for retry_count=1)
+    with patch('time.time', return_value=current_time + 3):
+        # Now should be available for retry
+        events = pusher.get_unprocessed_events()
+        assert len(events) == 1
 
-    # Third attempt - should be empty now
+        retry_count = events[0]['retry_count'] or 0
+        # Mark as success
+        pusher.mark_delivered(events[0]['id'], success=True, retry_count=retry_count)
+
+    # Final attempt - should be empty now
     events = pusher.get_unprocessed_events()
     assert len(events) == 0
 
@@ -260,7 +275,8 @@ def test_multiple_destinations(temp_db, temp_output):
     # Pusher1 delivers event
     events1 = pusher1.get_unprocessed_events()
     assert len(events1) == 1
-    pusher1.mark_delivered(events1[0]['id'], success=True)
+    retry_count = events1[0]['retry_count'] or 0
+    pusher1.mark_delivered(events1[0]['id'], success=True, retry_count=retry_count)
 
     # Pusher2 should still see the event (different destination)
     events2 = pusher2.get_unprocessed_events()
