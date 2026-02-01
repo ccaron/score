@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
+import requests
 from fastapi import FastAPI, HTTPException, Path, Query, WebSocket
 from pydantic import BaseModel
 import uvicorn
@@ -279,18 +280,14 @@ app = FastAPI(
 @app.get("/v1/rinks/{rink_id}/schedule", response_model=ScheduleResponse)
 async def get_schedule(
     rink_id: str = Path(..., description="Rink ID"),
-    date: Optional[str] = Query(None, description="Date in YYYY-MM-DD format, defaults to today")
+    date: Optional[str] = Query(None, description="Date in YYYY-MM-DD format (not used, kept for compatibility)")
 ):
     """
     Download game schedule for a specific rink.
 
-    Returns schedule_version and list of games for the specified date.
+    Returns schedule_version and list of all games for the rink.
     """
-    logger.info(f"Schedule request for rink_id={rink_id}, date={date}")
-
-    # Default to today if no date provided
-    if date is None:
-        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    logger.info(f"Schedule request for rink_id={rink_id}")
 
     db = get_db()
 
@@ -308,13 +305,13 @@ async def get_schedule(
 
     schedule_version = version_row["version"] if version_row else datetime.now(timezone.utc).isoformat()
 
-    # Query games for the date
+    # Query all games for the rink
     games = db.execute("""
         SELECT game_id, home_team, away_team, start_time, period_length_min
         FROM games
-        WHERE rink_id = ? AND DATE(start_time) = ?
+        WHERE rink_id = ?
         ORDER BY start_time
-    """, (rink_id, date)).fetchall()
+    """, (rink_id,)).fetchall()
 
     db.close()
 
@@ -329,7 +326,7 @@ async def get_schedule(
         for g in games
     ]
 
-    logger.info(f"Returning {len(games_list)} games for {rink_id} on {date}")
+    logger.info(f"Returning {len(games_list)} games for {rink_id}")
 
     return ScheduleResponse(
         schedule_version=schedule_version,
@@ -665,7 +662,6 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
             <td><input type="text" class="name-input" data-device-id="{d['device_id']}" value="{d['device_name'] or ''}" placeholder="Display name"></td>
             <td>{status_badge}</td>
             <td class="timestamp">{format_timestamp(d['last_seen_at'])}</td>
-            <td><textarea class="notes-input" data-device-id="{d['device_id']}" placeholder="Notes...">{d['notes'] or ''}</textarea></td>
             <td class="actions">
                 <button class="btn-save" onclick="saveDevice('{d['device_id']}')">Save</button>
                 <button class="btn-unassign" onclick="unassignDevice('{d['device_id']}')">Unassign</button>
@@ -895,7 +891,7 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
     <body>
         <div class="nav">
             <a href="/admin/devices" class="active">Devices</a>
-            <a href="/admin/games/state">Game States</a>
+            <a href="/admin/games/state">Games</a>
             <a href="/admin/heartbeats/latest">Heartbeats</a>
         </div>
         <div class="container">
@@ -926,14 +922,22 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
                 <table>
                     <thead>
                         <tr>
-                            <th>Device ID</th>
+                            <th style="width: 20%;">Device ID</th>
                             <th>Rink</th>
                             <th>Sheet Name</th>
                             <th>Device Name</th>
                             <th>Status</th>
                             <th>Last Seen</th>
-                            <th>Notes</th>
                             <th>Actions</th>
+                        </tr>
+                        <tr class="filter-row">
+                            <td><input type="text" id="filterDeviceId" placeholder="Filter..." onkeyup="filterDeviceTable()"></td>
+                            <td><input type="text" id="filterRink" placeholder="Filter..." onkeyup="filterDeviceTable()"></td>
+                            <td><input type="text" id="filterSheet" placeholder="Filter..." onkeyup="filterDeviceTable()"></td>
+                            <td><input type="text" id="filterDeviceName" placeholder="Filter..." onkeyup="filterDeviceTable()"></td>
+                            <td><input type="text" id="filterStatus" placeholder="Filter..." onkeyup="filterDeviceTable()"></td>
+                            <td><input type="text" id="filterLastSeen" placeholder="Filter..." onkeyup="filterDeviceTable()"></td>
+                            <td></td>
                         </tr>
                     </thead>
                     <tbody>
@@ -944,6 +948,42 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
         </div>
 
         <script>
+        function filterDeviceTable() {{
+            const filters = {{
+                deviceId: document.getElementById('filterDeviceId').value.toLowerCase(),
+                rink: document.getElementById('filterRink').value.toLowerCase(),
+                sheet: document.getElementById('filterSheet').value.toLowerCase(),
+                deviceName: document.getElementById('filterDeviceName').value.toLowerCase(),
+                status: document.getElementById('filterStatus').value.toLowerCase(),
+                lastSeen: document.getElementById('filterLastSeen').value.toLowerCase()
+            }};
+
+            const tbody = document.querySelector('table tbody');
+            const rows = tbody.getElementsByTagName('tr');
+
+            for (let i = 0; i < rows.length; i++) {{
+                const cells = rows[i].getElementsByTagName('td');
+                if (cells.length < 7) continue;
+
+                const deviceId = cells[0].textContent.toLowerCase();
+                const rink = cells[1].querySelector('select')?.value.toLowerCase() || '';
+                const sheet = cells[2].querySelector('input')?.value.toLowerCase() || '';
+                const deviceName = cells[3].querySelector('input')?.value.toLowerCase() || '';
+                const status = cells[4].textContent.toLowerCase();
+                const lastSeen = cells[5].textContent.toLowerCase();
+
+                const match =
+                    deviceId.includes(filters.deviceId) &&
+                    rink.includes(filters.rink) &&
+                    sheet.includes(filters.sheet) &&
+                    deviceName.includes(filters.deviceName) &&
+                    status.includes(filters.status) &&
+                    lastSeen.includes(filters.lastSeen);
+
+                rows[i].style.display = match ? '' : 'none';
+            }}
+        }}
+
         function showMessage(text, type) {{
             const msg = document.getElementById('message');
             msg.textContent = text;
@@ -959,7 +999,6 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
             const rinkId = row.querySelector('.rink-select').value;
             const sheetName = row.querySelector('.sheet-input').value;
             const deviceName = row.querySelector('.name-input').value;
-            const notes = row.querySelector('.notes-input').value;
 
             if (!rinkId || !sheetName) {{
                 showMessage('Please select a rink and enter a sheet name', 'error');
@@ -973,8 +1012,7 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
                     body: JSON.stringify({{
                         rink_id: rinkId,
                         sheet_name: sheetName,
-                        device_name: deviceName || null,
-                        notes: notes || null
+                        device_name: deviceName || null
                     }})
                 }});
 
@@ -1589,26 +1627,86 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
                 padding: 8px 15px;
                 background: #f8f9fa;
             }
+            .nhl-loader {
+                margin-bottom: 30px;
+                padding: 20px;
+                background: #f8f9fa;
+                border-radius: 8px;
+            }
+            .nhl-loader h3 {
+                margin-bottom: 15px;
+                color: #495057;
+                font-size: 1.1em;
+            }
+            .nhl-form {
+                display: flex;
+                gap: 10px;
+                align-items: center;
+            }
+            .nhl-form input[type="date"] {
+                padding: 8px 12px;
+                border: 1px solid #ced4da;
+                border-radius: 4px;
+                font-size: 0.9em;
+            }
+            .nhl-form button {
+                padding: 8px 16px;
+                background: #667eea;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 0.9em;
+            }
+            .nhl-form button:hover {
+                background: #5568d3;
+            }
+            .nhl-message {
+                margin-top: 10px;
+                padding: 8px 12px;
+                border-radius: 4px;
+                font-size: 0.9em;
+                display: none;
+            }
+            .nhl-message.success {
+                background: #d4edda;
+                color: #155724;
+                display: block;
+            }
+            .nhl-message.error {
+                background: #f8d7da;
+                color: #721c24;
+                display: block;
+            }
         </style>
     </head>
     <body>
         <div class="nav">
             <a href="/admin/devices">Devices</a>
-            <a href="/admin/games/state" class="active">Game States</a>
+            <a href="/admin/games/state" class="active">Games</a>
             <a href="/admin/heartbeats/latest">Heartbeats</a>
         </div>
         <div class="container">
-            <h1>Game States</h1>
+            <h1>Games</h1>
             <div class="content">
+                <div class="nhl-loader">
+                    <h3>Load NHL Schedule</h3>
+                    <div class="nhl-form">
+                        <input type="date" id="nhlStartDate" placeholder="Start Date">
+                        <input type="date" id="nhlEndDate" placeholder="End Date">
+                        <button onclick="loadNHLSchedule()">Load Games</button>
+                    </div>
+                    <div id="nhlMessage" class="nhl-message"></div>
+                </div>
+
                 <table id="gamesTable">
                     <thead>
                         <tr>
-                            <th>Game ID</th>
-                            <th>Teams</th>
-                            <th>Clock</th>
-                            <th>Status</th>
-                            <th>Period Length</th>
-                            <th>Events</th>
+                            <th style="width: 15%;">Game ID</th>
+                            <th style="width: 45%;">Teams</th>
+                            <th style="width: 15%;">Clock</th>
+                            <th style="width: 10%;">Status</th>
+                            <th style="width: 15%;">Period Length</th>
                         </tr>
                         <tr class="filter-row">
                             <td><input type="text" id="filterGameId" placeholder="Filter..." onkeyup="filterTable()"></td>
@@ -1616,12 +1714,11 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
                             <td><input type="text" id="filterClock" placeholder="Filter..." onkeyup="filterTable()"></td>
                             <td><input type="text" id="filterStatus" placeholder="Filter..." onkeyup="filterTable()"></td>
                             <td><input type="text" id="filterPeriod" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td><input type="text" id="filterEvents" placeholder="Filter..." onkeyup="filterTable()"></td>
                         </tr>
                     </thead>
                     <tbody id="gamesBody">
                         <tr>
-                            <td colspan="6" class="no-games">Loading...</td>
+                            <td colspan="5" class="no-games">Loading...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -1641,8 +1738,7 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
                 teams: document.getElementById('filterTeams').value.toLowerCase(),
                 clock: document.getElementById('filterClock').value.toLowerCase(),
                 status: document.getElementById('filterStatus').value.toLowerCase(),
-                period: document.getElementById('filterPeriod').value.toLowerCase(),
-                events: document.getElementById('filterEvents').value.toLowerCase()
+                period: document.getElementById('filterPeriod').value.toLowerCase()
             };
 
             const tbody = document.getElementById('gamesBody');
@@ -1650,22 +1746,20 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
 
             for (let i = 0; i < rows.length; i++) {
                 const cells = rows[i].getElementsByTagName('td');
-                if (cells.length < 6) continue; // Skip "no games" row
+                if (cells.length < 5) continue; // Skip "no games" row
 
                 const gameId = cells[0].textContent.toLowerCase();
                 const teams = cells[1].textContent.toLowerCase();
                 const clock = cells[2].textContent.toLowerCase();
                 const status = cells[3].textContent.toLowerCase();
                 const period = cells[4].textContent.toLowerCase();
-                const events = cells[5].textContent.toLowerCase();
 
                 const match =
                     gameId.includes(filters.gameId) &&
                     teams.includes(filters.teams) &&
                     clock.includes(filters.clock) &&
                     status.includes(filters.status) &&
-                    period.includes(filters.period) &&
-                    events.includes(filters.events);
+                    period.includes(filters.period);
 
                 rows[i].style.display = match ? '' : 'none';
             }
@@ -1678,7 +1772,7 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
                     const tbody = document.getElementById('gamesBody');
 
                     if (data.games.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="6" class="no-games">No games found</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="5" class="no-games">No games found</td></tr>';
                         return;
                     }
 
@@ -1695,7 +1789,6 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
                                 <td class="clock">${clock}</td>
                                 <td><span class="status ${status}">${statusText}</span></td>
                                 <td>${game.period_length_min} min</td>
-                                <td>${game.event_count}</td>
                             </tr>
                         `;
                     });
@@ -1705,6 +1798,49 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
                 .catch(error => {
                     console.error('Error fetching game states:', error);
                 });
+        }
+
+        async function loadNHLSchedule() {
+            const startDate = document.getElementById('nhlStartDate').value;
+            const endDate = document.getElementById('nhlEndDate').value;
+            const messageDiv = document.getElementById('nhlMessage');
+
+            if (!startDate) {
+                messageDiv.textContent = 'Please select at least a start date';
+                messageDiv.className = 'nhl-message error';
+                return;
+            }
+
+            // Show loading message
+            messageDiv.textContent = 'Loading NHL schedule...';
+            messageDiv.className = 'nhl-message';
+            messageDiv.style.display = 'block';
+
+            try {
+                let url = `/admin/load-nhl-schedule?start_date=${startDate}`;
+                if (endDate) {
+                    url += `&end_date=${endDate}`;
+                }
+
+                const response = await fetch(url, { method: 'POST' });
+                const result = await response.json();
+
+                if (result.status === 'ok') {
+                    messageDiv.textContent = result.message;
+                    messageDiv.className = 'nhl-message success';
+
+                    // Reload game states after 1 second
+                    setTimeout(() => {
+                        updateGameStates();
+                    }, 1000);
+                } else {
+                    messageDiv.textContent = result.message;
+                    messageDiv.className = 'nhl-message error';
+                }
+            } catch (error) {
+                messageDiv.textContent = `Error: ${error.message}`;
+                messageDiv.className = 'nhl-message error';
+            }
         }
 
         // Load game states on page load
@@ -1739,13 +1875,66 @@ async def websocket_game_states(websocket: WebSocket):
 
 # ---------- Data Seeding ----------
 
-def seed_sample_data():
-    """Seed the database with sample data for testing."""
-    logger.info("Seeding sample data...")
-    db = get_db()
+def fetch_nhl_schedule(start_date=None, end_date=None):
+    """
+    Fetch NHL schedule from the NHL API for a date range.
 
+    Args:
+        start_date: Start date string in YYYY-MM-DD format. Defaults to today.
+        end_date: End date string in YYYY-MM-DD format. Defaults to start_date.
+
+    Returns:
+        List of game dictionaries with keys: game_id, home_team, away_team, start_time
+    """
+    if start_date is None:
+        start_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    if end_date is None:
+        end_date = start_date
+
+    try:
+        # The NHL API uses the start date in the URL
+        url = f"https://api-web.nhle.com/v1/schedule/{start_date}"
+        logger.info(f"Fetching NHL schedule from {url} (start={start_date}, end={end_date})")
+
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        games = []
+        for game_week in data.get("gameWeek", []):
+            game_date = game_week.get("date")
+
+            # Filter by date range
+            if game_date < start_date or game_date > end_date:
+                continue
+
+            for game in game_week.get("games", []):
+                game_id = f"nhl-{game['id']}"
+                home_team = game["homeTeam"]["placeName"]["default"]
+                away_team = game["awayTeam"]["placeName"]["default"]
+                start_time = game["startTimeUTC"]  # ISO format timestamp
+
+                games.append({
+                    "game_id": game_id,
+                    "home_team": home_team,
+                    "away_team": away_team,
+                    "start_time": start_time
+                })
+
+        logger.info(f"Fetched {len(games)} NHL games for {start_date} to {end_date}")
+        return games
+
+    except Exception as e:
+        logger.warning(f"Failed to fetch NHL schedule: {e}")
+        return []
+
+
+def init_sample_rink():
+    """Initialize the sample rink (TSC Curling Club)."""
+    logger.info("Initializing sample rink...")
+    db = get_db()
     current_time = int(time.time())
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     # Add sample rink
     db.execute("""
@@ -1753,20 +1942,49 @@ def seed_sample_data():
         VALUES ('rink-tsc', 'TSC Curling Club', ?)
     """, (current_time,))
 
-    # Add sample games
-    games = [
-        ("game-001", "rink-tsc", "Team A", "Team B", f"{today}T14:00:00Z", 15),
-        ("game-002", "rink-tsc", "Team C", "Team D", f"{today}T15:00:00Z", 15),
-        ("game-003", "rink-tsc", "Team E", "Team F", f"{today}T16:00:00Z", 20),
-    ]
+    db.commit()
+    db.close()
+    logger.info("Sample rink initialized")
 
-    for game in games:
+
+@app.post("/admin/load-nhl-schedule")
+async def load_nhl_schedule(
+    start_date: Optional[str] = Query(None, description="Start date YYYY-MM-DD, defaults to today"),
+    end_date: Optional[str] = Query(None, description="End date YYYY-MM-DD, defaults to start_date")
+):
+    """
+    Load NHL schedule from the NHL API for a date range.
+
+    All games will be added to rink-tsc.
+    """
+    if start_date is None:
+        start_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    if end_date is None:
+        end_date = start_date
+
+    logger.info(f"Loading NHL schedule from {start_date} to {end_date}")
+
+    # Fetch NHL games
+    nhl_games = fetch_nhl_schedule(start_date, end_date)
+
+    if not nhl_games:
+        return {
+            "status": "error",
+            "message": f"No NHL games found for {start_date} to {end_date}"
+        }
+
+    # Add games to database
+    db = get_db()
+    current_time = int(time.time())
+
+    for g in nhl_games:
         db.execute("""
             INSERT OR REPLACE INTO games (
                 game_id, rink_id, home_team, away_team, start_time,
                 period_length_min, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (*game, current_time))
+        """, (g["game_id"], "rink-tsc", g["home_team"], g["away_team"], g["start_time"], 20, current_time))
 
     # Update schedule version
     version = datetime.now(timezone.utc).isoformat()
@@ -1778,7 +1996,15 @@ def seed_sample_data():
     db.commit()
     db.close()
 
-    logger.info("Sample data seeded successfully")
+    logger.info(f"Loaded {len(nhl_games)} NHL games")
+
+    return {
+        "status": "ok",
+        "message": f"Loaded {len(nhl_games)} NHL games",
+        "games_count": len(nhl_games),
+        "start_date": start_date,
+        "end_date": end_date
+    }
 
 
 def main():
@@ -1789,8 +2015,8 @@ def main():
 
     logger.info("Starting Cloud API Simulator")
 
-    # Seed sample data on startup
-    seed_sample_data()
+    # Initialize sample rink (doesn't load games)
+    init_sample_rink()
 
     # Run on a different port than the main app (8001 instead of 8000)
     logger.info(f"Starting cloud API server on http://{CloudConfig.HOST}:{CloudConfig.PORT}")
