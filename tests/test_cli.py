@@ -53,12 +53,12 @@ def create_events(db_path, events, base_time=None):
                 relative_time is seconds from base_time
         base_time: Optional base timestamp. Defaults to 1000 seconds ago
     """
-    from score.cli import GameState
+    from score.app import GameState
 
     if base_time is None:
         base_time = int(time.time()) - 1000
 
-    with patch('score.cli.DB_PATH', db_path):
+    with patch('score.app.DB_PATH', db_path):
         test_state = GameState()
         for relative_time, event_type, payload in events:
             timestamp = base_time + relative_time
@@ -75,11 +75,11 @@ def load_and_get_state(db_path):
     Returns:
         The GameState object after loading events
     """
-    from score.cli import load_state_from_events
+    from score.app import load_state_from_events
 
-    with patch('score.cli.DB_PATH', db_path):
+    with patch('score.app.DB_PATH', db_path):
         # Import state after patching DB_PATH
-        from score.cli import state
+        from score.app import state
         # Reset state to defaults before loading
         state.seconds = 20 * 60
         state.running = False
@@ -108,10 +108,10 @@ def test_load_state_from_events_with_pause(temp_db):
     conn.commit()
     conn.close()
 
-    from score.cli import load_game_state
+    from score.app import load_game_state
 
-    with patch('score.cli.DB_PATH', temp_db):
-        from score.cli import state
+    with patch('score.app.DB_PATH', temp_db):
+        from score.app import state
         state.mode = "game-001"
         load_game_state("game-001")
 
@@ -137,10 +137,10 @@ def test_load_state_from_events_still_running(temp_db):
     conn.commit()
     conn.close()
 
-    from score.cli import load_game_state
+    from score.app import load_game_state
 
-    with patch('score.cli.DB_PATH', temp_db):
-        from score.cli import state
+    with patch('score.app.DB_PATH', temp_db):
+        from score.app import state
         state.mode = "game-001"
         load_game_state("game-001")
 
@@ -172,10 +172,10 @@ def test_load_state_from_events_multiple_start_pause_cycles(temp_db):
     conn.commit()
     conn.close()
 
-    from score.cli import load_game_state
+    from score.app import load_game_state
 
-    with patch('score.cli.DB_PATH', temp_db):
-        from score.cli import state
+    with patch('score.app.DB_PATH', temp_db):
+        from score.app import state
         state.mode = "game-001"
         load_game_state("game-001")
 
@@ -188,16 +188,16 @@ def test_load_state_from_events_multiple_start_pause_cycles(temp_db):
 
 def test_has_undelivered_events_no_events(temp_db):
     """Test has_undelivered_events when there are no events."""
-    from score.cli import GameState
+    from score.app import GameState
 
-    with patch('score.cli.DB_PATH', temp_db):
+    with patch('score.app.DB_PATH', temp_db):
         state = GameState()
         assert state.has_undelivered_events("events.log") is False
 
 
 def test_has_undelivered_events_with_undelivered(temp_db):
     """Test has_undelivered_events when there are events with no delivery record."""
-    from score.cli import GameState
+    from score.app import GameState
 
     # Create events but no deliveries
     create_events(temp_db, [
@@ -205,14 +205,14 @@ def test_has_undelivered_events_with_undelivered(temp_db):
         (10, "GAME_STARTED", {}),
     ])
 
-    with patch('score.cli.DB_PATH', temp_db):
+    with patch('score.app.DB_PATH', temp_db):
         state = GameState()
         assert state.has_undelivered_events("events.log") is True
 
 
 def test_has_undelivered_events_all_delivered(temp_db):
     """Test has_undelivered_events when all events are successfully delivered."""
-    from score.cli import GameState
+    from score.app import GameState
 
     # Create events
     create_events(temp_db, [
@@ -233,14 +233,14 @@ def test_has_undelivered_events_all_delivered(temp_db):
     conn.commit()
     conn.close()
 
-    with patch('score.cli.DB_PATH', temp_db):
+    with patch('score.app.DB_PATH', temp_db):
         state = GameState()
         assert state.has_undelivered_events("events.log") is False
 
 
 def test_has_undelivered_events_with_failures(temp_db):
     """Test has_undelivered_events when there are failed deliveries."""
-    from score.cli import GameState
+    from score.app import GameState
 
     # Create events
     create_events(temp_db, [
@@ -260,7 +260,7 @@ def test_has_undelivered_events_with_failures(temp_db):
     conn.commit()
     conn.close()
 
-    with patch('score.cli.DB_PATH', temp_db):
+    with patch('score.app.DB_PATH', temp_db):
         state = GameState()
         # Should return True because event 2 has failed delivery (status=2)
         assert state.has_undelivered_events("events.log") is True
@@ -268,7 +268,7 @@ def test_has_undelivered_events_with_failures(temp_db):
 
 def test_has_undelivered_events_mixed_state(temp_db):
     """Test has_undelivered_events with mix of delivered, failed, and undelivered."""
-    from score.cli import GameState
+    from score.app import GameState
 
     # Create events
     create_events(temp_db, [
@@ -289,7 +289,7 @@ def test_has_undelivered_events_mixed_state(temp_db):
     conn.commit()
     conn.close()
 
-    with patch('score.cli.DB_PATH', temp_db):
+    with patch('score.app.DB_PATH', temp_db):
         state = GameState()
         # Should return True because event 2 failed and event 3 is undelivered
         assert state.has_undelivered_events("events.log") is True
@@ -297,7 +297,7 @@ def test_has_undelivered_events_mixed_state(temp_db):
 
 def test_has_undelivered_events_different_destination(temp_db):
     """Test has_undelivered_events with different destinations."""
-    from score.cli import GameState
+    from score.app import GameState
 
     # Create events
     create_events(temp_db, [
@@ -313,7 +313,7 @@ def test_has_undelivered_events_different_destination(temp_db):
     conn.commit()
     conn.close()
 
-    with patch('score.cli.DB_PATH', temp_db):
+    with patch('score.app.DB_PATH', temp_db):
         state = GameState()
         # Should return True for events.log (not delivered there yet)
         assert state.has_undelivered_events("events.log") is True
@@ -325,11 +325,11 @@ def test_has_undelivered_events_different_destination(temp_db):
 
 def test_pusher_status_unknown_when_no_process(temp_db):
     """Test status is 'unknown' when pusher_process is None."""
-    from score.cli import GameState
+    from score.app import GameState
     from unittest.mock import MagicMock
 
-    with patch('score.cli.DB_PATH', temp_db):
-        with patch('score.cli.pusher_process', None):
+    with patch('score.app.DB_PATH', temp_db):
+        with patch('score.app.pusher_process', None):
             state = GameState()
 
             # Simulate what game_loop does
@@ -343,10 +343,10 @@ def test_pusher_status_unknown_when_no_process(temp_db):
 
 def test_pusher_status_dead_when_process_not_alive(temp_db):
     """Test status is 'dead' when process is not alive."""
-    from score.cli import GameState
+    from score.app import GameState
     from unittest.mock import MagicMock
 
-    with patch('score.cli.DB_PATH', temp_db):
+    with patch('score.app.DB_PATH', temp_db):
         # Mock a dead process
         mock_process = MagicMock()
         mock_process.is_alive.return_value = False
@@ -367,7 +367,7 @@ def test_pusher_status_dead_when_process_not_alive(temp_db):
 
 def test_pusher_status_pending_when_alive_with_undelivered(temp_db):
     """Test status is 'pending' when process is alive but has undelivered events."""
-    from score.cli import GameState
+    from score.app import GameState
     from unittest.mock import MagicMock
 
     # Create undelivered events
@@ -375,7 +375,7 @@ def test_pusher_status_pending_when_alive_with_undelivered(temp_db):
         (0, "CLOCK_SET", {"seconds": 1200}),
     ])
 
-    with patch('score.cli.DB_PATH', temp_db):
+    with patch('score.app.DB_PATH', temp_db):
         # Mock an alive process
         mock_process = MagicMock()
         mock_process.is_alive.return_value = True
@@ -396,7 +396,7 @@ def test_pusher_status_pending_when_alive_with_undelivered(temp_db):
 
 def test_pusher_status_healthy_when_alive_all_delivered(temp_db):
     """Test status is 'healthy' when process is alive and all events delivered."""
-    from score.cli import GameState
+    from score.app import GameState, CLOUD_API_URL
     from unittest.mock import MagicMock
 
     # Create events and mark all as delivered
@@ -405,14 +405,15 @@ def test_pusher_status_healthy_when_alive_all_delivered(temp_db):
     ])
 
     conn = sqlite3.connect(temp_db)
+    # Mark as delivered to cloud destination
     conn.execute(
-        "INSERT INTO deliveries (event_id, destination, delivered, delivered_at) VALUES (1, 'events.log', 1, ?)",
-        (int(time.time()),)
+        "INSERT INTO deliveries (event_id, destination, delivered, delivered_at) VALUES (1, ?, 1, ?)",
+        (f"cloud:{CLOUD_API_URL}", int(time.time()))
     )
     conn.commit()
     conn.close()
 
-    with patch('score.cli.DB_PATH', temp_db):
+    with patch('score.app.DB_PATH', temp_db):
         # Mock an alive process
         mock_process = MagicMock()
         mock_process.is_alive.return_value = True
@@ -433,7 +434,7 @@ def test_pusher_status_healthy_when_alive_all_delivered(temp_db):
 
 def test_pusher_status_dead_takes_priority_over_undelivered(temp_db):
     """Test that 'dead' status takes priority even if there are undelivered events."""
-    from score.cli import GameState
+    from score.app import GameState
     from unittest.mock import MagicMock
 
     # Create undelivered events
@@ -441,7 +442,7 @@ def test_pusher_status_dead_takes_priority_over_undelivered(temp_db):
         (0, "CLOCK_SET", {"seconds": 1200}),
     ])
 
-    with patch('score.cli.DB_PATH', temp_db):
+    with patch('score.app.DB_PATH', temp_db):
         # Mock a dead process
         mock_process = MagicMock()
         mock_process.is_alive.return_value = False
@@ -465,18 +466,18 @@ def test_pusher_status_dead_takes_priority_over_undelivered(temp_db):
 
 def test_default_mode_is_clock(temp_db):
     """Test that default mode is 'clock'."""
-    from score.cli import GameState
+    from score.app import GameState
 
-    with patch('score.cli.DB_PATH', temp_db):
+    with patch('score.app.DB_PATH', temp_db):
         state = GameState()
         assert state.mode == "clock"
 
 
 def test_mode_changed_event_no_longer_exists(temp_db):
     """Test that changing mode does not create MODE_CHANGED events (removed)."""
-    from score.cli import GameState
+    from score.app import GameState
 
-    with patch('score.cli.DB_PATH', temp_db):
+    with patch('score.app.DB_PATH', temp_db):
         state = GameState()
 
         # Change mode (just in memory, no event)
@@ -518,9 +519,9 @@ def test_app_starts_in_clock_mode(temp_db):
 
 def test_to_dict_includes_mode_and_time(temp_db):
     """Test that to_dict() includes mode and current_time fields."""
-    from score.cli import GameState
+    from score.app import GameState
 
-    with patch('score.cli.DB_PATH', temp_db):
+    with patch('score.app.DB_PATH', temp_db):
         state = GameState()
         state.mode = "clock"
 

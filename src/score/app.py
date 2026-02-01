@@ -12,54 +12,10 @@ from typing import Optional
 import requests
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
-from rich.console import ConsoleRenderable
-from rich.logging import RichHandler
 import uvicorn
 
 # Set up logger for this module
-logger = logging.getLogger(__name__)
-
-
-class RichHandlerWithLoggerName(RichHandler):
-    """Custom RichHandler that displays logger name in the path."""
-
-    def render(
-        self,
-        *,
-        record: logging.LogRecord,
-        traceback,
-        message_renderable: ConsoleRenderable,
-    ):
-        # Add logger name to the path
-        path = f"{record.name}"
-        record.pathname = path
-        record.filename = path
-        record.lineno = 0
-        return super().render(
-            record=record,
-            traceback=traceback,
-            message_renderable=message_renderable,
-        )
-
-
-def init_logging():
-    """Configure Rich logging with process/thread info and logger names."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[dim cyan][PID: %(process)d TID: %(thread)d][/dim cyan] %(message)s",
-        datefmt="[%X]",
-        handlers=[RichHandlerWithLoggerName(markup=True)],
-        force=True,
-    )
-
-    # Configure uvicorn's loggers to use our Rich handler
-    for logger_name in ["uvicorn", "uvicorn.error"]:
-        uvicorn_logger = logging.getLogger(logger_name)
-        uvicorn_logger.handlers = []
-        uvicorn_logger.propagate = True
-
-    # Reduce noise from access logs (comment out if you want to see all requests)
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logger = logging.getLogger("score.app")
 
 # ---------- Inline HTML + JS ----------
 html = """
@@ -571,8 +527,10 @@ class GameState:
         db.commit()
         db.close()
 
-    def has_undelivered_events(self, destination="events.log"):
+    def has_undelivered_events(self, destination=None):
         """Check if there are any undelivered events for the given destination."""
+        if destination is None:
+            destination = f"cloud:{CLOUD_API_URL}"
         db = get_db()
         count = db.execute("""
             SELECT COUNT(*) FROM events e
@@ -635,46 +593,19 @@ def load_state_from_events():
 
 def load_game_state(game_id: str):
     """Load state for a specific game by replaying its events."""
+    from score.state import load_game_state_from_db
+
     logger.info(f"Loading state for game {game_id}...")
-    db = get_db()
-    rows = db.execute(
-        "SELECT type, payload, created_at FROM events WHERE game_id = ? ORDER BY created_at ASC",
-        (game_id,)
-    ).fetchall()
-    db.close()
 
-    # Reset to fresh game state - clear everything
-    state.seconds = 0  # Reset timer (will be set by CLOCK_SET event if it exists)
-    state.running = False
-    state.last_update = int(time.time())
+    result = load_game_state_from_db(DB_PATH, game_id)
 
-    logger.info(f"Replaying {len(rows)} events for game {game_id}")
-    for r in rows:
-        payload = json.loads(r["payload"])
-        if r["type"] == "CLOCK_SET":
-            state.seconds = payload["seconds"]
-            logger.debug(f"Replayed CLOCK_SET: {state.seconds}s")
-        elif r["type"] == "GAME_STARTED":
-            state.running = True
-            state.last_update = r["created_at"]
-            logger.debug("Replayed GAME_STARTED")
-        elif r["type"] == "GAME_PAUSED":
-            # Calculate how much time elapsed while running
-            if state.running:
-                elapsed = r["created_at"] - state.last_update
-                state.seconds = max(0, state.seconds - elapsed)
-            state.running = False
-            state.last_update = r["created_at"]
-            logger.debug(f"Replayed GAME_PAUSED: {state.seconds}s remaining")
-
-    # Correct for elapsed wall time if still running
-    if state.running:
-        elapsed = int(time.time()) - state.last_update
-        state.seconds = max(0, state.seconds - elapsed)
-        logger.info(f"Game {game_id} is running - adjusted for {elapsed}s elapsed time")
+    # Update global state with replayed values
+    state.seconds = result["seconds"]
+    state.running = result["running"]
+    state.last_update = result["last_update"]
 
     logger.info(f"Game state loaded: {state.seconds}s, running={state.running}")
-    return len(rows)  # Return number of events found
+    return result["num_events"]
 
 # ---------- Broadcast ----------
 async def broadcast_state():
@@ -723,6 +654,17 @@ async def game_loop():
 async def lifespan(_app: FastAPI):
     logger.info("Starting application...")
     load_state_from_events()
+
+    # Log available endpoints
+    logger.info("Available endpoints:")
+    for route in app.routes:
+        methods = getattr(route, "methods", None)
+        path = getattr(route, "path", None)
+        if methods and path:
+            methods_str = ", ".join(sorted(methods - {"HEAD", "OPTIONS"}))
+            if methods_str:  # Skip if only HEAD/OPTIONS
+                logger.info(f"  {methods_str:20s} {path}")
+
     task = asyncio.create_task(game_loop())
     logger.info("Application started")
     try:
@@ -797,15 +739,20 @@ async def select_mode(request: dict):
         state.mode = "clock"
         state.current_game = None
         state.running = False
+        logger.info("Switched to clock mode")
     else:
         # Switch to a game mode - fetch game details
         games = fetch_games_from_cloud()
+        logger.info(f"Fetched {len(games)} games from cloud API, looking for {new_mode}")
+        logger.debug(f"Available games: {[g['game_id'] for g in games]}")
+
         selected_game = next((g for g in games if g["game_id"] == new_mode), None)
 
         if selected_game:
             # First update mode and game metadata
             state.mode = new_mode
             state.current_game = selected_game
+            logger.info(f"Successfully switched to game mode: {new_mode}")
 
             # Replay all events for this game to restore its state
             num_events = load_game_state(new_mode)
@@ -820,7 +767,8 @@ async def select_mode(request: dict):
 
             logger.info(f"Selected game: {selected_game['home_team']} vs {selected_game['away_team']}")
         else:
-            logger.warning(f"Game {new_mode} not found, switching to clock mode")
+            logger.warning(f"Game {new_mode} not found in available games, switching to clock mode")
+            logger.warning(f"Available game IDs were: {[g['game_id'] for g in games]}")
             state.mode = "clock"
             state.current_game = None
             state.running = False
@@ -872,7 +820,8 @@ def main():
     warnings.filterwarnings("ignore", ".*resource_tracker.*", UserWarning)
 
     # Configure logging first - this will handle all log records
-    init_logging()
+    from score.log import init_logging
+    init_logging("app", color="dim cyan")
 
     logger.info("Starting Game Clock application")
 
@@ -940,7 +889,7 @@ def push_events(log_queue):
     Args:
         log_queue: multiprocessing.Queue for sending log records to main process
     """
-    from score.event_pusher import FileEventPusher
+    from score.pusher import CloudEventPusher
 
     # Configure logging to send records to the queue
     queue_handler = logging.handlers.QueueHandler(log_queue)
@@ -948,9 +897,10 @@ def push_events(log_queue):
     root_logger.setLevel(logging.INFO)
     root_logger.addHandler(queue_handler)
 
-    pusher = FileEventPusher(
+    pusher = CloudEventPusher(
         db_path=DB_PATH,
-        output_path="events.log"
+        cloud_api_url=CLOUD_API_URL,
+        device_id="device-001"
     )
 
     try:

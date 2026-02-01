@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from score.event_pusher import FileEventPusher
+from score.pusher import FileEventPusher
 
 
 @pytest.fixture

@@ -6,7 +6,7 @@ import time
 from abc import ABC, abstractmethod
 
 # Set up logger for this module
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("score.pusher")
 
 
 class BaseEventPusher(ABC):
@@ -192,6 +192,72 @@ class FileEventPusher(BaseEventPusher):
 
         with open(self.output_path, 'a') as f:
             f.write(jsonl_line + '\n')
+
+
+class CloudEventPusher(BaseEventPusher):
+    """Event pusher that sends events to score-cloud API via HTTP."""
+
+    def __init__(self, db_path, cloud_api_url, device_id="device-001", destination=None):
+        """
+        Initialize cloud event pusher.
+
+        Args:
+            db_path: Path to SQLite database
+            cloud_api_url: Base URL of the score-cloud API (e.g., "http://localhost:8001")
+            device_id: Device identifier for tracking
+            destination: Destination name for tracking (defaults to "cloud:{cloud_api_url}")
+        """
+        if destination is None:
+            destination = f"cloud:{cloud_api_url}"
+        super().__init__(db_path, destination)
+        self.cloud_api_url = cloud_api_url.rstrip('/')
+        self.device_id = device_id
+        self.session_id = f"session-{int(time.time())}"
+        logger.info(f"Cloud API URL: {self.cloud_api_url}")
+        logger.info(f"Device ID: {self.device_id}")
+
+    def deliver(self, event):
+        """
+        Send event to cloud API via HTTP POST.
+
+        Args:
+            event: Event row from database
+
+        Raises:
+            Exception: If HTTP request fails
+        """
+        import requests
+        from datetime import datetime, timezone
+
+        game_id = event["game_id"]
+        if not game_id:
+            # Skip events without game_id (clock mode events)
+            logger.debug(f"Skipping event {event['id']} - no game_id (clock mode)")
+            return
+
+        # Format event for cloud API
+        cloud_event = {
+            "event_id": f"{self.device_id}-{event['id']}",
+            "seq": event["id"],
+            "type": event["type"],
+            "ts_local": datetime.fromtimestamp(event["created_at"], timezone.utc).isoformat(),
+            "payload": json.loads(event["payload"])
+        }
+
+        # Send to cloud API
+        url = f"{self.cloud_api_url}/v1/games/{game_id}/events"
+        payload = {
+            "device_id": self.device_id,
+            "session_id": self.session_id,
+            "events": [cloud_event]
+        }
+
+        logger.debug(f"Sending event {event['id']} to {url}")
+        response = requests.post(url, json=payload, timeout=5)
+        response.raise_for_status()
+
+        response_data = response.json()
+        logger.debug(f"Cloud API response: {response_data}")
 
 
 # For backwards compatibility

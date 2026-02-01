@@ -7,65 +7,21 @@ This module simulates the cloud backend that mini PCs connect to for:
 3. Sending heartbeats for monitoring
 """
 
+import asyncio
 import json
 import logging
-import logging.handlers
 import sqlite3
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Path, Query
+from fastapi import FastAPI, HTTPException, Path, Query, WebSocket
 from pydantic import BaseModel
-from rich.console import ConsoleRenderable
-from rich.logging import RichHandler
 import uvicorn
 
 # Set up logger
-logger = logging.getLogger(__name__)
-
-
-class RichHandlerWithLoggerName(RichHandler):
-    """Custom RichHandler that displays logger name in the path."""
-
-    def render(
-        self,
-        *,
-        record: logging.LogRecord,
-        traceback,
-        message_renderable: ConsoleRenderable,
-    ):
-        # Add logger name to the path
-        path = f"{record.name}"
-        record.pathname = path
-        record.filename = path
-        record.lineno = 0
-        return super().render(
-            record=record,
-            traceback=traceback,
-            message_renderable=message_renderable,
-        )
-
-
-def init_logging():
-    """Configure Rich logging with process/thread info and logger names."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="[dim magenta][PID: %(process)d TID: %(thread)d][/dim magenta] %(message)s",
-        datefmt="[%X]",
-        handlers=[RichHandlerWithLoggerName(markup=True)],
-        force=True,
-    )
-
-    # Configure uvicorn's loggers to use our Rich handler
-    for logger_name in ["uvicorn", "uvicorn.error"]:
-        uvicorn_logger = logging.getLogger(logger_name)
-        uvicorn_logger.handlers = []
-        uvicorn_logger.propagate = True
-
-    # Reduce noise from access logs (comment out if you want to see all requests)
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logger = logging.getLogger("score.cloud")
 
 
 # ---------- Database Configuration ----------
@@ -220,10 +176,25 @@ class HeartbeatResponse(BaseModel):
     server_time: str
 
 
+# ---------- WebSocket state tracking ----------
+websocket_clients = []
+
+
 # ---------- Lifespan ----------
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     logger.info("Starting cloud API...")
+
+    # Log available endpoints
+    logger.info("Available endpoints:")
+    for route in app.routes:
+        methods = getattr(route, "methods", None)
+        path = getattr(route, "path", None)
+        if methods and path:
+            methods_str = ", ".join(sorted(methods - {"HEAD", "OPTIONS"}))
+            if methods_str:  # Skip if only HEAD/OPTIONS
+                logger.info(f"  {methods_str:20s} {path}")
+
     yield
     logger.info("Cloud API shutting down")
 
@@ -320,6 +291,7 @@ async def post_events(
 
     acked_through = 0
     current_time = int(time.time())
+    has_new_events = False
 
     # Process events with idempotency
     for event in sorted(request.events, key=lambda e: e.seq):
@@ -354,6 +326,7 @@ async def post_events(
             ))
 
             acked_through = event.seq
+            has_new_events = True
             logger.debug(f"Stored event {event.event_id} (seq={event.seq}, type={event.type})")
 
         except sqlite3.IntegrityError as e:
@@ -365,6 +338,10 @@ async def post_events(
     db.commit()
     db.close()
 
+    # Notify WebSocket clients if there were new events
+    if has_new_events and websocket_clients:
+        await notify_game_state_change()
+
     server_time = datetime.now(timezone.utc).isoformat()
 
     logger.info(f"Acknowledged events through seq={acked_through} for game {game_id}")
@@ -373,6 +350,23 @@ async def post_events(
         acked_through=acked_through,
         server_time=server_time
     )
+
+
+async def notify_game_state_change():
+    """Notify all connected WebSocket clients that game state has changed."""
+    dead_clients = []
+    for ws in websocket_clients:
+        try:
+            await ws.send_text("update")
+        except:
+            dead_clients.append(ws)
+
+    # Remove disconnected clients
+    for ws in dead_clients:
+        websocket_clients.remove(ws)
+
+    if dead_clients:
+        logger.debug(f"Removed {len(dead_clients)} disconnected WebSocket client(s)")
 
 
 @app.post("/v1/heartbeat", response_model=HeartbeatResponse)
@@ -462,6 +456,269 @@ async def get_game_events(game_id: str):
     }
 
 
+def reconstruct_game_state(game_id: str):
+    """
+    Reconstruct game state from received events.
+
+    Args:
+        game_id: Game ID to reconstruct state for
+
+    Returns:
+        dict with game state information
+    """
+    from score.state import load_game_state_from_db
+
+    db = get_db()
+
+    # Get game metadata
+    game = db.execute(
+        "SELECT * FROM games WHERE game_id = ?",
+        (game_id,)
+    ).fetchone()
+
+    if not game:
+        db.close()
+        return None
+
+    db.close()
+
+    # Use shared replay logic
+    result = load_game_state_from_db(CLOUD_DB_PATH, game_id)
+
+    return {
+        "game_id": game_id,
+        "home_team": game["home_team"],
+        "away_team": game["away_team"],
+        "start_time": game["start_time"],
+        "period_length_min": game["period_length_min"],
+        "clock_seconds": result["seconds"],
+        "clock_running": result["running"],
+        "event_count": result["num_events"],
+        "last_update": result["last_update"]
+    }
+
+
+@app.get("/admin/games/state")
+async def get_all_game_states(format: Optional[str] = Query(None, description="Response format: 'json' or 'html'")):
+    """
+    Get current state of all games based on received events.
+
+    This endpoint reconstructs game state by replaying all events for each game.
+    Returns HTML for browser viewing or JSON if format=json parameter is provided.
+    """
+    from fastapi.responses import HTMLResponse
+
+    db = get_db()
+
+    # Get all games
+    games = db.execute("SELECT game_id FROM games ORDER BY start_time").fetchall()
+
+    db.close()
+
+    game_states = []
+    for game_row in games:
+        game_id = game_row["game_id"]
+        state = reconstruct_game_state(game_id)
+        if state:
+            game_states.append(state)
+
+    # Return JSON if requested
+    if format == "json":
+        return {
+            "game_count": len(game_states),
+            "games": game_states
+        }
+
+    # Generate HTML view with JavaScript auto-update
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Game States</title>
+        <style>
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                padding: 20px;
+                color: #fff;
+            }
+            .container { max-width: 1200px; margin: 0 auto; }
+            h1 {
+                text-align: center;
+                margin-bottom: 30px;
+                font-size: 2.5em;
+                text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+            }
+            .games-grid {
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+                gap: 20px;
+            }
+            .game-card {
+                background: rgba(255, 255, 255, 0.15);
+                backdrop-filter: blur(10px);
+                border-radius: 15px;
+                padding: 20px;
+                border: 2px solid rgba(255, 255, 255, 0.2);
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+                transition: transform 0.2s ease;
+            }
+            .game-card:hover {
+                transform: translateY(-5px);
+            }
+            .game-id {
+                font-size: 0.85em;
+                opacity: 0.7;
+                margin-bottom: 10px;
+            }
+            .teams {
+                font-size: 1.3em;
+                font-weight: 600;
+                margin-bottom: 15px;
+            }
+            .clock {
+                font-size: 3em;
+                font-weight: 700;
+                text-align: center;
+                margin: 20px 0;
+                font-variant-numeric: tabular-nums;
+            }
+            .status {
+                text-align: center;
+                font-size: 1.1em;
+                margin-bottom: 15px;
+            }
+            .status.running { color: #4ade80; }
+            .status.paused { color: #fbbf24; }
+            .info {
+                display: flex;
+                justify-content: space-between;
+                font-size: 0.9em;
+                opacity: 0.8;
+                margin-top: 10px;
+                padding-top: 10px;
+                border-top: 1px solid rgba(255, 255, 255, 0.2);
+            }
+            .no-games {
+                grid-column: 1/-1;
+                text-align: center;
+                padding: 40px;
+                font-size: 1.5em;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🎮 Game States</h1>
+            <div class="games-grid" id="gamesGrid">
+                <div class="no-games">Loading...</div>
+            </div>
+        </div>
+
+        <script>
+        function formatClock(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        function updateGameStates() {
+            fetch('/admin/games/state?format=json')
+                .then(response => response.json())
+                .then(data => {
+                    const grid = document.getElementById('gamesGrid');
+
+                    if (data.games.length === 0) {
+                        grid.innerHTML = '<div class="no-games">No games found</div>';
+                        return;
+                    }
+
+                    let html = '';
+                    data.games.forEach(game => {
+                        const status = game.clock_running ? 'running' : 'paused';
+                        const statusIcon = game.clock_running ? '▶' : '⏸';
+                        const clock = formatClock(game.clock_seconds);
+
+                        html += `
+                            <div class="game-card">
+                                <div class="game-id">${game.game_id}</div>
+                                <div class="teams">${game.home_team} vs ${game.away_team}</div>
+                                <div class="clock">${clock}</div>
+                                <div class="status ${status}">${statusIcon} ${status.toUpperCase()}</div>
+                                <div class="info">
+                                    <span>Period: ${game.period_length_min} min</span>
+                                    <span>Events: ${game.event_count}</span>
+                                </div>
+                            </div>
+                        `;
+                    });
+
+                    grid.innerHTML = html;
+                })
+                .catch(error => {
+                    console.error('Error fetching game states:', error);
+                });
+        }
+
+        // Connect to WebSocket for real-time updates
+        const ws = new WebSocket(`ws://${location.host}/ws/game-states`);
+
+        ws.onopen = () => {
+            console.log('WebSocket connected - will update on database changes');
+            // Load initial state
+            updateGameStates();
+        };
+
+        ws.onmessage = (event) => {
+            // Server sends "update" when database changes
+            if (event.data === 'update') {
+                console.log('Database changed - updating game states');
+                updateGameStates();
+            }
+        };
+
+        ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+        };
+
+        ws.onclose = () => {
+            console.log('WebSocket disconnected - attempting to reconnect...');
+            // Attempt to reconnect after 2 seconds
+            setTimeout(() => {
+                location.reload();
+            }, 2000);
+        };
+        </script>
+    </body>
+    </html>
+    """
+
+    return HTMLResponse(content=html)
+
+
+@app.websocket("/ws/game-states")
+async def websocket_game_states(websocket: WebSocket):
+    """WebSocket endpoint for real-time game state updates."""
+    await websocket.accept()
+    websocket_clients.append(websocket)
+    logger.info(f"WebSocket client connected for game states (total: {len(websocket_clients)})")
+
+    try:
+        # Keep connection alive
+        while True:
+            # Wait for messages (we don't expect any from client, but this keeps connection alive)
+            await asyncio.sleep(3600)
+    except:
+        pass
+    finally:
+        if websocket in websocket_clients:
+            websocket_clients.remove(websocket)
+        logger.info(f"WebSocket client disconnected for game states (total: {len(websocket_clients)})")
+
+
 # ---------- Data Seeding ----------
 
 def seed_sample_data():
@@ -509,7 +766,8 @@ def seed_sample_data():
 def main():
     """Run the cloud API server."""
     # Configure logging first
-    init_logging()
+    from score.log import init_logging
+    init_logging("cloud", color="dim magenta")
 
     logger.info("Starting Cloud API Simulator")
 

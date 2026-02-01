@@ -86,10 +86,10 @@ def test_game_state_isolation(temp_db):
         (140, "GAME_PAUSED", {}),  # 2 minutes later
     ], base_time)
 
-    from score.cli import load_game_state
+    from score.app import load_game_state
 
-    with patch('score.cli.DB_PATH', temp_db):
-        from score.cli import state
+    with patch('score.app.DB_PATH', temp_db):
+        from score.app import state
 
         # Load game 1 state
         state.mode = "game-001"
@@ -119,10 +119,10 @@ def test_switch_between_games_preserves_state(temp_db):
         (70, "GAME_PAUSED", {}),  # Run for 60 seconds
     ], base_time)
 
-    from score.cli import load_game_state
+    from score.app import load_game_state
 
-    with patch('score.cli.DB_PATH', temp_db):
-        from score.cli import state
+    with patch('score.app.DB_PATH', temp_db):
+        from score.app import state
 
         # Load game 1
         state.mode = "game-001"
@@ -146,8 +146,8 @@ def test_switch_between_games_preserves_state(temp_db):
 
 def test_initial_clock_set_event_created(temp_db):
     """Test that a CLOCK_SET event is created when initializing a new game."""
-    with patch('score.cli.DB_PATH', temp_db):
-        from score.cli import state
+    with patch('score.app.DB_PATH', temp_db):
+        from score.app import state
         state.mode = "game-001"
         state.seconds = 900
 
@@ -179,8 +179,8 @@ def test_auto_pause_on_game_switch(temp_db):
         (10, "GAME_STARTED", {}),
     ], base_time)
 
-    with patch('score.cli.DB_PATH', temp_db):
-        from score.cli import state
+    with patch('score.app.DB_PATH', temp_db):
+        from score.app import state
         state.mode = "game-001"
         state.running = True
         state.last_update = base_time + 10
@@ -213,10 +213,10 @@ def test_game_at_zero_not_reset(temp_db):
         (70, "GAME_PAUSED", {}),  # Run for 60 seconds, should be at 0
     ], base_time)
 
-    from score.cli import load_game_state
+    from score.app import load_game_state
 
-    with patch('score.cli.DB_PATH', temp_db):
-        from score.cli import state
+    with patch('score.app.DB_PATH', temp_db):
+        from score.app import state
         state.mode = "game-001"
 
         # Load the game state
@@ -243,10 +243,10 @@ def test_multiple_pause_resume_cycles(temp_db):
         (180, "GAME_PAUSED", {}),     # Run 60s, 750s left
     ], base_time)
 
-    from score.cli import load_game_state
+    from score.app import load_game_state
 
-    with patch('score.cli.DB_PATH', temp_db):
-        from score.cli import state
+    with patch('score.app.DB_PATH', temp_db):
+        from score.app import state
         state.mode = "game-001"
         load_game_state("game-001")
 
@@ -257,8 +257,8 @@ def test_multiple_pause_resume_cycles(temp_db):
 
 def test_clock_mode_has_no_game_id(temp_db):
     """Test that events in clock mode have NULL game_id."""
-    with patch('score.cli.DB_PATH', temp_db):
-        from score.cli import state
+    with patch('score.app.DB_PATH', temp_db):
+        from score.app import state
         state.mode = "clock"
 
         # These events should have NULL game_id
@@ -290,10 +290,10 @@ def test_events_filtered_by_game_id(temp_db):
         (70, "GAME_PAUSED", {}),
     ], base_time)
 
-    from score.cli import load_game_state
+    from score.app import load_game_state
 
-    with patch('score.cli.DB_PATH', temp_db):
-        from score.cli import state
+    with patch('score.app.DB_PATH', temp_db):
+        from score.app import state
         state.mode = "game-001"
 
         # Load only game-001

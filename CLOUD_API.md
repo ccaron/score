@@ -8,10 +8,13 @@ This is a simulated cloud backend for the scoreboard system. Mini PCs connect to
 
 ```bash
 # Option 1: Run directly with Python
-python -m score.cloud_api
+python -m score.cloud
 
-# Option 2: Using the Makefile (if added)
-make run-cloud
+# Option 2: Using the installed command
+uv run score-cloud
+
+# Option 3: Using the Makefile (runs both apps)
+make run
 ```
 
 The API will start on **http://localhost:8001**
@@ -157,6 +160,28 @@ View all events received for a specific game.
 curl "http://localhost:8001/admin/events/game-001"
 ```
 
+### Get All Game States
+
+**GET** `/admin/games/state`
+
+View the reconstructed state of all games based on received events. This endpoint replays all events for each game to show the current clock state, whether it's running, and how many events have been received.
+
+Returns a styled HTML page for easy viewing in a browser.
+
+```bash
+# Open in browser
+open http://localhost:8001/admin/games/state
+
+# Or with curl
+curl "http://localhost:8001/admin/games/state"
+```
+
+The page shows each game as a card with:
+- Game ID and team names
+- Large clock display showing time remaining
+- Running/Paused status with color coding
+- Period length and event count
+
 ## Database
 
 The cloud API uses SQLite database: `cloud.db`
@@ -167,6 +192,23 @@ The cloud API uses SQLite database: `cloud.db`
 - `received_events` - Events uploaded from mini PCs
 - `heartbeats` - Device status/monitoring data
 - `schedule_versions` - Track schedule changes
+
+## Event Pushing from score-app
+
+The score-app automatically pushes events to the cloud API using the `CloudEventPusher`. This runs in a separate process and continuously sends events as they're created.
+
+**How it works:**
+1. Events are stored in the local `game.db` database
+2. The CloudEventPusher process monitors for new events
+3. Events are sent via HTTP POST to `/v1/games/{game_id}/events`
+4. Delivery status is tracked in the `deliveries` table
+5. Failed deliveries are automatically retried
+6. The UI shows cloud push status (healthy/pending/dead)
+
+**Configuration:**
+- Cloud API URL is set in `CLOUD_API_URL` constant in `cli.py`
+- Default: `http://localhost:8001`
+- Device ID is set to `device-001` by default
 
 ## Sample Data
 

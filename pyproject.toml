@@ -23,9 +23,9 @@ dev = [
 ]
 
 [project.scripts]
-score-app = "score.cli:main"
-score-push-events = "score.cli:push_events"
-score-cloud = "score.cloud_api:main"
+score-app = "score.app:main"
+score-push-events = "score.app:push_events"
+score-cloud = "score.cloud:main"
 
 [build-system]
 requires = ["uv_build>=0.9.6,<0.10.0"]
