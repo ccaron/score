@@ -6,3 +6,4 @@ dist
 game_clock.spec
 src/score.egg-info
 events.log
+.\#Makefile

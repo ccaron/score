@@ -133,6 +133,17 @@ button:active {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
+button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+button:disabled:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: none;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
 .controls {
     display: flex;
     gap: 1em;
@@ -277,6 +288,7 @@ button:active {
 
 <div class="controls">
     <button onclick="toggleGame(this)">▶ Start</button>
+    <button onclick="toggleMode()">🕐 Clock Mode</button>
     <button onclick="debugEvents()">🐞 Debug Events</button>
 </div>
 
@@ -297,18 +309,40 @@ button:active {
 const ws = new WebSocket(`ws://${location.host}/ws`);
 
 let currentSeconds = 1200; // Track current clock value
+let currentMode = 'game'; // Track current mode
 
 ws.onmessage = (event) => {
     const data = JSON.parse(event.data).state;
 
     currentSeconds = data.seconds;
-    const mins = Math.floor(data.seconds / 60);
-    const secs = data.seconds % 60;
-    document.getElementById("clock").textContent =
-        `${mins}:${secs.toString().padStart(2,'0')}`;
+    currentMode = data.mode;
 
-    document.querySelector("button").textContent =
-        data.running ? "⏸ Pause" : "▶ Start";
+    // Update clock display based on mode
+    if (data.mode === 'clock') {
+        document.getElementById("clock").textContent = data.current_time;
+    } else {
+        const mins = Math.floor(data.seconds / 60);
+        const secs = data.seconds % 60;
+        document.getElementById("clock").textContent =
+            `${mins}:${secs.toString().padStart(2,'0')}`;
+    }
+
+    // Update start/pause button
+    const startButton = document.querySelector(".controls button:first-child");
+    startButton.textContent = data.running ? "⏸ Pause" : "▶ Start";
+    startButton.disabled = data.mode === 'clock';
+
+    // Update mode toggle button
+    const modeButton = document.querySelector(".controls button:nth-child(2)");
+    modeButton.textContent = data.mode === 'game' ? "🕐 Clock Mode" : "🎮 Game Mode";
+
+    // Update hint text
+    const hintElement = document.querySelector(".hint");
+    if (data.mode === 'clock') {
+        hintElement.textContent = "Showing current time";
+    } else {
+        hintElement.textContent = "Double-click the clock to set time";
+    }
 
     // Update pusher status indicator
     const pusherStatus = document.getElementById("pusherStatus");
@@ -318,6 +352,10 @@ ws.onmessage = (event) => {
 function toggleGame(btn) {
     const running = btn.textContent.includes("Pause");
     fetch(running ? '/pause' : '/start', { method: 'POST' });
+}
+
+function toggleMode() {
+    fetch('/toggle_mode', { method: 'POST' });
 }
 
 function debugEvents() {
@@ -341,6 +379,11 @@ function applyTime() {
 }
 
 document.getElementById("clock").addEventListener("dblclick", () => {
+    // Only allow setting time in game mode
+    if (currentMode !== 'game') {
+        return;
+    }
+
     const mins = Math.floor(currentSeconds / 60);
     const secs = currentSeconds % 60;
     const currentTime = `${mins}:${secs.toString().padStart(2,'0')}`;
@@ -427,6 +470,7 @@ class GameState:
         self.last_update = int(time.time())
         self.clients: list[WebSocket] = []
         self.pusher_status = "unknown"  # "healthy", "pending", "dead", "unknown"
+        self.mode = "game"  # "game" or "clock"
 
     def add_event(self, event_type, payload=None):
         logger.debug(f"Adding event: {event_type} with payload: {payload}")
@@ -454,6 +498,8 @@ class GameState:
             "seconds": self.seconds,
             "running": self.running,
             "pusher_status": self.pusher_status,
+            "mode": self.mode,
+            "current_time": time.strftime("%H:%M:%S"),
         }
 
 state = GameState()
@@ -488,6 +534,9 @@ def load_state_from_events():
             state.running = False
             state.last_update = r["created_at"]
             logger.debug(f"Replayed GAME_PAUSED: {state.seconds}s remaining")
+        elif r["type"] == "MODE_CHANGED":
+            state.mode = payload["mode"]
+            logger.debug(f"Replayed MODE_CHANGED: {state.mode}")
 
     # Correct for elapsed wall time if still running
     if state.running:
@@ -584,6 +633,15 @@ async def set_time(request: dict):
     state.seconds = new_seconds
     state.last_update = int(time.time())
     state.add_event("CLOCK_SET", {"seconds": state.seconds})
+    await broadcast_state()
+    return {"status": "ok"}
+
+@app.post("/toggle_mode")
+async def toggle_mode():
+    new_mode = "clock" if state.mode == "game" else "game"
+    logger.info(f"Toggling mode from {state.mode} to {new_mode}")
+    state.mode = new_mode
+    state.add_event("MODE_CHANGED", {"mode": state.mode})
     await broadcast_state()
     return {"status": "ok"}
 
