@@ -409,4 +409,115 @@ def test_pusher_status_dead_takes_priority_over_undelivered(temp_db):
         assert state.pusher_status == "dead"
 
 
+# ---------- Tests for mode functionality ----------
+
+def test_default_mode_is_game(temp_db):
+    """Test that default mode is 'game'."""
+    from score.cli import GameState
+
+    with patch('score.cli.DB_PATH', temp_db):
+        state = GameState()
+        assert state.mode == "game"
+
+
+def test_mode_changed_event_creation(temp_db):
+    """Test that mode changes create MODE_CHANGED events."""
+    from score.cli import GameState
+
+    with patch('score.cli.DB_PATH', temp_db):
+        state = GameState()
+
+        # Change mode to clock
+        state.mode = "clock"
+        state.add_event("MODE_CHANGED", {"mode": "clock"})
+
+        # Verify event was created
+        conn = sqlite3.connect(temp_db)
+        event = conn.execute(
+            "SELECT type, payload FROM events WHERE type='MODE_CHANGED'"
+        ).fetchone()
+        conn.close()
+
+        assert event is not None
+        assert event[0] == "MODE_CHANGED"
+        assert json.loads(event[1]) == {"mode": "clock"}
+
+
+def test_load_state_with_mode_change(temp_db):
+    """Test that mode is correctly restored from MODE_CHANGED events."""
+    create_events(temp_db, [
+        (0, "CLOCK_SET", {"seconds": 1200}),
+        (10, "MODE_CHANGED", {"mode": "clock"}),
+    ])
+
+    state = load_and_get_state(temp_db)
+
+    assert state.mode == "clock"
+
+
+def test_load_state_with_multiple_mode_changes(temp_db):
+    """Test that mode is correctly restored with multiple mode changes."""
+    create_events(temp_db, [
+        (0, "CLOCK_SET", {"seconds": 1200}),
+        (10, "MODE_CHANGED", {"mode": "clock"}),
+        (20, "MODE_CHANGED", {"mode": "game"}),
+        (30, "MODE_CHANGED", {"mode": "clock"}),
+    ])
+
+    state = load_and_get_state(temp_db)
+
+    # Last mode should be clock
+    assert state.mode == "clock"
+
+
+def test_to_dict_includes_mode_and_time(temp_db):
+    """Test that to_dict() includes mode and current_time fields."""
+    from score.cli import GameState
+
+    with patch('score.cli.DB_PATH', temp_db):
+        state = GameState()
+        state.mode = "clock"
+
+        result = state.to_dict()
+
+        assert "mode" in result
+        assert "current_time" in result
+        assert result["mode"] == "clock"
+        # Verify current_time has format HH:MM
+        assert len(result["current_time"]) == 5
+        assert result["current_time"][2] == ":"
+
+
+def test_mode_persists_across_game_actions(temp_db):
+    """Test that mode persists correctly alongside game events."""
+    create_events(temp_db, [
+        (0, "CLOCK_SET", {"seconds": 1200}),
+        (10, "MODE_CHANGED", {"mode": "clock"}),
+        (20, "GAME_STARTED", {}),
+        (80, "GAME_PAUSED", {}),
+    ])
+
+    state = load_and_get_state(temp_db)
+
+    # Mode should still be clock
+    assert state.mode == "clock"
+    # Game state should also be correct
+    assert state.seconds == 1140  # 1200 - 60 seconds elapsed
+    assert state.running is False
+
+
+def test_mode_defaults_to_game_without_mode_change_event(temp_db):
+    """Test that mode remains 'game' if no MODE_CHANGED events exist."""
+    create_events(temp_db, [
+        (0, "CLOCK_SET", {"seconds": 1200}),
+        (10, "GAME_STARTED", {}),
+        (70, "GAME_PAUSED", {}),
+    ])
+
+    state = load_and_get_state(temp_db)
+
+    # Mode should default to game
+    assert state.mode == "game"
+
+
 

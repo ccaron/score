@@ -499,7 +499,7 @@ class GameState:
             "running": self.running,
             "pusher_status": self.pusher_status,
             "mode": self.mode,
-            "current_time": time.strftime("%H:%M:%S"),
+            "current_time": time.strftime("%H:%M"),
         }
 
 state = GameState()
@@ -593,10 +593,17 @@ async def game_loop():
 async def lifespan(_app: FastAPI):
     logger.info("Starting application...")
     load_state_from_events()
-    asyncio.create_task(game_loop())
+    task = asyncio.create_task(game_loop())
     logger.info("Application started")
-    yield
-    logger.info("Application shutting down")
+    try:
+        yield
+    finally:
+        logger.info("Application shutting down")
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 app = FastAPI(lifespan=lifespan)
 
@@ -677,7 +684,8 @@ async def websocket_endpoint(ws: WebSocket):
         while True:
             await asyncio.sleep(3600)
     finally:
-        state.clients.remove(ws)
+        if ws in state.clients:
+            state.clients.remove(ws)
         logger.info(f"WebSocket client disconnected (total: {len(state.clients)})")
 
 def main():
