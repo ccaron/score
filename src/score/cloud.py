@@ -25,7 +25,9 @@ logger = logging.getLogger("score.cloud")
 
 
 # ---------- Database Configuration ----------
-CLOUD_DB_PATH = "cloud.db"
+from score.config import CloudConfig
+
+CLOUD_DB_PATH = CloudConfig.DB_PATH
 
 
 def get_db():
@@ -775,7 +777,8 @@ def main():
     seed_sample_data()
 
     # Run on a different port than the main app (8001 instead of 8000)
-    uvicorn.run(app, host="0.0.0.0", port=8001, log_config=None)
+    logger.info(f"Starting cloud API server on http://{CloudConfig.HOST}:{CloudConfig.PORT}")
+    uvicorn.run(app, host=CloudConfig.HOST, port=CloudConfig.PORT, log_config=None)
 
 
 if __name__ == "__main__":

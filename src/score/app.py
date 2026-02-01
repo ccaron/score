@@ -451,10 +451,13 @@ document.getElementById('timeModal').addEventListener('click', (e) => {
 </html>
 """
 
+# ---------- Configuration ----------
+from score.config import AppConfig
+
 # ---------- SQLite setup ----------
-DB_PATH = "game.db"
-CLOUD_API_URL = "http://localhost:8001"  # score-cloud API
-RINK_ID = "rink-alpha"  # Default rink ID for fetching schedules
+DB_PATH = AppConfig.DB_PATH
+CLOUD_API_URL = AppConfig.CLOUD_API_URL
+RINK_ID = AppConfig.RINK_ID
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -846,12 +849,12 @@ def main():
     pusher_process.start()
     logger.info(f"Cloud push process started (PID: {pusher_process.pid})")
 
-    logger.info("Starting web server on http://0.0.0.0:8000")
+    logger.info(f"Starting web server on http://{AppConfig.HOST}:{AppConfig.PORT}")
 
     try:
         # Run uvicorn directly (blocking call)
         # Bind to 0.0.0.0 so it's accessible from outside the container
-        uvicorn.run(app, host="0.0.0.0", port=8000, log_config=None)
+        uvicorn.run(app, host=AppConfig.HOST, port=AppConfig.PORT, log_config=None)
     finally:
         logger.info("Server stopped, waiting for cloud push to finish")
 
@@ -900,7 +903,7 @@ def push_events(log_queue):
     pusher = CloudEventPusher(
         db_path=DB_PATH,
         cloud_api_url=CLOUD_API_URL,
-        device_id="device-001"
+        device_id=AppConfig.DEVICE_ID
     )
 
     try:
