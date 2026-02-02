@@ -23,7 +23,7 @@ html = """
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Game Clock</title>
+<title>score-app | Game Clock</title>
 <style>
 * {
     margin: 0;

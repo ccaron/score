@@ -881,7 +881,7 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
     <html>
     <head>
         <meta charset="UTF-8">
-        <title>Device Management</title>
+        <title>score-cloud | Device Management</title>
         <style>
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
             body {{
@@ -1818,7 +1818,7 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
     <html>
     <head>
         <meta charset="UTF-8">
-        <title>Game States</title>
+        <title>score-cloud | Games</title>
         <style>
             * { margin: 0; padding: 0; box-sizing: border-box; }
             body {
@@ -2160,6 +2160,11 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
 
         // Load game states on page load
         updateGameStates();
+
+        // Set default dates to today
+        const today = new Date().toISOString().split('T')[0];
+        document.getElementById('nhlStartDate').value = today;
+        document.getElementById('nhlEndDate').value = today;
         </script>
     </body>
     </html>
@@ -2245,7 +2250,7 @@ async def get_rosters_admin(format: Optional[str] = Query(None, description="Res
     <html>
     <head>
         <meta charset="UTF-8">
-        <title>Team Rosters</title>
+        <title>score-cloud | Rosters</title>
         <style>
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
             body {{
@@ -2632,7 +2637,7 @@ async def get_teams_admin(format: Optional[str] = Query(None, description="Respo
     <html>
     <head>
         <meta charset="UTF-8">
-        <title>NHL Teams</title>
+        <title>score-cloud | Teams</title>
         <style>
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
             body {{
@@ -2950,7 +2955,7 @@ async def get_players_admin(format: Optional[str] = Query(None, description="Res
     <html>
     <head>
         <meta charset="UTF-8">
-        <title>NHL Players</title>
+        <title>score-cloud | Players</title>
         <style>
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
             body {{
@@ -3504,9 +3509,6 @@ async def load_nhl_schedule(
     db = get_db()
     current_time = int(time.time())
 
-    # Track which teams we've already fetched rosters for (to avoid duplicates)
-    teams_processed = set()
-
     for g in nhl_games:
         # Store game with team abbreviations
         db.execute("""
@@ -3525,22 +3527,6 @@ async def load_nhl_schedule(
             20,
             current_time
         ))
-
-        # Fetch and store rosters for each team (only once per team)
-        home_abbrev = g.get("home_abbrev")
-        away_abbrev = g.get("away_abbrev")
-
-        if home_abbrev and home_abbrev not in teams_processed:
-            home_roster = fetch_nhl_roster(home_abbrev)
-            if home_roster:
-                store_roster_in_db(home_abbrev, home_roster, db)
-                teams_processed.add(home_abbrev)
-
-        if away_abbrev and away_abbrev not in teams_processed:
-            away_roster = fetch_nhl_roster(away_abbrev)
-            if away_roster:
-                store_roster_in_db(away_abbrev, away_roster, db)
-                teams_processed.add(away_abbrev)
 
     # Update schedule version
     version = datetime.now(timezone.utc).isoformat()
