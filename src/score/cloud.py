@@ -980,7 +980,6 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
         <div class="nav">
             <a href="/admin/devices" class="active">Devices</a>
             <a href="/admin/games/state">Games</a>
-            <a href="/admin/heartbeats/latest">Heartbeats</a>
         </div>
         <div class="container">
             <div class="header">
@@ -1878,7 +1877,6 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
         <div class="nav">
             <a href="/admin/devices">Devices</a>
             <a href="/admin/games/state" class="active">Games</a>
-            <a href="/admin/heartbeats/latest">Heartbeats</a>
         </div>
         <div class="container">
             <h1>Games</h1>
@@ -1896,8 +1894,9 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
                 <table id="gamesTable">
                     <thead>
                         <tr>
-                            <th style="width: 15%;">Game ID</th>
-                            <th style="width: 30%;">Teams</th>
+                            <th style="width: 12%;">Game ID</th>
+                            <th style="width: 12%;">Game Date</th>
+                            <th style="width: 26%;">Teams</th>
                             <th style="width: 10%;">Score</th>
                             <th style="width: 12%;">Clock</th>
                             <th style="width: 10%;">Status</th>
@@ -1905,6 +1904,7 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
                         </tr>
                         <tr class="filter-row">
                             <td><input type="text" id="filterGameId" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterGameDate" placeholder="Filter..." onkeyup="filterTable()"></td>
                             <td><input type="text" id="filterTeams" placeholder="Filter..." onkeyup="filterTable()"></td>
                             <td><input type="text" id="filterScore" placeholder="Filter..." onkeyup="filterTable()"></td>
                             <td><input type="text" id="filterClock" placeholder="Filter..." onkeyup="filterTable()"></td>
@@ -1914,7 +1914,7 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
                     </thead>
                     <tbody id="gamesBody">
                         <tr>
-                            <td colspan="6" class="no-games">Loading...</td>
+                            <td colspan="7" class="no-games">Loading...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -1931,6 +1931,7 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
         function filterTable() {
             const filters = {
                 gameId: document.getElementById('filterGameId').value.toLowerCase(),
+                gameDate: document.getElementById('filterGameDate').value.toLowerCase(),
                 teams: document.getElementById('filterTeams').value.toLowerCase(),
                 score: document.getElementById('filterScore').value.toLowerCase(),
                 clock: document.getElementById('filterClock').value.toLowerCase(),
@@ -1943,17 +1944,19 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
 
             for (let i = 0; i < rows.length; i++) {
                 const cells = rows[i].getElementsByTagName('td');
-                if (cells.length < 6) continue; // Skip "no games" row
+                if (cells.length < 7) continue; // Skip "no games" row
 
                 const gameId = cells[0].textContent.toLowerCase();
-                const teams = cells[1].textContent.toLowerCase();
-                const score = cells[2].textContent.toLowerCase();
-                const clock = cells[3].textContent.toLowerCase();
-                const status = cells[4].textContent.toLowerCase();
-                const period = cells[5].textContent.toLowerCase();
+                const gameDate = cells[1].textContent.toLowerCase();
+                const teams = cells[2].textContent.toLowerCase();
+                const score = cells[3].textContent.toLowerCase();
+                const clock = cells[4].textContent.toLowerCase();
+                const status = cells[5].textContent.toLowerCase();
+                const period = cells[6].textContent.toLowerCase();
 
                 const match =
                     gameId.includes(filters.gameId) &&
+                    gameDate.includes(filters.gameDate) &&
                     teams.includes(filters.teams) &&
                     score.includes(filters.score) &&
                     clock.includes(filters.clock) &&
@@ -1971,7 +1974,7 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
                     const tbody = document.getElementById('gamesBody');
 
                     if (data.games.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="6" class="no-games">No games found</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="7" class="no-games">No games found</td></tr>';
                         return;
                     }
 
@@ -1981,10 +1984,14 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
                         const statusText = game.clock_running ? 'Running' : 'Paused';
                         const clock = formatClock(game.clock_seconds);
                         const score = `${game.home_score} - ${game.away_score}`;
+                        // Convert UTC timestamp to local date (handles timezone offset)
+                        const startTime = new Date(game.start_time);
+                        const gameDate = startTime.toLocaleDateString('en-CA'); // YYYY-MM-DD format
 
                         html += `
                             <tr>
                                 <td class="game-id">${game.game_id}</td>
+                                <td>${gameDate}</td>
                                 <td>${game.home_team} vs ${game.away_team}</td>
                                 <td><strong>${score}</strong></td>
                                 <td class="clock">${clock}</td>
