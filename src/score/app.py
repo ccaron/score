@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import requests
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, HTTPException
 from fastapi.responses import HTMLResponse
 import uvicorn
 
@@ -1362,6 +1362,22 @@ async def get_games():
     """Get available games from the cloud API."""
     games = fetch_games_from_cloud()
     return {"games": games}
+
+
+@app.get("/games/{game_id}/roster")
+async def get_roster(game_id: str):
+    """Get roster for a game from the cloud API."""
+    try:
+        response = requests.get(
+            f"{CLOUD_API_URL}/v1/games/{game_id}/roster",
+            timeout=5
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Failed to fetch roster for {game_id}: {e}")
+        raise HTTPException(status_code=503, detail="Cloud unavailable")
+
 
 @app.post("/select_mode")
 async def select_mode(request: dict):

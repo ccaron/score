@@ -40,6 +40,11 @@ def replay_events(events, current_time=None):
     away_score = 0
     goals = []  # Track goals for display
 
+    # Roster state tracking
+    home_roster = []        # List of active player IDs
+    away_roster = []        # List of active player IDs
+    roster_details = {}     # Map: player_id -> player info dict
+
     for event in events:
         # Handle different timestamp field names (created_at for score-app, received_at for cloud)
         event_time = event.get("created_at") or event.get("received_at")
@@ -147,6 +152,46 @@ def replay_events(events, current_time=None):
                 away_score = score
                 logger.debug(f"Replayed SCORE_CHANGE (legacy): away={away_score}")
 
+        # Roster events
+        elif event["type"] == "ROSTER_INITIALIZED":
+            team = payload.get("team")
+            players = payload.get("players", [])
+
+            for p in players:
+                player_id = p.get("player_id")
+                if player_id:
+                    roster_details[player_id] = p
+
+                    if p.get("status") == "active":
+                        if team == "home" and player_id not in home_roster:
+                            home_roster.append(player_id)
+                        elif team == "away" and player_id not in away_roster:
+                            away_roster.append(player_id)
+
+            logger.debug(f"Replayed ROSTER_INITIALIZED: {team} ({len(players)} players)")
+
+        elif event["type"] == "ROSTER_PLAYER_SCRATCHED":
+            player_id = payload.get("player_id")
+            team = payload.get("team")
+
+            if team == "home" and player_id in home_roster:
+                home_roster.remove(player_id)
+            elif team == "away" and player_id in away_roster:
+                away_roster.remove(player_id)
+
+            logger.debug(f"Replayed ROSTER_PLAYER_SCRATCHED: {team} player {player_id}")
+
+        elif event["type"] == "ROSTER_PLAYER_ACTIVATED":
+            player_id = payload.get("player_id")
+            team = payload.get("team")
+
+            if team == "home" and player_id not in home_roster:
+                home_roster.append(player_id)
+            elif team == "away" and player_id not in away_roster:
+                away_roster.append(player_id)
+
+            logger.debug(f"Replayed ROSTER_PLAYER_ACTIVATED: {team} player {player_id}")
+
     # If still running, account for current elapsed time
     if running:
         elapsed = current_time - last_update
@@ -159,7 +204,10 @@ def replay_events(events, current_time=None):
         "last_update": last_update,
         "home_score": home_score,
         "away_score": away_score,
-        "goals": goals
+        "goals": goals,
+        "home_roster": home_roster,
+        "away_roster": away_roster,
+        "roster_details": roster_details
     }
 
 
@@ -206,3 +254,92 @@ def load_game_state_from_db(db_path, game_id):
     state["num_events"] = len(events)
 
     return state
+
+
+def get_game_roster_at_time(db_path, game_id, target_time):
+    """
+    Get roster state as of a specific timestamp using temporal queries.
+
+    Args:
+        db_path: Path to database
+        game_id: Game identifier
+        target_time: Unix timestamp (typically game start time)
+
+    Returns:
+        dict: {
+            "home_roster": [player_ids],
+            "away_roster": [player_ids],
+            "roster_details": {player_id: player_info}
+        }
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    # Get game info including team abbreviations
+    game = conn.execute("""
+        SELECT home_abbrev, away_abbrev
+        FROM games
+        WHERE game_id = ?
+    """, (game_id,)).fetchone()
+
+    if not game:
+        conn.close()
+        return {
+            "home_roster": [],
+            "away_roster": [],
+            "roster_details": {}
+        }
+
+    home_abbrev = game["home_abbrev"]
+    away_abbrev = game["away_abbrev"]
+
+    # Temporal query for home roster
+    home_players = []
+    if home_abbrev:
+        home_players = conn.execute("""
+            SELECT p.player_id, p.full_name, p.first_name, p.last_name,
+                   p.jersey_number, p.position, p.shoots_catches,
+                   tr.roster_status
+            FROM team_rosters tr
+            JOIN players p ON tr.player_id = p.player_id
+            WHERE tr.team_abbrev = ?
+              AND tr.added_at <= ?
+              AND (tr.removed_at IS NULL OR tr.removed_at > ?)
+        """, (home_abbrev, target_time, target_time)).fetchall()
+
+    # Temporal query for away roster
+    away_players = []
+    if away_abbrev:
+        away_players = conn.execute("""
+            SELECT p.player_id, p.full_name, p.first_name, p.last_name,
+                   p.jersey_number, p.position, p.shoots_catches,
+                   tr.roster_status
+            FROM team_rosters tr
+            JOIN players p ON tr.player_id = p.player_id
+            WHERE tr.team_abbrev = ?
+              AND tr.added_at <= ?
+              AND (tr.removed_at IS NULL OR tr.removed_at > ?)
+        """, (away_abbrev, target_time, target_time)).fetchall()
+
+    conn.close()
+
+    # Build roster data structures
+    home_roster = []
+    away_roster = []
+    roster_details = {}
+
+    for p in home_players:
+        player_id = p["player_id"]
+        home_roster.append(player_id)
+        roster_details[player_id] = dict(p)
+
+    for p in away_players:
+        player_id = p["player_id"]
+        away_roster.append(player_id)
+        roster_details[player_id] = dict(p)
+
+    return {
+        "home_roster": home_roster,
+        "away_roster": away_roster,
+        "roster_details": roster_details
+    }

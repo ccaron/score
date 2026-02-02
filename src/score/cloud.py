@@ -74,6 +74,8 @@ def init_db():
             rink_id TEXT NOT NULL,
             home_team TEXT NOT NULL,
             away_team TEXT NOT NULL,
+            home_abbrev TEXT,
+            away_abbrev TEXT,
             start_time TEXT NOT NULL,
             period_length_min INTEGER NOT NULL,
             created_at INTEGER NOT NULL,
@@ -134,6 +136,67 @@ def init_db():
             updated_at INTEGER NOT NULL,
             FOREIGN KEY (rink_id) REFERENCES rinks(rink_id)
         )
+    """)
+
+    # Players table (master player data from NHL API)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS players (
+            player_id INTEGER PRIMARY KEY,
+            full_name TEXT NOT NULL,
+            first_name TEXT NOT NULL,
+            last_name TEXT NOT NULL,
+            jersey_number INTEGER,
+            position TEXT,
+            shoots_catches TEXT,
+            height_inches INTEGER,
+            weight_pounds INTEGER,
+            birth_date TEXT,
+            birth_city TEXT,
+            birth_country TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+
+    db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_players_name
+        ON players(last_name, first_name)
+    """)
+
+    # Teams table (master team data)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS teams (
+            team_abbrev TEXT PRIMARY KEY,
+            city TEXT NOT NULL,
+            team_name TEXT NOT NULL,
+            full_name TEXT NOT NULL,
+            conference TEXT,
+            division TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+
+    # Team rosters (temporal tracking - when players joined/left teams)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS team_rosters (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            player_id INTEGER NOT NULL,
+            team_abbrev TEXT NOT NULL,
+            roster_status TEXT NOT NULL,
+            added_at INTEGER NOT NULL,
+            removed_at INTEGER,
+            FOREIGN KEY (player_id) REFERENCES players(player_id),
+            UNIQUE(player_id, team_abbrev, added_at)
+        )
+    """)
+
+    db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_team_rosters_team
+        ON team_rosters(team_abbrev, added_at)
+    """)
+
+    db.execute("""
+        CREATE INDEX IF NOT EXISTS idx_team_rosters_player
+        ON team_rosters(player_id)
     """)
 
     db.commit()
@@ -344,6 +407,44 @@ async def get_schedule(
         schedule_version=schedule_version,
         games=games_list
     )
+
+
+@app.get("/v1/games/{game_id}/roster")
+async def get_game_roster(game_id: str = Path(..., description="Game ID")):
+    """
+    Get roster for a game as of game start time.
+
+    Returns home and away rosters with full player details.
+    """
+    logger.info(f"Roster request for game_id={game_id}")
+
+    db = get_db()
+
+    # Get game start time
+    game = db.execute(
+        "SELECT start_time FROM games WHERE game_id = ?",
+        (game_id,)
+    ).fetchone()
+
+    if not game:
+        db.close()
+        raise HTTPException(status_code=404, detail="Game not found")
+
+    # Parse start time to unix timestamp
+    start_time = int(datetime.fromisoformat(game["start_time"]).timestamp())
+
+    db.close()
+
+    # Get roster state at game start using state replay
+    from score.state import get_game_roster_at_time
+    roster_state = get_game_roster_at_time(CLOUD_DB_PATH, game_id, start_time)
+
+    return {
+        "game_id": game_id,
+        "home_roster": roster_state["home_roster"],
+        "away_roster": roster_state["away_roster"],
+        "players": roster_state["roster_details"]
+    }
 
 
 @app.get("/v1/devices/{device_id}/config", response_model=DeviceConfigResponse)
@@ -980,6 +1081,9 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
         <div class="nav">
             <a href="/admin/devices" class="active">Devices</a>
             <a href="/admin/games/state">Games</a>
+            <a href="/admin/teams">Teams</a>
+            <a href="/admin/players">Players</a>
+            <a href="/admin/rosters">Rosters</a>
         </div>
         <div class="container">
             <div class="header">
@@ -1877,6 +1981,9 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
         <div class="nav">
             <a href="/admin/devices">Devices</a>
             <a href="/admin/games/state" class="active">Games</a>
+            <a href="/admin/teams">Teams</a>
+            <a href="/admin/players">Players</a>
+            <a href="/admin/rosters">Rosters</a>
         </div>
         <div class="container">
             <h1>Games</h1>
@@ -2061,6 +2168,999 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
     return HTMLResponse(content=html)
 
 
+@app.get("/admin/rosters")
+async def get_rosters_admin(format: Optional[str] = Query(None, description="Response format: 'json' or 'html'")):
+    """
+    Admin page to view all team rosters.
+
+    Returns HTML for browser viewing or JSON if format=json parameter is provided.
+    """
+    from fastapi.responses import HTMLResponse
+
+    db = get_db()
+
+    # Get all roster entries with player details
+    # Join with teams table to get team info
+    rosters = db.execute("""
+        SELECT DISTINCT
+            tr.team_abbrev,
+            t.city,
+            t.team_name,
+            t.full_name AS team_full_name,
+            p.player_id,
+            p.full_name,
+            p.jersey_number,
+            p.position,
+            tr.roster_status,
+            tr.added_at,
+            tr.removed_at
+        FROM team_rosters tr
+        JOIN players p ON tr.player_id = p.player_id
+        LEFT JOIN teams t ON tr.team_abbrev = t.team_abbrev
+        ORDER BY tr.team_abbrev, p.position, p.jersey_number
+    """).fetchall()
+
+    db.close()
+
+    # Return JSON if requested
+    if format == "json":
+        return {"rosters": [dict(r) for r in rosters]}
+
+    # Generate HTML view
+    import datetime
+
+    def format_timestamp(ts):
+        if ts:
+            return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+        return "Active"
+
+    rosters_html = ""
+    if not rosters:
+        rosters_html = '<tr><td colspan="9" style="text-align: center; color: #999; padding: 40px;">No rosters found. Click "Load Rosters" to fetch from NHL API.</td></tr>'
+    else:
+        for r in rosters:
+            status_class = "active" if r["roster_status"] == "active" else "inactive"
+            removed_display = "Active" if r["removed_at"] is None else format_timestamp(r["removed_at"])
+
+            # Use team info from teams table
+            team_city = r["city"] or "-"
+            team_name = r["team_name"] or "-"
+
+            rosters_html += f'''
+            <tr>
+                <td class="team-abbrev">{r["team_abbrev"]}</td>
+                <td>{team_city}</td>
+                <td>{team_name}</td>
+                <td>{r["jersey_number"] or "-"}</td>
+                <td>{r["full_name"]}</td>
+                <td>{r["position"]}</td>
+                <td><span class="status-badge {status_class}">{r["roster_status"]}</span></td>
+                <td class="timestamp">{format_timestamp(r["added_at"])}</td>
+                <td class="timestamp">{removed_display}</td>
+            </tr>
+            '''
+
+    html = f'''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Team Rosters</title>
+        <style>
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                padding: 20px;
+            }}
+            .nav {{
+                background: rgba(255, 255, 255, 0.95);
+                padding: 15px 30px;
+                border-radius: 10px;
+                margin-bottom: 20px;
+                box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+            }}
+            .nav a {{
+                color: #667eea;
+                text-decoration: none;
+                margin-right: 20px;
+                font-weight: 500;
+            }}
+            .nav a:hover {{
+                text-decoration: underline;
+            }}
+            .nav a.active {{
+                color: #764ba2;
+                font-weight: 700;
+            }}
+            .container {{
+                max-width: 1400px;
+                margin: 0 auto;
+                background: white;
+                border-radius: 20px;
+                box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+                overflow: hidden;
+            }}
+            h1 {{
+                padding: 30px;
+                margin: 0;
+                font-size: 1.8em;
+                color: #333;
+                background: white;
+                border-bottom: 1px solid #e9ecef;
+            }}
+            .content {{
+                padding: 30px;
+                background: white;
+            }}
+            .roster-loader {{
+                margin-bottom: 30px;
+                padding: 20px;
+                background: #f8f9fa;
+                border-radius: 8px;
+            }}
+            .roster-loader h3 {{
+                margin-bottom: 10px;
+                font-size: 1em;
+                color: #495057;
+            }}
+            .roster-loader button {{
+                padding: 10px 20px;
+                background: #667eea;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 0.95em;
+                font-weight: 500;
+            }}
+            .roster-loader button:hover {{
+                background: #5568d3;
+            }}
+            .roster-message {{
+                margin-top: 15px;
+                padding: 12px;
+                border-radius: 4px;
+                display: none;
+            }}
+            .roster-message.success {{
+                background: #d4edda;
+                color: #155724;
+                display: block;
+            }}
+            .roster-message.error {{
+                background: #f8d7da;
+                color: #721c24;
+                display: block;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+            }}
+            th {{
+                background: #f8f9fa;
+                padding: 12px 15px;
+                text-align: left;
+                font-weight: 600;
+                color: #495057;
+                border-bottom: 2px solid #dee2e6;
+                font-size: 0.9em;
+            }}
+            td {{
+                padding: 12px 15px;
+                border-bottom: 1px solid #e9ecef;
+            }}
+            tr:hover {{
+                background: #f8f9fa;
+            }}
+            .team-abbrev {{
+                font-family: 'Courier New', monospace;
+                font-weight: 600;
+                color: #667eea;
+            }}
+            .status-badge {{
+                padding: 4px 10px;
+                border-radius: 4px;
+                font-size: 0.85em;
+                font-weight: 500;
+            }}
+            .status-badge.active {{
+                background: #d4edda;
+                color: #155724;
+            }}
+            .status-badge.inactive {{
+                background: #f8d7da;
+                color: #721c24;
+            }}
+            .timestamp {{
+                color: #6c757d;
+                font-size: 0.9em;
+            }}
+            .filter-row input {{
+                width: 100%;
+                padding: 6px 8px;
+                border: 1px solid #ced4da;
+                border-radius: 4px;
+                font-size: 0.85em;
+            }}
+            .filter-row input:focus {{
+                outline: none;
+                border-color: #667eea;
+                box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.1);
+            }}
+            .filter-row td {{
+                padding: 8px 15px;
+                background: #f8f9fa;
+            }}
+        </style>
+        <script>
+            function loadRosters() {{
+                const btn = document.querySelector('.roster-loader button');
+                const msg = document.getElementById('rosterMessage');
+
+                btn.disabled = true;
+                btn.textContent = 'Loading...';
+                msg.className = 'roster-message';
+                msg.textContent = '';
+
+                // Get unique teams from current games
+                fetch('/admin/load-rosters', {{ method: 'POST' }})
+                    .then(response => response.json())
+                    .then(data => {{
+                        if (data.status === 'ok') {{
+                            msg.className = 'roster-message success';
+                            msg.textContent = data.message;
+                            setTimeout(() => location.reload(), 1000);
+                        }} else {{
+                            msg.className = 'roster-message error';
+                            msg.textContent = data.message || 'Failed to load rosters';
+                            btn.disabled = false;
+                            btn.textContent = 'Load Rosters';
+                        }}
+                    }})
+                    .catch(error => {{
+                        msg.className = 'roster-message error';
+                        msg.textContent = 'Error: ' + error.message;
+                        btn.disabled = false;
+                        btn.textContent = 'Load Rosters';
+                    }});
+            }}
+
+            function filterTable() {{
+                const filters = {{
+                    team: document.getElementById('filterTeam').value.toLowerCase(),
+                    city: document.getElementById('filterCity').value.toLowerCase(),
+                    teamName: document.getElementById('filterTeamName').value.toLowerCase(),
+                    number: document.getElementById('filterNumber').value.toLowerCase(),
+                    name: document.getElementById('filterName').value.toLowerCase(),
+                    position: document.getElementById('filterPosition').value.toLowerCase(),
+                    status: document.getElementById('filterStatus').value.toLowerCase()
+                }};
+
+                const rows = document.querySelectorAll('#rostersTable tbody tr');
+
+                rows.forEach(row => {{
+                    if (row.cells.length < 7) return; // Skip empty row
+
+                    const team = row.cells[0].textContent.toLowerCase();
+                    const city = row.cells[1].textContent.toLowerCase();
+                    const teamName = row.cells[2].textContent.toLowerCase();
+                    const number = row.cells[3].textContent.toLowerCase();
+                    const name = row.cells[4].textContent.toLowerCase();
+                    const position = row.cells[5].textContent.toLowerCase();
+                    const status = row.cells[6].textContent.toLowerCase();
+
+                    const match =
+                        team.includes(filters.team) &&
+                        city.includes(filters.city) &&
+                        teamName.includes(filters.teamName) &&
+                        number.includes(filters.number) &&
+                        name.includes(filters.name) &&
+                        position.includes(filters.position) &&
+                        status.includes(filters.status);
+
+                    row.style.display = match ? '' : 'none';
+                }});
+            }}
+        </script>
+    </head>
+    <body>
+        <div class="nav">
+            <a href="/admin/devices">Devices</a>
+            <a href="/admin/games/state">Games</a>
+            <a href="/admin/teams">Teams</a>
+            <a href="/admin/players">Players</a>
+            <a href="/admin/rosters" class="active">Rosters</a>
+        </div>
+        <div class="container">
+            <h1>Team Rosters</h1>
+            <div class="content">
+                <div class="roster-loader">
+                    <h3>Load Team Rosters from NHL API</h3>
+                    <button onclick="loadRosters()">Load Rosters</button>
+                    <div id="rosterMessage" class="roster-message"></div>
+                </div>
+
+                <table id="rostersTable">
+                    <thead>
+                        <tr>
+                            <th>Abbrev</th>
+                            <th>City</th>
+                            <th>Team Name</th>
+                            <th>#</th>
+                            <th>Player Name</th>
+                            <th>Position</th>
+                            <th>Status</th>
+                            <th>Added</th>
+                            <th>Removed</th>
+                        </tr>
+                        <tr class="filter-row">
+                            <td><input type="text" id="filterTeam" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterCity" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterTeamName" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterNumber" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterName" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterPosition" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterStatus" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td></td>
+                            <td></td>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rosters_html}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </body>
+    </html>
+    '''
+
+    return HTMLResponse(content=html)
+
+
+@app.post("/admin/load-rosters")
+async def load_rosters():
+    """
+    Load rosters for all NHL teams.
+
+    Fetches the list of all NHL teams and loads their current rosters.
+    """
+    # List of all NHL team abbreviations (2024-25 season)
+    nhl_teams = [
+        "ANA", "BOS", "BUF", "CAR", "CBJ", "CGY", "CHI", "COL", "DAL", "DET",
+        "EDM", "FLA", "LAK", "MIN", "MTL", "NJD", "NSH", "NYI", "NYR", "OTT",
+        "PHI", "PIT", "SEA", "SJS", "STL", "TBL", "TOR", "UTA", "VAN", "VGK",
+        "WPG", "WSH"
+    ]
+
+    db = get_db()
+    teams_loaded = 0
+    teams_failed = 0
+
+    for team_abbrev in nhl_teams:
+        logger.info(f"Fetching roster for {team_abbrev}...")
+
+        # Fetch roster from NHL API
+        roster = fetch_nhl_roster(team_abbrev)
+
+        if roster:
+            store_roster_in_db(team_abbrev, roster, db)
+            teams_loaded += 1
+        else:
+            teams_failed += 1
+            logger.warning(f"Failed to load roster for {team_abbrev}")
+
+    db.commit()
+    db.close()
+
+    message = f"Loaded rosters for {teams_loaded} teams"
+    if teams_failed > 0:
+        message += f" ({teams_failed} failed)"
+
+    return {
+        "status": "ok",
+        "message": message,
+        "teams_loaded": teams_loaded,
+        "teams_failed": teams_failed
+    }
+
+
+@app.post("/admin/load-teams")
+async def load_teams_endpoint():
+    """
+    Load NHL teams into the teams table.
+
+    Populates the teams table with all 32 NHL teams.
+    """
+    logger.info("Loading NHL teams...")
+    result = load_nhl_teams()
+    return result
+
+
+@app.get("/admin/teams")
+async def get_teams_admin(format: Optional[str] = Query(None, description="Response format: 'json' or 'html'")):
+    """
+    Admin page to view all NHL teams.
+
+    Returns HTML for browser viewing or JSON if format=json parameter is provided.
+    """
+    from fastapi.responses import HTMLResponse
+
+    db = get_db()
+
+    teams = db.execute("""
+        SELECT team_abbrev, city, team_name, full_name, conference, division, created_at
+        FROM teams
+        ORDER BY full_name
+    """).fetchall()
+
+    db.close()
+
+    # Return JSON if requested
+    if format == "json":
+        return {"teams": [dict(t) for t in teams]}
+
+    # Generate HTML view
+    import datetime
+
+    def format_timestamp(ts):
+        if ts:
+            return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+        return "Never"
+
+    teams_html = ""
+    if not teams:
+        teams_html = '<tr><td colspan="7" style="text-align: center; color: #999; padding: 40px;">No teams found. Click "Load Teams" to populate.</td></tr>'
+    else:
+        for t in teams:
+            teams_html += f'''
+            <tr>
+                <td class="team-abbrev">{t["team_abbrev"]}</td>
+                <td>{t["city"]}</td>
+                <td>{t["team_name"]}</td>
+                <td>{t["full_name"]}</td>
+                <td>{t["conference"]}</td>
+                <td>{t["division"]}</td>
+                <td class="timestamp">{format_timestamp(t["created_at"])}</td>
+            </tr>
+            '''
+
+    html = f'''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>NHL Teams</title>
+        <style>
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                padding: 20px;
+            }}
+            .nav {{
+                background: rgba(255, 255, 255, 0.95);
+                padding: 15px 30px;
+                border-radius: 10px;
+                margin-bottom: 20px;
+                box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+            }}
+            .nav a {{
+                color: #667eea;
+                text-decoration: none;
+                margin-right: 20px;
+                font-weight: 500;
+            }}
+            .nav a:hover {{
+                text-decoration: underline;
+            }}
+            .nav a.active {{
+                color: #764ba2;
+                font-weight: 700;
+            }}
+            .container {{
+                max-width: 1400px;
+                margin: 0 auto;
+                background: white;
+                border-radius: 20px;
+                box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+                overflow: hidden;
+            }}
+            h1 {{
+                padding: 30px;
+                margin: 0;
+                font-size: 1.8em;
+                color: #333;
+                background: white;
+                border-bottom: 1px solid #e9ecef;
+            }}
+            .content {{
+                padding: 30px;
+                background: white;
+            }}
+            .teams-loader {{
+                margin-bottom: 30px;
+                padding: 20px;
+                background: #f8f9fa;
+                border-radius: 8px;
+            }}
+            .teams-loader h3 {{
+                margin-bottom: 10px;
+                font-size: 1em;
+                color: #495057;
+            }}
+            .teams-loader button {{
+                padding: 10px 20px;
+                background: #667eea;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-size: 0.95em;
+                font-weight: 500;
+            }}
+            .teams-loader button:hover {{
+                background: #5568d3;
+            }}
+            .teams-message {{
+                margin-top: 15px;
+                padding: 12px;
+                border-radius: 4px;
+                display: none;
+            }}
+            .teams-message.success {{
+                background: #d4edda;
+                color: #155724;
+                display: block;
+            }}
+            .teams-message.error {{
+                background: #f8d7da;
+                color: #721c24;
+                display: block;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+            }}
+            th {{
+                background: #f8f9fa;
+                padding: 12px 15px;
+                text-align: left;
+                font-weight: 600;
+                color: #495057;
+                border-bottom: 2px solid #dee2e6;
+                font-size: 0.9em;
+            }}
+            td {{
+                padding: 12px 15px;
+                border-bottom: 1px solid #e9ecef;
+            }}
+            tr:hover {{
+                background: #f8f9fa;
+            }}
+            .team-abbrev {{
+                font-family: 'Courier New', monospace;
+                font-weight: 600;
+                color: #667eea;
+            }}
+            .timestamp {{
+                color: #6c757d;
+                font-size: 0.9em;
+            }}
+            .filter-row input {{
+                width: 100%;
+                padding: 6px 8px;
+                border: 1px solid #ced4da;
+                border-radius: 4px;
+                font-size: 0.85em;
+            }}
+            .filter-row input:focus {{
+                outline: none;
+                border-color: #667eea;
+                box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.1);
+            }}
+            .filter-row td {{
+                padding: 8px 15px;
+                background: #f8f9fa;
+            }}
+        </style>
+        <script>
+            function loadTeams() {{
+                const btn = document.querySelector('.teams-loader button');
+                const msg = document.getElementById('teamsMessage');
+
+                btn.disabled = true;
+                btn.textContent = 'Loading...';
+                msg.className = 'teams-message';
+                msg.textContent = '';
+
+                fetch('/admin/load-teams', {{ method: 'POST' }})
+                    .then(response => response.json())
+                    .then(data => {{
+                        if (data.status === 'ok') {{
+                            msg.className = 'teams-message success';
+                            msg.textContent = `Loaded ${{data.teams_loaded}} NHL teams`;
+                            setTimeout(() => location.reload(), 1000);
+                        }} else {{
+                            msg.className = 'teams-message error';
+                            msg.textContent = data.message || 'Failed to load teams';
+                            btn.disabled = false;
+                            btn.textContent = 'Load Teams';
+                        }}
+                    }})
+                    .catch(error => {{
+                        msg.className = 'teams-message error';
+                        msg.textContent = 'Error: ' + error.message;
+                        btn.disabled = false;
+                        btn.textContent = 'Load Teams';
+                    }});
+            }}
+
+            function filterTable() {{
+                const filters = {{
+                    abbrev: document.getElementById('filterAbbrev').value.toLowerCase(),
+                    city: document.getElementById('filterCity').value.toLowerCase(),
+                    teamName: document.getElementById('filterTeamName').value.toLowerCase(),
+                    fullName: document.getElementById('filterFullName').value.toLowerCase(),
+                    conference: document.getElementById('filterConference').value.toLowerCase(),
+                    division: document.getElementById('filterDivision').value.toLowerCase()
+                }};
+
+                const rows = document.querySelectorAll('#teamsTable tbody tr');
+
+                rows.forEach(row => {{
+                    if (row.cells.length < 6) return; // Skip empty row
+
+                    const abbrev = row.cells[0].textContent.toLowerCase();
+                    const city = row.cells[1].textContent.toLowerCase();
+                    const teamName = row.cells[2].textContent.toLowerCase();
+                    const fullName = row.cells[3].textContent.toLowerCase();
+                    const conference = row.cells[4].textContent.toLowerCase();
+                    const division = row.cells[5].textContent.toLowerCase();
+
+                    const match =
+                        abbrev.includes(filters.abbrev) &&
+                        city.includes(filters.city) &&
+                        teamName.includes(filters.teamName) &&
+                        fullName.includes(filters.fullName) &&
+                        conference.includes(filters.conference) &&
+                        division.includes(filters.division);
+
+                    row.style.display = match ? '' : 'none';
+                }});
+            }}
+        </script>
+    </head>
+    <body>
+        <div class="nav">
+            <a href="/admin/devices">Devices</a>
+            <a href="/admin/games/state">Games</a>
+            <a href="/admin/teams" class="active">Teams</a>
+            <a href="/admin/players">Players</a>
+            <a href="/admin/rosters">Rosters</a>
+        </div>
+        <div class="container">
+            <h1>NHL Teams</h1>
+            <div class="content">
+                <div class="teams-loader">
+                    <h3>Load NHL Teams</h3>
+                    <button onclick="loadTeams()">Load Teams</button>
+                    <div id="teamsMessage" class="teams-message"></div>
+                </div>
+
+                <table id="teamsTable">
+                    <thead>
+                        <tr>
+                            <th>Abbrev</th>
+                            <th>City</th>
+                            <th>Team Name</th>
+                            <th>Full Name</th>
+                            <th>Conference</th>
+                            <th>Division</th>
+                            <th>Created</th>
+                        </tr>
+                        <tr class="filter-row">
+                            <td><input type="text" id="filterAbbrev" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterCity" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterTeamName" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterFullName" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterConference" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterDivision" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td></td>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {teams_html}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </body>
+    </html>
+    '''
+
+    return HTMLResponse(content=html)
+
+
+@app.get("/admin/players")
+async def get_players_admin(format: Optional[str] = Query(None, description="Response format: 'json' or 'html'")):
+    """
+    Admin page to view all players.
+
+    Returns HTML for browser viewing or JSON if format=json parameter is provided.
+    """
+    from fastapi.responses import HTMLResponse
+
+    db = get_db()
+
+    players = db.execute("""
+        SELECT player_id, full_name, first_name, last_name,
+               jersey_number, position, shoots_catches,
+               height_inches, weight_pounds, birth_date,
+               birth_city, birth_country, created_at
+        FROM players
+        ORDER BY last_name, first_name
+    """).fetchall()
+
+    db.close()
+
+    # Return JSON if requested
+    if format == "json":
+        return {"players": [dict(p) for p in players]}
+
+    # Generate HTML view
+    import datetime
+
+    def format_timestamp(ts):
+        if ts:
+            return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+        return "Never"
+
+    players_html = ""
+    if not players:
+        players_html = '<tr><td colspan="13" style="text-align: center; color: #999; padding: 40px;">No players found. Load rosters to populate players.</td></tr>'
+    else:
+        for p in players:
+            height_str = f'{p["height_inches"] // 12}\'{p["height_inches"] % 12}"' if p["height_inches"] else "-"
+            weight_str = f'{p["weight_pounds"]} lbs' if p["weight_pounds"] else "-"
+
+            players_html += f'''
+            <tr>
+                <td class="player-id">{p["player_id"]}</td>
+                <td>{p["full_name"]}</td>
+                <td>{p["first_name"] or "-"}</td>
+                <td>{p["last_name"] or "-"}</td>
+                <td>{p["jersey_number"] if p["jersey_number"] else "-"}</td>
+                <td>{p["position"] or "-"}</td>
+                <td>{p["shoots_catches"] or "-"}</td>
+                <td>{height_str}</td>
+                <td>{weight_str}</td>
+                <td>{p["birth_date"] or "-"}</td>
+                <td>{p["birth_city"] or "-"}</td>
+                <td>{p["birth_country"] or "-"}</td>
+                <td class="timestamp">{format_timestamp(p["created_at"])}</td>
+            </tr>
+            '''
+
+    html = f'''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>NHL Players</title>
+        <style>
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                padding: 20px;
+            }}
+            .nav {{
+                background: rgba(255, 255, 255, 0.95);
+                padding: 15px 30px;
+                border-radius: 10px;
+                margin-bottom: 20px;
+                box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+            }}
+            .nav a {{
+                color: #667eea;
+                text-decoration: none;
+                margin-right: 20px;
+                font-weight: 500;
+            }}
+            .nav a:hover {{
+                text-decoration: underline;
+            }}
+            .nav a.active {{
+                color: #764ba2;
+                font-weight: 700;
+            }}
+            .container {{
+                max-width: 1600px;
+                margin: 0 auto;
+                background: white;
+                border-radius: 20px;
+                box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+                overflow: hidden;
+            }}
+            h1 {{
+                padding: 30px;
+                margin: 0;
+                font-size: 1.8em;
+                color: #333;
+                background: white;
+                border-bottom: 1px solid #e9ecef;
+            }}
+            .content {{
+                padding: 30px;
+                background: white;
+                overflow-x: auto;
+            }}
+            .hint {{
+                margin-bottom: 20px;
+                color: #6c757d;
+                font-size: 0.9em;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+                min-width: 1200px;
+            }}
+            th {{
+                background: #f8f9fa;
+                padding: 12px 15px;
+                text-align: left;
+                font-weight: 600;
+                color: #495057;
+                border-bottom: 2px solid #dee2e6;
+                font-size: 0.9em;
+                white-space: nowrap;
+            }}
+            td {{
+                padding: 12px 15px;
+                border-bottom: 1px solid #e9ecef;
+                white-space: nowrap;
+            }}
+            tr:hover {{
+                background: #f8f9fa;
+            }}
+            .player-id {{
+                font-family: 'Courier New', monospace;
+                font-weight: 600;
+                color: #667eea;
+                font-size: 0.85em;
+            }}
+            .timestamp {{
+                color: #6c757d;
+                font-size: 0.9em;
+            }}
+            .filter-row input {{
+                width: 100%;
+                padding: 6px 8px;
+                border: 1px solid #ced4da;
+                border-radius: 4px;
+                font-size: 0.85em;
+            }}
+            .filter-row input:focus {{
+                outline: none;
+                border-color: #667eea;
+                box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.1);
+            }}
+            .filter-row td {{
+                padding: 8px 15px;
+                background: #f8f9fa;
+            }}
+        </style>
+        <script>
+            function filterTable() {{
+                const filters = {{
+                    playerId: document.getElementById('filterPlayerId').value.toLowerCase(),
+                    fullName: document.getElementById('filterFullName').value.toLowerCase(),
+                    firstName: document.getElementById('filterFirstName').value.toLowerCase(),
+                    lastName: document.getElementById('filterLastName').value.toLowerCase(),
+                    jersey: document.getElementById('filterJersey').value.toLowerCase(),
+                    position: document.getElementById('filterPosition').value.toLowerCase(),
+                    shoots: document.getElementById('filterShoots').value.toLowerCase(),
+                    birthCity: document.getElementById('filterBirthCity').value.toLowerCase(),
+                    birthCountry: document.getElementById('filterBirthCountry').value.toLowerCase()
+                }};
+
+                const rows = document.querySelectorAll('#playersTable tbody tr');
+
+                rows.forEach(row => {{
+                    if (row.cells.length < 13) return; // Skip empty row
+
+                    const playerId = row.cells[0].textContent.toLowerCase();
+                    const fullName = row.cells[1].textContent.toLowerCase();
+                    const firstName = row.cells[2].textContent.toLowerCase();
+                    const lastName = row.cells[3].textContent.toLowerCase();
+                    const jersey = row.cells[4].textContent.toLowerCase();
+                    const position = row.cells[5].textContent.toLowerCase();
+                    const shoots = row.cells[6].textContent.toLowerCase();
+                    const birthCity = row.cells[10].textContent.toLowerCase();
+                    const birthCountry = row.cells[11].textContent.toLowerCase();
+
+                    const match =
+                        playerId.includes(filters.playerId) &&
+                        fullName.includes(filters.fullName) &&
+                        firstName.includes(filters.firstName) &&
+                        lastName.includes(filters.lastName) &&
+                        jersey.includes(filters.jersey) &&
+                        position.includes(filters.position) &&
+                        shoots.includes(filters.shoots) &&
+                        birthCity.includes(filters.birthCity) &&
+                        birthCountry.includes(filters.birthCountry);
+
+                    row.style.display = match ? '' : 'none';
+                }});
+            }}
+        </script>
+    </head>
+    <body>
+        <div class="nav">
+            <a href="/admin/devices">Devices</a>
+            <a href="/admin/games/state">Games</a>
+            <a href="/admin/teams">Teams</a>
+            <a href="/admin/players" class="active">Players</a>
+            <a href="/admin/rosters">Rosters</a>
+        </div>
+        <div class="container">
+            <h1>NHL Players</h1>
+            <div class="content">
+                <div class="hint">
+                    Players are automatically loaded when you load rosters. Use the Rosters page to load player data.
+                </div>
+
+                <table id="playersTable">
+                    <thead>
+                        <tr>
+                            <th>Player ID</th>
+                            <th>Full Name</th>
+                            <th>First Name</th>
+                            <th>Last Name</th>
+                            <th>#</th>
+                            <th>Pos</th>
+                            <th>S/C</th>
+                            <th>Height</th>
+                            <th>Weight</th>
+                            <th>Birth Date</th>
+                            <th>Birth City</th>
+                            <th>Birth Country</th>
+                            <th>Created</th>
+                        </tr>
+                        <tr class="filter-row">
+                            <td><input type="text" id="filterPlayerId" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterFullName" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterFirstName" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterLastName" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterJersey" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterPosition" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterShoots" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td></td>
+                            <td></td>
+                            <td></td>
+                            <td><input type="text" id="filterBirthCity" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterBirthCountry" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td></td>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {players_html}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </body>
+    </html>
+    '''
+
+    return HTMLResponse(content=html)
+
+
 @app.websocket("/ws/game-states")
 async def websocket_game_states(websocket: WebSocket):
     """WebSocket endpoint for real-time game state updates."""
@@ -2082,6 +3182,213 @@ async def websocket_game_states(websocket: WebSocket):
 
 
 # ---------- Data Seeding ----------
+
+def fetch_nhl_roster(team_abbreviation):
+    """
+    Fetch current roster from NHL API for a team.
+
+    Args:
+        team_abbreviation: Team code (e.g., "SEA", "TOR", "MTL")
+
+    Returns:
+        List of player dictionaries with NHL API data
+    """
+    try:
+        url = f"https://api-web.nhle.com/v1/roster/{team_abbreviation}/current"
+        logger.info(f"Fetching NHL roster from {url}")
+
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+
+        players = []
+        current_time = int(time.time())
+
+        # Parse forwards, defensemen, goalies
+        for position_group in ["forwards", "defensemen", "goalies"]:
+            for player in data.get(position_group, []):
+                # Extract first and last names safely
+                first_name = player.get("firstName", {})
+                if isinstance(first_name, dict):
+                    first_name = first_name.get("default", "")
+
+                last_name = player.get("lastName", {})
+                if isinstance(last_name, dict):
+                    last_name = last_name.get("default", "")
+
+                # Extract birth city safely
+                birth_city = player.get("birthCity", {})
+                if isinstance(birth_city, dict):
+                    birth_city = birth_city.get("default")
+
+                players.append({
+                    "player_id": player["id"],
+                    "full_name": f"{first_name} {last_name}".strip(),
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "jersey_number": player.get("sweaterNumber"),
+                    "position": player.get("positionCode"),
+                    "shoots_catches": player.get("shootsCatches"),
+                    "height_inches": player.get("heightInInches"),
+                    "weight_pounds": player.get("weightInPounds"),
+                    "birth_date": player.get("birthDate"),
+                    "birth_city": birth_city,
+                    "birth_country": player.get("birthCountry"),
+                    "status": "active",
+                    "created_at": current_time
+                })
+
+        logger.info(f"Fetched {len(players)} players for {team_abbreviation}")
+        return players
+
+    except Exception as e:
+        logger.warning(f"Failed to fetch roster for {team_abbreviation}: {e}")
+        return []
+
+
+def load_nhl_teams():
+    """
+    Load all NHL teams into the teams table.
+
+    Returns dict with status and count of teams loaded.
+    """
+    # All NHL teams for 2024-25 season with their info
+    nhl_teams_data = [
+        {"abbrev": "ANA", "city": "Anaheim", "name": "Ducks", "conference": "Western", "division": "Pacific"},
+        {"abbrev": "BOS", "city": "Boston", "name": "Bruins", "conference": "Eastern", "division": "Atlantic"},
+        {"abbrev": "BUF", "city": "Buffalo", "name": "Sabres", "conference": "Eastern", "division": "Atlantic"},
+        {"abbrev": "CAR", "city": "Carolina", "name": "Hurricanes", "conference": "Eastern", "division": "Metropolitan"},
+        {"abbrev": "CBJ", "city": "Columbus", "name": "Blue Jackets", "conference": "Eastern", "division": "Metropolitan"},
+        {"abbrev": "CGY", "city": "Calgary", "name": "Flames", "conference": "Western", "division": "Pacific"},
+        {"abbrev": "CHI", "city": "Chicago", "name": "Blackhawks", "conference": "Western", "division": "Central"},
+        {"abbrev": "COL", "city": "Colorado", "name": "Avalanche", "conference": "Western", "division": "Central"},
+        {"abbrev": "DAL", "city": "Dallas", "name": "Stars", "conference": "Western", "division": "Central"},
+        {"abbrev": "DET", "city": "Detroit", "name": "Red Wings", "conference": "Eastern", "division": "Atlantic"},
+        {"abbrev": "EDM", "city": "Edmonton", "name": "Oilers", "conference": "Western", "division": "Pacific"},
+        {"abbrev": "FLA", "city": "Florida", "name": "Panthers", "conference": "Eastern", "division": "Atlantic"},
+        {"abbrev": "LAK", "city": "Los Angeles", "name": "Kings", "conference": "Western", "division": "Pacific"},
+        {"abbrev": "MIN", "city": "Minnesota", "name": "Wild", "conference": "Western", "division": "Central"},
+        {"abbrev": "MTL", "city": "Montreal", "name": "Canadiens", "conference": "Eastern", "division": "Atlantic"},
+        {"abbrev": "NJD", "city": "New Jersey", "name": "Devils", "conference": "Eastern", "division": "Metropolitan"},
+        {"abbrev": "NSH", "city": "Nashville", "name": "Predators", "conference": "Western", "division": "Central"},
+        {"abbrev": "NYI", "city": "New York", "name": "Islanders", "conference": "Eastern", "division": "Metropolitan"},
+        {"abbrev": "NYR", "city": "New York", "name": "Rangers", "conference": "Eastern", "division": "Metropolitan"},
+        {"abbrev": "OTT", "city": "Ottawa", "name": "Senators", "conference": "Eastern", "division": "Atlantic"},
+        {"abbrev": "PHI", "city": "Philadelphia", "name": "Flyers", "conference": "Eastern", "division": "Metropolitan"},
+        {"abbrev": "PIT", "city": "Pittsburgh", "name": "Penguins", "conference": "Eastern", "division": "Metropolitan"},
+        {"abbrev": "SEA", "city": "Seattle", "name": "Kraken", "conference": "Western", "division": "Pacific"},
+        {"abbrev": "SJS", "city": "San Jose", "name": "Sharks", "conference": "Western", "division": "Pacific"},
+        {"abbrev": "STL", "city": "St. Louis", "name": "Blues", "conference": "Western", "division": "Central"},
+        {"abbrev": "TBL", "city": "Tampa Bay", "name": "Lightning", "conference": "Eastern", "division": "Atlantic"},
+        {"abbrev": "TOR", "city": "Toronto", "name": "Maple Leafs", "conference": "Eastern", "division": "Atlantic"},
+        {"abbrev": "UTA", "city": "Utah", "name": "Hockey Club", "conference": "Western", "division": "Central"},
+        {"abbrev": "VAN", "city": "Vancouver", "name": "Canucks", "conference": "Western", "division": "Pacific"},
+        {"abbrev": "VGK", "city": "Vegas", "name": "Golden Knights", "conference": "Western", "division": "Pacific"},
+        {"abbrev": "WPG", "city": "Winnipeg", "name": "Jets", "conference": "Western", "division": "Central"},
+        {"abbrev": "WSH", "city": "Washington", "name": "Capitals", "conference": "Eastern", "division": "Metropolitan"},
+    ]
+
+    db = get_db()
+    current_time = int(time.time())
+    teams_loaded = 0
+
+    for team in nhl_teams_data:
+        full_name = f"{team['city']} {team['name']}"
+        db.execute("""
+            INSERT OR REPLACE INTO teams (
+                team_abbrev, city, team_name, full_name, conference, division, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            team["abbrev"],
+            team["city"],
+            team["name"],
+            full_name,
+            team["conference"],
+            team["division"],
+            current_time
+        ))
+        teams_loaded += 1
+
+    db.commit()
+    db.close()
+
+    logger.info(f"Loaded {teams_loaded} NHL teams")
+    return {
+        "status": "ok",
+        "teams_loaded": teams_loaded
+    }
+
+
+def store_roster_in_db(team_abbrev, players, db):
+    """
+    Store roster players in database for a team.
+
+    Uses temporal tracking - checks if roster already exists for this team
+    at this time to avoid duplicates.
+
+    Args:
+        team_abbrev: Team abbreviation (e.g., "SEA", "TOR")
+        players: List of player dicts from NHL API
+        db: Database connection
+    """
+    current_time = int(time.time())
+
+    for player in players:
+        player_id = player["player_id"]
+
+        # Insert or update player in players table
+        db.execute("""
+            INSERT OR REPLACE INTO players (
+                player_id, full_name, first_name, last_name,
+                jersey_number, position, shoots_catches,
+                height_inches, weight_pounds, birth_date,
+                birth_city, birth_country, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            player_id,
+            player["full_name"],
+            player["first_name"],
+            player["last_name"],
+            player.get("jersey_number"),
+            player.get("position"),
+            player.get("shoots_catches"),
+            player.get("height_inches"),
+            player.get("weight_pounds"),
+            player.get("birth_date"),
+            player.get("birth_city"),
+            player.get("birth_country"),
+            player.get("created_at", current_time)
+        ))
+
+        # Check if player already exists on this team's roster (active roster entry)
+        existing = db.execute("""
+            SELECT id FROM team_rosters
+            WHERE player_id = ? AND team_abbrev = ? AND removed_at IS NULL
+        """, (player_id, team_abbrev)).fetchone()
+
+        if not existing:
+            # Add player to team roster with temporal tracking
+            db.execute("""
+                INSERT INTO team_rosters (
+                    player_id, team_abbrev, roster_status, added_at, removed_at
+                ) VALUES (?, ?, ?, ?, NULL)
+            """, (
+                player_id,
+                team_abbrev,
+                player.get("status", "active"),
+                current_time
+            ))
+            logger.debug(f"Added player {player_id} to {team_abbrev} roster")
+        else:
+            # Update status if changed
+            db.execute("""
+                UPDATE team_rosters
+                SET roster_status = ?
+                WHERE id = ?
+            """, (player.get("status", "active"), existing["id"]))
+
+    logger.info(f"Stored {len(players)} players for team {team_abbrev}")
+
 
 def fetch_nhl_schedule(start_date=None, end_date=None):
     """
@@ -2119,14 +3426,25 @@ def fetch_nhl_schedule(start_date=None, end_date=None):
 
             for game in game_week.get("games", []):
                 game_id = f"nhl-{game['id']}"
-                home_team = game["homeTeam"]["placeName"]["default"]
-                away_team = game["awayTeam"]["placeName"]["default"]
+                # Get full team name (placeName + commonName)
+                home_place = game["homeTeam"]["placeName"]["default"]
+                home_common = game["homeTeam"].get("commonName", {}).get("default", "")
+                home_team = f"{home_place} {home_common}".strip() if home_common else home_place
+
+                away_place = game["awayTeam"]["placeName"]["default"]
+                away_common = game["awayTeam"].get("commonName", {}).get("default", "")
+                away_team = f"{away_place} {away_common}".strip() if away_common else away_place
+
+                home_abbrev = game["homeTeam"]["abbrev"]
+                away_abbrev = game["awayTeam"]["abbrev"]
                 start_time = game["startTimeUTC"]  # ISO format timestamp
 
                 games.append({
                     "game_id": game_id,
                     "home_team": home_team,
                     "away_team": away_team,
+                    "home_abbrev": home_abbrev,
+                    "away_abbrev": away_abbrev,
                     "start_time": start_time
                 })
 
@@ -2186,13 +3504,43 @@ async def load_nhl_schedule(
     db = get_db()
     current_time = int(time.time())
 
+    # Track which teams we've already fetched rosters for (to avoid duplicates)
+    teams_processed = set()
+
     for g in nhl_games:
+        # Store game with team abbreviations
         db.execute("""
             INSERT OR REPLACE INTO games (
-                game_id, rink_id, home_team, away_team, start_time,
-                period_length_min, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (g["game_id"], "rink-tsc", g["home_team"], g["away_team"], g["start_time"], 20, current_time))
+                game_id, rink_id, home_team, away_team, home_abbrev, away_abbrev,
+                start_time, period_length_min, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            g["game_id"],
+            "rink-tsc",
+            g["home_team"],
+            g["away_team"],
+            g.get("home_abbrev"),
+            g.get("away_abbrev"),
+            g["start_time"],
+            20,
+            current_time
+        ))
+
+        # Fetch and store rosters for each team (only once per team)
+        home_abbrev = g.get("home_abbrev")
+        away_abbrev = g.get("away_abbrev")
+
+        if home_abbrev and home_abbrev not in teams_processed:
+            home_roster = fetch_nhl_roster(home_abbrev)
+            if home_roster:
+                store_roster_in_db(home_abbrev, home_roster, db)
+                teams_processed.add(home_abbrev)
+
+        if away_abbrev and away_abbrev not in teams_processed:
+            away_roster = fetch_nhl_roster(away_abbrev)
+            if away_roster:
+                store_roster_in_db(away_abbrev, away_roster, db)
+                teams_processed.add(away_abbrev)
 
     # Update schedule version
     version = datetime.now(timezone.utc).isoformat()
