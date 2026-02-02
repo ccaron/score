@@ -279,6 +279,226 @@ select option {
 .modal-buttons button:last-child:hover {
     background: rgba(0, 0, 0, 0.2);
 }
+
+.scoreboard {
+    display: flex;
+    gap: 3em;
+    margin: 2em 0;
+    align-items: center;
+    justify-content: center;
+}
+
+.scoreboard-container {
+    display: flex;
+    gap: 2em;
+    margin: 2em 0;
+    align-items: flex-start;
+    justify-content: center;
+    width: 100%;
+    max-width: 900px;
+}
+
+.scoreboard-container.hidden {
+    display: none;
+}
+
+.team-column {
+    flex: 1;
+    min-width: 0;
+}
+
+.team-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1em 1.5em;
+    background: rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(10px);
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    margin-bottom: 1em;
+}
+
+.team-name {
+    font-size: 1.3em;
+    font-weight: 600;
+    opacity: 0.9;
+}
+
+.score-display {
+    font-size: 2.5em;
+    font-weight: 700;
+}
+
+.team-score {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5em;
+    background: rgba(255, 255, 255, 0.1);
+    backdrop-filter: blur(10px);
+    padding: 1.5em 2em;
+    border-radius: 15px;
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    min-width: 200px;
+}
+
+.team-name {
+    font-size: 1.2em;
+    font-weight: 600;
+    opacity: 0.9;
+}
+
+.score-display {
+    font-size: 4em;
+    font-weight: 700;
+    margin: 0.2em 0;
+}
+
+.score-buttons {
+    display: flex;
+    gap: 0.5em;
+}
+
+.add-goal-btn {
+    width: 100%;
+    font-size: 0.95em;
+    padding: 0.7em 1.2em;
+    margin-bottom: 1em;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 8px;
+    color: rgba(255, 255, 255, 0.85);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-weight: 500;
+}
+
+.add-goal-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+.add-goal-btn:active {
+    transform: scale(0.98);
+}
+
+.goals-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4em;
+    min-height: 40px;
+    max-height: 300px;
+    overflow-y: auto;
+    padding-right: 0.3em;
+}
+
+.goals-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+.goals-list::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 3px;
+}
+
+.goals-list::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.2);
+    border-radius: 3px;
+}
+
+.goals-list::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+.goals-list:empty::after {
+    content: 'No goals yet';
+    opacity: 0.4;
+    font-size: 0.9em;
+    font-style: italic;
+    text-align: center;
+    padding: 1em;
+}
+
+.goal-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.6em 0.8em;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 6px;
+    font-size: 0.9em;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.goal-item.cancelled {
+    opacity: 0.4;
+    text-decoration: line-through;
+}
+
+.goal-time {
+    font-family: 'Courier New', monospace;
+    font-weight: 500;
+    opacity: 0.75;
+    font-size: 0.95em;
+}
+
+.cancel-goal-btn {
+    font-size: 0.85em;
+    padding: 0.3em 0.7em;
+    margin: 0;
+    background: rgba(239, 68, 68, 0.15);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 4px;
+    color: rgba(255, 255, 255, 0.85);
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.cancel-goal-btn:hover {
+    background: rgba(239, 68, 68, 0.3);
+    border-color: rgba(239, 68, 68, 0.5);
+}
+
+.cancel-goal-btn:active {
+    transform: scale(0.95);
+}
+
+.cancel-goal-btn:disabled {
+    opacity: 0.25;
+    cursor: not-allowed;
+}
+
+.cancel-goal-btn:disabled:hover {
+    transform: none;
+    background: rgba(239, 68, 68, 0.15);
+    border-color: rgba(239, 68, 68, 0.3);
+}
+
+.score-btn {
+    font-size: 1.5em;
+    padding: 0.3em 0.8em;
+    margin: 0;
+    background: rgba(255, 255, 255, 0.2);
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-radius: 10px;
+    color: #fff;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.score-btn:hover {
+    background: rgba(255, 255, 255, 0.3);
+    transform: scale(1.1);
+}
+
+.score-btn:active {
+    transform: scale(0.95);
+}
+
+.scoreboard.hidden {
+    display: none;
+}
 </style>
 </head>
 <body>
@@ -299,6 +519,26 @@ select option {
 </div>
 
 <div class="clock" id="clock">20:00</div>
+
+<div class="scoreboard-container hidden" id="scoreboardContainer">
+    <div class="team-column">
+        <div class="team-header">
+            <div class="team-name" id="homeTeam">Home</div>
+            <div class="score-display" id="homeScore">0</div>
+        </div>
+        <button class="add-goal-btn" onclick="addGoal('home')">+ Goal</button>
+        <div class="goals-list" id="homeGoals"></div>
+    </div>
+
+    <div class="team-column">
+        <div class="team-header">
+            <div class="team-name" id="awayTeam">Away</div>
+            <div class="score-display" id="awayScore">0</div>
+        </div>
+        <button class="add-goal-btn" onclick="addGoal('away')">+ Goal</button>
+        <div class="goals-list" id="awayGoals"></div>
+    </div>
+</div>
 
 <div class="controls">
     <button onclick="toggleGame(this)">▶ Start</button>
@@ -379,6 +619,27 @@ ws.onmessage = (event) => {
             `${mins}:${secs.toString().padStart(2,'0')}`;
     }
 
+    // Update scoreboard visibility and content
+    const scoreboardContainer = document.getElementById("scoreboardContainer");
+    if (data.mode === 'clock') {
+        scoreboardContainer.classList.add('hidden');
+    } else {
+        scoreboardContainer.classList.remove('hidden');
+
+        // Update team names
+        if (data.current_game) {
+            document.getElementById("homeTeam").textContent = data.current_game.home_team;
+            document.getElementById("awayTeam").textContent = data.current_game.away_team;
+        }
+
+        // Update scores
+        document.getElementById("homeScore").textContent = data.home_score;
+        document.getElementById("awayScore").textContent = data.away_score;
+
+        // Update goals lists (separate for each team)
+        renderGoalsList(data.goals);
+    }
+
     // Update start/pause button
     const startButton = document.querySelector(".controls button:first-child");
     startButton.textContent = data.running ? "⏸ Pause" : "▶ Start";
@@ -431,6 +692,65 @@ function selectMode(mode) {
     });
 }
 
+function addGoal(team) {
+    fetch('/add_goal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ team: team })
+    });
+}
+
+function cancelGoal(goalId) {
+    fetch('/cancel_goal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ goal_id: goalId })
+    });
+}
+
+function renderGoalsList(goals) {
+    const homeContainer = document.getElementById('homeGoals');
+    const awayContainer = document.getElementById('awayGoals');
+
+    if (!goals || goals.length === 0) {
+        homeContainer.innerHTML = '';
+        awayContainer.innerHTML = '';
+        return;
+    }
+
+    // Split goals by team and render newest first
+    const homeGoals = goals.filter(g => g.team === 'home').reverse();
+    const awayGoals = goals.filter(g => g.team === 'away').reverse();
+
+    homeContainer.innerHTML = homeGoals.map(goal => {
+        const cancelledClass = goal.cancelled ? 'cancelled' : '';
+        const disabledAttr = goal.cancelled ? 'disabled' : '';
+
+        return `
+            <div class="goal-item ${cancelledClass}">
+                <span class="goal-time">${goal.time}</span>
+                <button class="cancel-goal-btn" onclick="cancelGoal('${goal.id}')" ${disabledAttr}>
+                    ${goal.cancelled ? 'Cancelled' : 'Cancel'}
+                </button>
+            </div>
+        `;
+    }).join('');
+
+    awayContainer.innerHTML = awayGoals.map(goal => {
+        const cancelledClass = goal.cancelled ? 'cancelled' : '';
+        const disabledAttr = goal.cancelled ? 'disabled' : '';
+
+        return `
+            <div class="goal-item ${cancelledClass}">
+                <span class="goal-time">${goal.time}</span>
+                <button class="cancel-goal-btn" onclick="cancelGoal('${goal.id}')" ${disabledAttr}>
+                    ${goal.cancelled ? 'Cancelled' : 'Cancel'}
+                </button>
+            </div>
+        `;
+    }).join('');
+}
+
 function debugEvents() {
     fetch('/debug_events', { method: 'POST' });
 }
@@ -480,6 +800,18 @@ document.addEventListener('keydown', (e) => {
 document.getElementById('timeModal').addEventListener('click', (e) => {
     if (e.target.id === 'timeModal') {
         closeModal();
+    }
+});
+
+// Space bar to toggle running/paused
+document.addEventListener('keydown', (e) => {
+    if (e.key === ' ' || e.code === 'Space') {
+        // Only toggle if we're in game mode (not clock mode)
+        if (currentMode !== 'clock') {
+            e.preventDefault(); // Prevent page scroll
+            const startButton = document.querySelector(".controls button:first-child");
+            toggleGame(startButton);
+        }
     }
 });
 </script>
@@ -602,6 +934,9 @@ class GameState:
         self.schedule_status = "unknown"  # "healthy", "pending", "dead", "unknown"
         self.mode = "clock"  # "clock" or game_id
         self.current_game: Optional[dict] = None  # Current game metadata (if mode is a game_id)
+        self.home_score = 0
+        self.away_score = 0
+        self.goals: list[dict] = []  # List of goals: {id, team, time, cancelled}
 
     def add_event(self, event_type, payload=None):
         # Determine game_id: use mode if it's a game, otherwise None (for clock mode)
@@ -640,6 +975,9 @@ class GameState:
             "device_id": format_device_id_for_display(DEVICE_ID),
             "device_assigned": DEVICE_CONFIG.get("is_assigned") if DEVICE_CONFIG else False,
             "sheet_name": DEVICE_CONFIG.get("sheet_name") if DEVICE_CONFIG else None,
+            "home_score": self.home_score,
+            "away_score": self.away_score,
+            "goals": self.goals,
         }
         if self.current_game:
             result["current_game"] = self.current_game
@@ -712,8 +1050,11 @@ def load_game_state(game_id: str):
     state.seconds = result["seconds"]
     state.running = result["running"]
     state.last_update = result["last_update"]
+    state.home_score = result.get("home_score", 0)
+    state.away_score = result.get("away_score", 0)
+    state.goals = result.get("goals", [])
 
-    logger.info(f"Game state loaded: {state.seconds}s, running={state.running}")
+    logger.info(f"Game state loaded: {state.seconds}s, running={state.running}, score={state.home_score}-{state.away_score}, goals={len(state.goals)}")
     return result["num_events"]
 
 # ---------- Broadcast ----------
@@ -880,6 +1221,142 @@ async def set_time(request: dict):
     await broadcast_state()
     return {"status": "ok"}
 
+@app.post("/add_goal")
+async def add_goal(request: dict):
+    """Add a goal for a team."""
+    team = request.get("team")  # "home" or "away"
+
+    if state.mode == "clock":
+        return {"status": "error", "message": "Cannot add goal in clock mode"}
+
+    if team not in ["home", "away"]:
+        return {"status": "error", "message": "Invalid team"}
+
+    # Generate unique ID for this goal
+    import uuid
+    goal_id = str(uuid.uuid4())[:8]
+
+    # Format current game clock time
+    mins = state.seconds // 60
+    secs = state.seconds % 60
+    game_time = f"{mins}:{secs:02d}"
+
+    # Update score
+    if team == "home":
+        event_type = "GOAL_HOME"
+        state.home_score += 1
+        logger.info(f"Home goal scored at {game_time}, score now {state.home_score}")
+    else:
+        event_type = "GOAL_AWAY"
+        state.away_score += 1
+        logger.info(f"Away goal scored at {game_time}, score now {state.away_score}")
+
+    # Add goal to list
+    goal = {
+        "id": goal_id,
+        "team": team,
+        "time": game_time,
+        "cancelled": False
+    }
+    state.goals.append(goal)
+
+    # Store event with goal metadata
+    payload = {
+        "goal_id": goal_id,
+        "value": 1,
+        "time": game_time,
+        # Future fields: player, assist1, assist2, penalty_shot, empty_net, period
+    }
+    state.add_event(event_type, payload)
+
+    await broadcast_state()
+    return {"status": "ok", "goal": goal}
+
+
+@app.post("/cancel_goal")
+async def cancel_goal(request: dict):
+    """Cancel a specific goal."""
+    goal_id = request.get("goal_id")
+
+    if state.mode == "clock":
+        return {"status": "error", "message": "Cannot cancel goal in clock mode"}
+
+    # Find the goal
+    goal = next((g for g in state.goals if g["id"] == goal_id), None)
+    if not goal:
+        return {"status": "error", "message": "Goal not found"}
+
+    if goal["cancelled"]:
+        return {"status": "error", "message": "Goal already cancelled"}
+
+    # Mark as cancelled
+    goal["cancelled"] = True
+
+    # Update score
+    team = goal["team"]
+    if team == "home":
+        event_type = "GOAL_HOME"
+        state.home_score = max(0, state.home_score - 1)
+        logger.info(f"Home goal cancelled, score now {state.home_score}")
+    else:
+        event_type = "GOAL_AWAY"
+        state.away_score = max(0, state.away_score - 1)
+        logger.info(f"Away goal cancelled, score now {state.away_score}")
+
+    # Store cancellation event with same metadata as original goal
+    payload = {
+        "goal_id": goal_id,
+        "value": -1,
+        "time": goal["time"],
+    }
+    state.add_event(event_type, payload)
+
+    await broadcast_state()
+    return {"status": "ok", "goal": goal}
+
+
+@app.post("/change_score")
+async def change_score(request: dict):
+    """Change the score for a team (home or away)."""
+    team = request.get("team")  # "home" or "away"
+    delta = request.get("delta", 0)  # +1 or -1
+
+    if state.mode == "clock":
+        return {"status": "error", "message": "Cannot change score in clock mode"}
+
+    # Create a GOAL event with value +1 (goal scored) or -1 (goal cancelled)
+    goal_value = 1 if delta > 0 else -1
+
+    if team == "home":
+        event_type = "GOAL_HOME"
+        state.home_score = max(0, state.home_score + goal_value)
+        logger.info(f"Home goal {'scored' if goal_value > 0 else 'cancelled'}, score now {state.home_score}")
+    elif team == "away":
+        event_type = "GOAL_AWAY"
+        state.away_score = max(0, state.away_score + goal_value)
+        logger.info(f"Away goal {'scored' if goal_value > 0 else 'cancelled'}, score now {state.away_score}")
+    else:
+        return {"status": "error", "message": "Invalid team"}
+
+    # Store the goal event with metadata
+    # Note: For cancellations (value=-1), include same player/assist info as original goal
+    # so stats can be properly decremented
+    payload = {
+        "value": goal_value,
+        # Future fields for goal tracking:
+        # "player": "Smith",           # Required for stats
+        # "assist1": "Jones",          # Required for stats
+        # "assist2": "Brown",          # Required for stats
+        # "time": "15:34",             # Game time when scored
+        # "penalty_shot": False,
+        # "empty_net": False,
+        # "period": 2,
+    }
+    state.add_event(event_type, payload)
+
+    await broadcast_state()
+    return {"status": "ok", "home_score": state.home_score, "away_score": state.away_score}
+
 @app.get("/games")
 async def get_games():
     """Get available games from the cloud API."""
@@ -904,6 +1381,9 @@ async def select_mode(request: dict):
         state.mode = "clock"
         state.current_game = None
         state.running = False
+        state.home_score = 0
+        state.away_score = 0
+        state.goals = []
         logger.info("Switched to clock mode")
     else:
         # Switch to a game mode - fetch game details
@@ -922,13 +1402,16 @@ async def select_mode(request: dict):
             # Replay all events for this game to restore its state
             num_events = load_game_state(new_mode)
 
-            # If no events were found for this game, initialize with default period length
+            # If no events were found for this game, initialize with default period length and scores
             if num_events == 0:
                 state.seconds = selected_game["period_length_min"] * 60
                 state.last_update = int(time.time())
+                state.home_score = 0
+                state.away_score = 0
+                state.goals = []
                 # Create CLOCK_SET event to record the initial state
                 state.add_event("CLOCK_SET", {"seconds": state.seconds})
-                logger.info(f"No prior state found, initializing game with {state.seconds}s")
+                logger.info(f"No prior state found, initializing game with {state.seconds}s and 0-0 score")
 
             logger.info(f"Selected game: {selected_game['home_team']} vs {selected_game['away_team']}")
         else:
@@ -937,6 +1420,9 @@ async def select_mode(request: dict):
             state.mode = "clock"
             state.current_game = None
             state.running = False
+            state.home_score = 0
+            state.away_score = 0
+            state.goals = []
 
     await broadcast_state()
     return {"status": "ok", "mode": state.mode}

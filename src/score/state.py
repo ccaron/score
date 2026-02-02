@@ -26,6 +26,9 @@ def replay_events(events, current_time=None):
             - seconds: Time remaining in seconds
             - running: Whether clock is currently running
             - last_update: Timestamp of last state change
+            - home_score: Home team score
+            - away_score: Away team score
+            - goals: List of goals with cancellation status
     """
     if current_time is None:
         current_time = int(time.time())
@@ -33,6 +36,9 @@ def replay_events(events, current_time=None):
     seconds = 0
     running = False
     last_update = current_time
+    home_score = 0
+    away_score = 0
+    goals = []  # Track goals for display
 
     for event in events:
         # Handle different timestamp field names (created_at for score-app, received_at for cloud)
@@ -59,6 +65,87 @@ def replay_events(events, current_time=None):
             running = False
             last_update = event_time
             logger.debug(f"Replayed GAME_PAUSED: {seconds}s remaining")
+        elif event["type"] == "GOAL_HOME":
+            # Goal event with value (+1 for goal, -1 for cancellation)
+            goal_value = payload.get("value", 1)
+            goal_id = payload.get("goal_id")
+            goal_time = payload.get("time", "")
+
+            if goal_value > 0:
+                # New goal
+                home_score += 1
+                if goal_id:
+                    goals.append({
+                        "id": goal_id,
+                        "team": "home",
+                        "time": goal_time,
+                        "cancelled": False
+                    })
+                logger.debug(f"Replayed GOAL_HOME (value={goal_value}): home={home_score}")
+            else:
+                # Goal cancellation
+                home_score = max(0, home_score - 1)
+                if goal_id:
+                    # Mark goal as cancelled
+                    for g in goals:
+                        if g["id"] == goal_id:
+                            g["cancelled"] = True
+                            break
+                logger.debug(f"Replayed GOAL_HOME cancellation (value={goal_value}): home={home_score}")
+
+        elif event["type"] == "GOAL_AWAY":
+            # Goal event with value (+1 for goal, -1 for cancellation)
+            goal_value = payload.get("value", 1)
+            goal_id = payload.get("goal_id")
+            goal_time = payload.get("time", "")
+
+            if goal_value > 0:
+                # New goal
+                away_score += 1
+                if goal_id:
+                    goals.append({
+                        "id": goal_id,
+                        "team": "away",
+                        "time": goal_time,
+                        "cancelled": False
+                    })
+                logger.debug(f"Replayed GOAL_AWAY (value={goal_value}): away={away_score}")
+            else:
+                # Goal cancellation
+                away_score = max(0, away_score - 1)
+                if goal_id:
+                    # Mark goal as cancelled
+                    for g in goals:
+                        if g["id"] == goal_id:
+                            g["cancelled"] = True
+                            break
+                logger.debug(f"Replayed GOAL_AWAY cancellation (value={goal_value}): away={away_score}")
+        elif event["type"] == "SCORE_HOME_INC":
+            # Legacy support
+            home_score += 1
+            logger.debug(f"Replayed SCORE_HOME_INC (legacy): home={home_score}")
+        elif event["type"] == "SCORE_HOME_DEC":
+            # Legacy support
+            home_score = max(0, home_score - 1)
+            logger.debug(f"Replayed SCORE_HOME_DEC (legacy): home={home_score}")
+        elif event["type"] == "SCORE_AWAY_INC":
+            # Legacy support
+            away_score += 1
+            logger.debug(f"Replayed SCORE_AWAY_INC (legacy): away={away_score}")
+        elif event["type"] == "SCORE_AWAY_DEC":
+            # Legacy support
+            away_score = max(0, away_score - 1)
+            logger.debug(f"Replayed SCORE_AWAY_DEC (legacy): away={away_score}")
+        elif event["type"] == "SCORE_CHANGE":
+            # Legacy support for old event format
+            team = payload.get("team")
+            score = payload.get("score")
+            if team == "home":
+                home_score = score
+                logger.debug(f"Replayed SCORE_CHANGE (legacy): home={home_score}")
+            elif team == "away":
+                away_score = score
+                logger.debug(f"Replayed SCORE_CHANGE (legacy): away={away_score}")
 
     # If still running, account for current elapsed time
     if running:
@@ -69,7 +156,10 @@ def replay_events(events, current_time=None):
     return {
         "seconds": seconds,
         "running": running,
-        "last_update": last_update
+        "last_update": last_update,
+        "home_score": home_score,
+        "away_score": away_score,
+        "goals": goals
     }
 
 

@@ -280,14 +280,14 @@ app = FastAPI(
 @app.get("/v1/rinks/{rink_id}/schedule", response_model=ScheduleResponse)
 async def get_schedule(
     rink_id: str = Path(..., description="Rink ID"),
-    date: Optional[str] = Query(None, description="Date in YYYY-MM-DD format (not used, kept for compatibility)")
+    date: Optional[str] = Query(None, description="Date in YYYY-MM-DD format (defaults to today)")
 ):
     """
     Download game schedule for a specific rink.
 
-    Returns schedule_version and list of all games for the rink.
+    Returns schedule_version and games for the specified date (defaults to today).
     """
-    logger.info(f"Schedule request for rink_id={rink_id}")
+    logger.info(f"Schedule request for rink_id={rink_id}, date={date}")
 
     db = get_db()
 
@@ -305,13 +305,25 @@ async def get_schedule(
 
     schedule_version = version_row["version"] if version_row else datetime.now(timezone.utc).isoformat()
 
-    # Query all games for the rink
+    # Default to today if no date specified (use local timezone, not UTC)
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+
+    # For Pacific timezone (UTC-8/7), we need to query a wider range
+    # A game on Feb 1 Pacific could be stored as Feb 2 UTC if it's an evening game
+    # So we query for both the requested date and the next day in UTC
+    from datetime import timedelta
+    date_obj = datetime.strptime(date, "%Y-%m-%d")
+    next_date = (date_obj + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # Query games for the rink on the specified date OR next date (to catch evening games)
+    # Match games where start_time begins with either date
     games = db.execute("""
         SELECT game_id, home_team, away_team, start_time, period_length_min
         FROM games
-        WHERE rink_id = ?
+        WHERE rink_id = ? AND (start_time LIKE ? OR start_time LIKE ?)
         ORDER BY start_time
-    """, (rink_id,)).fetchall()
+    """, (rink_id, f"{date}%", f"{next_date}%")).fetchall()
 
     db.close()
 
@@ -326,7 +338,7 @@ async def get_schedule(
         for g in games
     ]
 
-    logger.info(f"Returning {len(games_list)} games for {rink_id}")
+    logger.info(f"Returning {len(games_list)} games for {rink_id} on {date}")
 
     return ScheduleResponse(
         schedule_version=schedule_version,
@@ -590,6 +602,99 @@ async def create_rink(request: CreateRinkRequest):
     }
 
 
+@app.put("/admin/rinks/{rink_id}")
+async def update_rink(rink_id: str, request: dict):
+    """
+    Update a rink's name.
+    """
+    logger.info(f"Updating rink {rink_id}")
+
+    db = get_db()
+
+    # Check if rink exists
+    rink = db.execute(
+        "SELECT rink_id FROM rinks WHERE rink_id = ?",
+        (rink_id,)
+    ).fetchone()
+
+    if not rink:
+        db.close()
+        raise HTTPException(status_code=404, detail=f"Rink {rink_id} not found")
+
+    new_name = request.get("name")
+    if not new_name:
+        db.close()
+        raise HTTPException(status_code=400, detail="Name is required")
+
+    # Update rink name
+    db.execute(
+        "UPDATE rinks SET name = ? WHERE rink_id = ?",
+        (new_name, rink_id)
+    )
+
+    db.commit()
+    db.close()
+
+    logger.info(f"Successfully updated rink {rink_id} name to {new_name}")
+
+    return {
+        "status": "ok",
+        "message": f"Rink {rink_id} updated",
+        "rink": {
+            "rink_id": rink_id,
+            "name": new_name
+        }
+    }
+
+
+@app.delete("/admin/rinks/{rink_id}")
+async def delete_rink(rink_id: str):
+    """
+    Delete a rink.
+
+    This will fail if there are devices assigned to this rink.
+    """
+    logger.info(f"Deleting rink {rink_id}")
+
+    db = get_db()
+
+    # Check if rink exists
+    rink = db.execute(
+        "SELECT rink_id FROM rinks WHERE rink_id = ?",
+        (rink_id,)
+    ).fetchone()
+
+    if not rink:
+        db.close()
+        raise HTTPException(status_code=404, detail=f"Rink {rink_id} not found")
+
+    # Check if any devices are assigned to this rink
+    devices = db.execute(
+        "SELECT COUNT(*) as count FROM devices WHERE rink_id = ? AND is_assigned = 1",
+        (rink_id,)
+    ).fetchone()
+
+    if devices["count"] > 0:
+        db.close()
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete rink {rink_id}: {devices['count']} device(s) are assigned to it. Unassign devices first."
+        )
+
+    # Delete the rink
+    db.execute("DELETE FROM rinks WHERE rink_id = ?", (rink_id,))
+
+    db.commit()
+    db.close()
+
+    logger.info(f"Successfully deleted rink {rink_id}")
+
+    return {
+        "status": "ok",
+        "message": f"Rink {rink_id} deleted"
+    }
+
+
 @app.get("/admin/devices")
 async def list_devices(format: Optional[str] = Query(None, description="Response format: 'json' or 'html'")):
     """
@@ -728,27 +833,10 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
             .content {{ padding: 30px; }}
             .rink-section {{
                 margin-bottom: 30px;
-                padding: 20px;
-                background: #f8f9fa;
-                border-radius: 8px;
             }}
             .rink-section h3 {{
                 font-size: 1.1em;
                 margin-bottom: 15px;
-                color: #495057;
-            }}
-            .rink-list {{
-                display: flex;
-                gap: 15px;
-                flex-wrap: wrap;
-                margin-bottom: 15px;
-            }}
-            .rink-item {{
-                padding: 8px 16px;
-                background: white;
-                border: 1px solid #dee2e6;
-                border-radius: 6px;
-                font-size: 0.9em;
                 color: #495057;
             }}
             .add-rink-form {{
@@ -905,9 +993,34 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
 
                 <div class="rink-section">
                     <h3>Rinks</h3>
-                    <div class="rink-list">
-                        {''.join([f'<div class="rink-item"><strong>{r["rink_id"]}</strong>: {r["name"]}</div>' for r in rinks_list]) if rinks_list else '<div class="rink-item" style="color: #6c757d;">No rinks yet</div>'}
-                    </div>
+
+                    <table style="margin-bottom: 20px;">
+                        <thead>
+                            <tr>
+                                <th style="width: 30%;">Rink ID</th>
+                                <th style="width: 50%;">Name</th>
+                                <th style="width: 20%;">Actions</th>
+                            </tr>
+                            <tr class="filter-row">
+                                <td><input type="text" id="filterRinkId" placeholder="Filter..." onkeyup="filterRinksTable()"></td>
+                                <td><input type="text" id="filterRinkName" placeholder="Filter..." onkeyup="filterRinksTable()"></td>
+                                <td></td>
+                            </tr>
+                        </thead>
+                        <tbody id="rinksTableBody">
+                            {''.join([f'''
+                                <tr data-rink-id="{r["rink_id"]}">
+                                    <td class="device-id">{r["rink_id"]}</td>
+                                    <td><input type="text" class="rink-name-input" data-rink-id="{r["rink_id"]}" value="{r["name"]}" /></td>
+                                    <td class="actions">
+                                        <button class="btn-save" onclick="saveRink('{r["rink_id"]}')">Save</button>
+                                        <button class="btn-delete" onclick="deleteRink('{r["rink_id"]}')">Delete</button>
+                                    </td>
+                                </tr>
+                            ''' for r in rinks_list]) if rinks_list else '<tr><td colspan="3" style="text-align: center; color: #6c757d; padding: 20px;">No rinks yet</td></tr>'}
+                        </tbody>
+                    </table>
+
                     <div class="add-rink-form">
                         <input type="text" id="addRinkId" placeholder="Rink ID (e.g., rink-alpha)" style="width: 200px;">
                         <input type="text" id="addRinkName" placeholder="Rink Name (e.g., Alpha Arena)" style="width: 250px;">
@@ -1069,6 +1182,85 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
                     setTimeout(() => location.reload(), 1500);
                 }} else {{
                     showMessage(`Error: ${{result.detail || 'Failed to delete'}}`, 'error');
+                }}
+            }} catch (error) {{
+                showMessage(`Error: ${{error.message}}`, 'error');
+            }}
+        }}
+
+        async function saveRink(rinkId) {{
+            const row = document.querySelector(`tr[data-rink-id="${{rinkId}}"]`);
+            const nameInput = row.querySelector('.rink-name-input');
+            const newName = nameInput.value.trim();
+
+            if (!newName) {{
+                showMessage('Rink name cannot be empty', 'error');
+                return;
+            }}
+
+            try {{
+                const response = await fetch(`/admin/rinks/${{rinkId}}`, {{
+                    method: 'PUT',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        name: newName
+                    }})
+                }});
+
+                const result = await response.json();
+
+                if (response.ok) {{
+                    showMessage(`Rink ${{rinkId}} updated successfully`, 'success');
+                }} else {{
+                    showMessage(`Error: ${{result.detail || 'Failed to update'}}`, 'error');
+                }}
+            }} catch (error) {{
+                showMessage(`Error: ${{error.message}}`, 'error');
+            }}
+        }}
+
+        function filterRinksTable() {{
+            const filters = {{
+                rinkId: document.getElementById('filterRinkId').value.toLowerCase(),
+                rinkName: document.getElementById('filterRinkName').value.toLowerCase()
+            }};
+
+            const tbody = document.getElementById('rinksTableBody');
+            const rows = tbody.getElementsByTagName('tr');
+
+            for (let i = 0; i < rows.length; i++) {{
+                const cells = rows[i].getElementsByTagName('td');
+                if (cells.length < 2) continue;
+
+                const rinkId = cells[0].textContent.toLowerCase();
+                const rinkNameInput = cells[1].querySelector('input');
+                const rinkName = rinkNameInput ? rinkNameInput.value.toLowerCase() : '';
+
+                const match =
+                    rinkId.includes(filters.rinkId) &&
+                    rinkName.includes(filters.rinkName);
+
+                rows[i].style.display = match ? '' : 'none';
+            }}
+        }}
+
+        async function deleteRink(rinkId) {{
+            if (!confirm(`Delete rink ${{rinkId}}? This will fail if devices are assigned to it.`)) {{
+                return;
+            }}
+
+            try {{
+                const response = await fetch(`/admin/rinks/${{rinkId}}`, {{
+                    method: 'DELETE'
+                }});
+
+                const result = await response.json();
+
+                if (response.ok) {{
+                    showMessage(`Rink ${{rinkId}} deleted`, 'success');
+                    setTimeout(() => location.reload(), 1500);
+                }} else {{
+                    showMessage(`Error: ${{result.detail || 'Failed to delete rink'}}`, 'error');
                 }}
             }} catch (error) {{
                 showMessage(`Error: ${{error.message}}`, 'error');
@@ -1479,6 +1671,8 @@ def reconstruct_game_state(game_id: str):
         "period_length_min": game["period_length_min"],
         "clock_seconds": result["seconds"],
         "clock_running": result["running"],
+        "home_score": result.get("home_score", 0),
+        "away_score": result.get("away_score", 0),
         "event_count": result["num_events"],
         "last_update": result["last_update"]
     }
@@ -1703,14 +1897,16 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
                     <thead>
                         <tr>
                             <th style="width: 15%;">Game ID</th>
-                            <th style="width: 45%;">Teams</th>
-                            <th style="width: 15%;">Clock</th>
+                            <th style="width: 30%;">Teams</th>
+                            <th style="width: 10%;">Score</th>
+                            <th style="width: 12%;">Clock</th>
                             <th style="width: 10%;">Status</th>
-                            <th style="width: 15%;">Period Length</th>
+                            <th style="width: 13%;">Period Length</th>
                         </tr>
                         <tr class="filter-row">
                             <td><input type="text" id="filterGameId" placeholder="Filter..." onkeyup="filterTable()"></td>
                             <td><input type="text" id="filterTeams" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterScore" placeholder="Filter..." onkeyup="filterTable()"></td>
                             <td><input type="text" id="filterClock" placeholder="Filter..." onkeyup="filterTable()"></td>
                             <td><input type="text" id="filterStatus" placeholder="Filter..." onkeyup="filterTable()"></td>
                             <td><input type="text" id="filterPeriod" placeholder="Filter..." onkeyup="filterTable()"></td>
@@ -1718,7 +1914,7 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
                     </thead>
                     <tbody id="gamesBody">
                         <tr>
-                            <td colspan="5" class="no-games">Loading...</td>
+                            <td colspan="6" class="no-games">Loading...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -1736,6 +1932,7 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
             const filters = {
                 gameId: document.getElementById('filterGameId').value.toLowerCase(),
                 teams: document.getElementById('filterTeams').value.toLowerCase(),
+                score: document.getElementById('filterScore').value.toLowerCase(),
                 clock: document.getElementById('filterClock').value.toLowerCase(),
                 status: document.getElementById('filterStatus').value.toLowerCase(),
                 period: document.getElementById('filterPeriod').value.toLowerCase()
@@ -1746,17 +1943,19 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
 
             for (let i = 0; i < rows.length; i++) {
                 const cells = rows[i].getElementsByTagName('td');
-                if (cells.length < 5) continue; // Skip "no games" row
+                if (cells.length < 6) continue; // Skip "no games" row
 
                 const gameId = cells[0].textContent.toLowerCase();
                 const teams = cells[1].textContent.toLowerCase();
-                const clock = cells[2].textContent.toLowerCase();
-                const status = cells[3].textContent.toLowerCase();
-                const period = cells[4].textContent.toLowerCase();
+                const score = cells[2].textContent.toLowerCase();
+                const clock = cells[3].textContent.toLowerCase();
+                const status = cells[4].textContent.toLowerCase();
+                const period = cells[5].textContent.toLowerCase();
 
                 const match =
                     gameId.includes(filters.gameId) &&
                     teams.includes(filters.teams) &&
+                    score.includes(filters.score) &&
                     clock.includes(filters.clock) &&
                     status.includes(filters.status) &&
                     period.includes(filters.period);
@@ -1772,7 +1971,7 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
                     const tbody = document.getElementById('gamesBody');
 
                     if (data.games.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="5" class="no-games">No games found</td></tr>';
+                        tbody.innerHTML = '<tr><td colspan="6" class="no-games">No games found</td></tr>';
                         return;
                     }
 
@@ -1781,11 +1980,13 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
                         const status = game.clock_running ? 'running' : 'paused';
                         const statusText = game.clock_running ? 'Running' : 'Paused';
                         const clock = formatClock(game.clock_seconds);
+                        const score = `${game.home_score} - ${game.away_score}`;
 
                         html += `
                             <tr>
                                 <td class="game-id">${game.game_id}</td>
                                 <td>${game.home_team} vs ${game.away_team}</td>
+                                <td><strong>${score}</strong></td>
                                 <td class="clock">${clock}</td>
                                 <td><span class="status ${status}">${statusText}</span></td>
                                 <td>${game.period_length_min} min</td>
