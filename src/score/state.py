@@ -39,6 +39,8 @@ def replay_events(events, current_time=None):
     home_score = 0
     away_score = 0
     goals = []  # Track goals for display
+    home_shots = 0
+    away_shots = 0
 
     # Roster state tracking
     home_roster = []        # List of active player IDs
@@ -76,6 +78,11 @@ def replay_events(events, current_time=None):
             goal_id = payload.get("goal_id")
             goal_time = payload.get("time", "")
 
+            # Extract player IDs
+            scorer_id = payload.get("scorer_id")
+            assist1_id = payload.get("assist1_id")
+            assist2_id = payload.get("assist2_id")
+
             if goal_value > 0:
                 # New goal
                 home_score += 1
@@ -84,7 +91,11 @@ def replay_events(events, current_time=None):
                         "id": goal_id,
                         "team": "home",
                         "time": goal_time,
-                        "cancelled": False
+                        "cancelled": False,
+                        # Include player IDs
+                        "scorer_id": scorer_id,
+                        "assist1_id": assist1_id,
+                        "assist2_id": assist2_id,
                     })
                 logger.debug(f"Replayed GOAL_HOME (value={goal_value}): home={home_score}")
             else:
@@ -104,6 +115,11 @@ def replay_events(events, current_time=None):
             goal_id = payload.get("goal_id")
             goal_time = payload.get("time", "")
 
+            # Extract player IDs
+            scorer_id = payload.get("scorer_id")
+            assist1_id = payload.get("assist1_id")
+            assist2_id = payload.get("assist2_id")
+
             if goal_value > 0:
                 # New goal
                 away_score += 1
@@ -112,7 +128,11 @@ def replay_events(events, current_time=None):
                         "id": goal_id,
                         "team": "away",
                         "time": goal_time,
-                        "cancelled": False
+                        "cancelled": False,
+                        # Include player IDs
+                        "scorer_id": scorer_id,
+                        "assist1_id": assist1_id,
+                        "assist2_id": assist2_id,
                     })
                 logger.debug(f"Replayed GOAL_AWAY (value={goal_value}): away={away_score}")
             else:
@@ -151,6 +171,14 @@ def replay_events(events, current_time=None):
             elif team == "away":
                 away_score = score
                 logger.debug(f"Replayed SCORE_CHANGE (legacy): away={away_score}")
+
+        # Shot events
+        elif event["type"] == "SHOT_HOME":
+            home_shots += 1
+            logger.debug(f"Replayed SHOT_HOME: home_shots={home_shots}")
+        elif event["type"] == "SHOT_AWAY":
+            away_shots += 1
+            logger.debug(f"Replayed SHOT_AWAY: away_shots={away_shots}")
 
         # Roster events
         elif event["type"] == "ROSTER_INITIALIZED":
@@ -205,6 +233,8 @@ def replay_events(events, current_time=None):
         "home_score": home_score,
         "away_score": away_score,
         "goals": goals,
+        "home_shots": home_shots,
+        "away_shots": away_shots,
         "home_roster": home_roster,
         "away_roster": away_roster,
         "roster_details": roster_details

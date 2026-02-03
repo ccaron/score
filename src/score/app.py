@@ -33,13 +33,13 @@ html = """
 
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: #2c3e50;
     min-height: 100vh;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    color: #fff;
+    color: #ecf0f1;
 }
 
 .clock {
@@ -48,18 +48,17 @@ body {
     margin: 0.5em;
     cursor: pointer;
     user-select: none;
-    background: rgba(255, 255, 255, 0.1);
-    backdrop-filter: blur(10px);
+    background: rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(5px);
     padding: 0.3em 0.6em;
-    border-radius: 20px;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-    transition: transform 0.2s ease, box-shadow 0.2s ease;
-    border: 2px solid rgba(255, 255, 255, 0.2);
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    transition: transform 0.2s ease;
+    border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
 .clock:hover {
-    transform: scale(1.05);
-    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.4);
+    transform: scale(1.02);
 }
 
 .clock:active {
@@ -70,37 +69,33 @@ button {
     font-size: 1.2em;
     margin: 0.5em;
     padding: 0.8em 2em;
-    background: rgba(255, 255, 255, 0.2);
-    backdrop-filter: blur(10px);
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    border-radius: 50px;
-    color: #fff;
+    background: rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(5px);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 8px;
+    color: #ecf0f1;
     cursor: pointer;
-    transition: all 0.3s ease;
-    font-weight: 600;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+    transition: all 0.2s ease;
+    font-weight: 500;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 button:hover {
-    background: rgba(255, 255, 255, 0.3);
-    transform: translateY(-2px);
-    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+    background: rgba(255, 255, 255, 0.12);
 }
 
 button:active {
-    transform: translateY(0);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    transform: scale(0.98);
 }
 
 button:disabled {
-    opacity: 0.4;
+    opacity: 0.3;
     cursor: not-allowed;
 }
 
 button:disabled:hover {
-    background: rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.08);
     transform: none;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
 }
 
 .controls {
@@ -155,29 +150,29 @@ select option {
 
 .status-indicator {
     position: fixed;
-    top: 20px;
+    bottom: 20px;
     right: 20px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    background: rgba(255, 255, 255, 0.1);
-    backdrop-filter: blur(10px);
-    padding: 15px 20px;
-    border-radius: 15px;
-    border: 2px solid rgba(255, 255, 255, 0.2);
-    font-size: 0.85em;
-    min-width: 200px;
+    gap: 6px;
+    background: rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(5px);
+    padding: 12px 16px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    font-size: 0.75em;
+    min-width: 180px;
 }
 
 .status-item {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
 }
 
 .status-dot {
-    width: 12px;
-    height: 12px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     background: #888;
     transition: background 0.3s ease;
@@ -280,6 +275,42 @@ select option {
     background: rgba(0, 0, 0, 0.2);
 }
 
+/* Goal Modal Specific Styles */
+.modal-content select {
+    width: 100%;
+    padding: 0.8em;
+    font-size: 1.2em;
+    border: 2px solid #667eea;
+    border-radius: 10px;
+    margin-bottom: 1em;
+    color: #333;
+    background: white;
+}
+
+.modal-content select:focus {
+    outline: none;
+    border-color: #764ba2;
+    box-shadow: 0 0 0 3px rgba(118, 75, 162, 0.1);
+}
+
+.modal-content label {
+    display: block;
+    color: #333;
+    font-weight: 600;
+    text-align: left;
+    margin-bottom: 0.5em;
+    font-size: 1em;
+}
+
+.modal-content .required::after {
+    content: " *";
+    color: #e74c3c;
+}
+
+.modal-content .optional {
+    opacity: 0.7;
+}
+
 .scoreboard {
     display: flex;
     gap: 3em;
@@ -292,79 +323,85 @@ select option {
     display: flex;
     gap: 2em;
     margin: 2em 0;
-    align-items: flex-start;
+    align-items: stretch;
     justify-content: center;
     width: 100%;
-    max-width: 900px;
+    max-width: 1200px;
 }
 
 .scoreboard-container.hidden {
     display: none;
 }
 
+.scoreboard-container .clock {
+    font-size: 6em;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
 .team-column {
     flex: 1;
     min-width: 0;
+    display: flex;
+    flex-direction: column;
 }
 
 .team-header {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 1em 1.5em;
-    background: rgba(255, 255, 255, 0.08);
-    backdrop-filter: blur(10px);
-    border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    margin-bottom: 1em;
-}
-
-.team-name {
-    font-size: 1.3em;
-    font-weight: 600;
-    opacity: 0.9;
-}
-
-.score-display {
-    font-size: 2.5em;
-    font-weight: 700;
-}
-
-.team-score {
-    display: flex;
     flex-direction: column;
     align-items: center;
+    justify-content: center;
+    padding: 1.5em;
+    background: rgba(255, 255, 255, 0.05);
+    backdrop-filter: blur(5px);
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    margin-bottom: 1em;
     gap: 0.5em;
-    background: rgba(255, 255, 255, 0.1);
-    backdrop-filter: blur(10px);
-    padding: 1.5em 2em;
-    border-radius: 15px;
-    border: 2px solid rgba(255, 255, 255, 0.2);
-    min-width: 200px;
+    flex: 1;
+    min-height: 0;
 }
 
 .team-name {
-    font-size: 1.2em;
+    font-size: 1.5em;
     font-weight: 600;
-    opacity: 0.9;
+    opacity: 0.95;
+}
+
+.team-location {
+    font-size: 0.75em;
+    font-weight: 500;
+    opacity: 0.5;
+    text-transform: uppercase;
+    letter-spacing: 0.15em;
 }
 
 .score-display {
     font-size: 4em;
     font-weight: 700;
-    margin: 0.2em 0;
+    color: #ecf0f1;
+    margin-top: 0.2em;
 }
 
-.score-buttons {
+.shots-display {
+    font-size: 0.9em;
+    opacity: 0.6;
+    font-weight: 400;
+    margin-top: 0.5em;
+}
+
+.button-row {
     display: flex;
     gap: 0.5em;
+    margin-bottom: 1em;
 }
 
 .add-goal-btn {
-    width: 100%;
+    flex: 1;
     font-size: 0.95em;
     padding: 0.7em 1.2em;
-    margin-bottom: 1em;
     background: rgba(255, 255, 255, 0.06);
     border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 8px;
@@ -380,6 +417,27 @@ select option {
 }
 
 .add-goal-btn:active {
+    transform: scale(0.98);
+}
+
+.add-shot-btn {
+    flex: 1;
+    font-size: 0.9em;
+    padding: 0.6em 1em;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    color: rgba(255, 255, 255, 0.7);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-weight: 400;
+}
+
+.add-shot-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.add-shot-btn:active {
     transform: scale(0.98);
 }
 
@@ -422,13 +480,14 @@ select option {
 
 .goal-item {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
+    flex-direction: column;
+    gap: 0.3em;
     padding: 0.6em 0.8em;
     background: rgba(255, 255, 255, 0.05);
     border-radius: 6px;
     font-size: 0.9em;
     border: 1px solid rgba(255, 255, 255, 0.08);
+    position: relative;
 }
 
 .goal-item.cancelled {
@@ -438,21 +497,37 @@ select option {
 
 .goal-time {
     font-family: 'Courier New', monospace;
-    font-weight: 500;
-    opacity: 0.75;
-    font-size: 0.95em;
+    font-weight: 600;
+    opacity: 0.9;
+    font-size: 1em;
+    color: #fff;
+}
+
+.goal-details {
+    font-size: 0.85em;
+    opacity: 0.8;
+    font-weight: 400;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2em;
+}
+
+.goal-line {
+    line-height: 1.4;
 }
 
 .cancel-goal-btn {
     font-size: 0.85em;
     padding: 0.3em 0.7em;
     margin: 0;
+    margin-top: 0.3em;
     background: rgba(239, 68, 68, 0.15);
     border: 1px solid rgba(239, 68, 68, 0.3);
     border-radius: 4px;
     color: rgba(255, 255, 255, 0.85);
     cursor: pointer;
     transition: all 0.2s ease;
+    align-self: flex-start;
 }
 
 .cancel-goal-btn:hover {
@@ -518,24 +593,34 @@ select option {
     </div>
 </div>
 
-<div class="clock" id="clock">20:00</div>
-
 <div class="scoreboard-container hidden" id="scoreboardContainer">
     <div class="team-column">
         <div class="team-header">
             <div class="team-name" id="homeTeam">Home</div>
+            <div class="team-location">HOME</div>
             <div class="score-display" id="homeScore">0</div>
+            <div class="shots-display">Shots: <span id="homeShots">0</span></div>
         </div>
-        <button class="add-goal-btn" onclick="addGoal('home')">+ Goal</button>
+        <div class="button-row">
+            <button class="add-goal-btn" onclick="addGoal('home')">+ Goal</button>
+            <button class="add-shot-btn" onclick="addShot('home')">+ Shot</button>
+        </div>
         <div class="goals-list" id="homeGoals"></div>
     </div>
+
+    <div class="clock" id="clock">20:00</div>
 
     <div class="team-column">
         <div class="team-header">
             <div class="team-name" id="awayTeam">Away</div>
+            <div class="team-location">AWAY</div>
             <div class="score-display" id="awayScore">0</div>
+            <div class="shots-display">Shots: <span id="awayShots">0</span></div>
         </div>
-        <button class="add-goal-btn" onclick="addGoal('away')">+ Goal</button>
+        <div class="button-row">
+            <button class="add-goal-btn" onclick="addGoal('away')">+ Goal</button>
+            <button class="add-shot-btn" onclick="addShot('away')">+ Shot</button>
+        </div>
         <div class="goals-list" id="awayGoals"></div>
     </div>
 </div>
@@ -558,6 +643,34 @@ select option {
         <div class="modal-buttons">
             <button onclick="applyTime()">Set</button>
             <button onclick="closeModal()">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<div class="modal" id="goalModal">
+    <div class="modal-content">
+        <h3>Record Goal</h3>
+        <input type="hidden" id="goalTeam" />
+
+        <label class="required" for="goalScorer">Scorer</label>
+        <select id="goalScorer">
+            <option value="">-- Select Scorer --</option>
+        </select>
+
+        <label class="required" for="goalAssist1">Primary Assist</label>
+        <select id="goalAssist1">
+            <option value="">-- Select Assist (or None) --</option>
+            <option value="none">Unassisted</option>
+        </select>
+
+        <label class="optional" for="goalAssist2">Secondary Assist</label>
+        <select id="goalAssist2">
+            <option value="">-- None --</option>
+        </select>
+
+        <div class="modal-buttons">
+            <button onclick="submitGoal()">Record Goal</button>
+            <button onclick="closeGoalModal()">Cancel</button>
         </div>
     </div>
 </div>
@@ -600,6 +713,16 @@ loadGames();
 ws.onmessage = (event) => {
     const data = JSON.parse(event.data).state;
 
+    // Cache state for modal access
+    let cacheEl = document.getElementById('stateCache');
+    if (!cacheEl) {
+        cacheEl = document.createElement('script');
+        cacheEl.id = 'stateCache';
+        cacheEl.type = 'application/json';
+        document.body.appendChild(cacheEl);
+    }
+    cacheEl.textContent = JSON.stringify(data);
+
     currentSeconds = data.seconds;
     currentMode = data.mode;
 
@@ -636,8 +759,12 @@ ws.onmessage = (event) => {
         document.getElementById("homeScore").textContent = data.home_score;
         document.getElementById("awayScore").textContent = data.away_score;
 
+        // Update shots
+        document.getElementById("homeShots").textContent = data.home_shots || 0;
+        document.getElementById("awayShots").textContent = data.away_shots || 0;
+
         // Update goals lists (separate for each team)
-        renderGoalsList(data.goals);
+        renderGoalsList(data.goals, data.roster_details);
     }
 
     // Update start/pause button
@@ -693,11 +820,108 @@ function selectMode(mode) {
 }
 
 function addGoal(team) {
+    // Check if rosters are loaded
+    const state = JSON.parse(document.getElementById('stateCache')?.textContent || '{}');
+
+    if (!state.roster_loaded) {
+        // No roster loaded - submit anonymous goal immediately
+        submitAnonymousGoal(team);
+        return;
+    }
+
+    // Open modal for player selection
+    openGoalModal(team);
+}
+
+function submitAnonymousGoal(team) {
+    // Submit goal without player information
     fetch('/add_goal', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ team: team })
+        body: JSON.stringify({
+            team: team,
+            scorer_id: null,
+            assist1_id: null,
+            assist2_id: null
+        })
     });
+}
+
+function openGoalModal(team) {
+    const state = JSON.parse(document.getElementById('stateCache')?.textContent || '{}');
+    const modal = document.getElementById('goalModal');
+    document.getElementById('goalTeam').value = team;
+
+    // Populate dropdowns with roster
+    const roster = team === 'home' ? state.home_roster : state.away_roster;
+    const rosterDetails = state.roster_details;
+
+    const scorerSelect = document.getElementById('goalScorer');
+    const assist1Select = document.getElementById('goalAssist1');
+    const assist2Select = document.getElementById('goalAssist2');
+
+    // Clear existing options (keep first/default option)
+    scorerSelect.options.length = 1;
+    assist1Select.options.length = 2; // Keep default + "Unassisted"
+    assist2Select.options.length = 1;
+
+    // Populate with players (sorted by jersey number)
+    const sortedRoster = roster
+        .map(id => rosterDetails[id])
+        .filter(p => p) // Remove null/undefined
+        .sort((a, b) => (a.jersey_number || 999) - (b.jersey_number || 999));
+
+    sortedRoster.forEach(player => {
+        const optionText = `#${player.jersey_number || '?'} ${player.full_name}`;
+
+        scorerSelect.add(new Option(optionText, player.player_id));
+        assist1Select.add(new Option(optionText, player.player_id));
+        assist2Select.add(new Option(optionText, player.player_id));
+    });
+
+    // Reset selections
+    scorerSelect.value = '';
+    assist1Select.value = '';
+    assist2Select.value = '';
+
+    modal.classList.add('active');
+    scorerSelect.focus();
+}
+
+function closeGoalModal() {
+    document.getElementById('goalModal').classList.remove('active');
+}
+
+function submitGoal() {
+    const team = document.getElementById('goalTeam').value;
+    const scorer = document.getElementById('goalScorer').value;
+    const assist1 = document.getElementById('goalAssist1').value;
+    const assist2 = document.getElementById('goalAssist2').value;
+
+    // Validate required fields
+    if (!scorer) {
+        alert('Please select a scorer');
+        return;
+    }
+
+    if (!assist1) {
+        alert('Please select primary assist or "Unassisted"');
+        return;
+    }
+
+    // Submit goal with player information
+    fetch('/add_goal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            team: team,
+            scorer_id: scorer,
+            assist1_id: assist1 === 'none' ? null : assist1,
+            assist2_id: assist2 || null
+        })
+    });
+
+    closeGoalModal();
 }
 
 function cancelGoal(goalId) {
@@ -708,7 +932,15 @@ function cancelGoal(goalId) {
     });
 }
 
-function renderGoalsList(goals) {
+function addShot(team) {
+    fetch('/add_shot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ team: team })
+    });
+}
+
+function renderGoalsList(goals, rosterDetails) {
     const homeContainer = document.getElementById('homeGoals');
     const awayContainer = document.getElementById('awayGoals');
 
@@ -716,6 +948,41 @@ function renderGoalsList(goals) {
         homeContainer.innerHTML = '';
         awayContainer.innerHTML = '';
         return;
+    }
+
+    // Helper to format player display
+    function formatPlayer(playerId) {
+        if (!playerId || !rosterDetails) return '';
+        const player = rosterDetails[playerId];
+        if (!player) return 'Unknown';
+        return `#${player.jersey_number || '?'} ${player.full_name}`;
+    }
+
+    function formatGoalDetails(goal) {
+        if (!goal.scorer_id) {
+            return '<div class="goal-details"><div class="goal-line">Unknown scorer</div></div>';
+        }
+
+        const scorer = formatPlayer(goal.scorer_id);
+        let detailsHtml = '<div class="goal-details">';
+
+        // Goal line
+        detailsHtml += `<div class="goal-line">Goal: ${scorer}</div>`;
+
+        // Assist 1 line
+        if (goal.assist1_id) {
+            detailsHtml += `<div class="goal-line">Assist 1: ${formatPlayer(goal.assist1_id)}</div>`;
+        } else {
+            detailsHtml += '<div class="goal-line">Unassisted</div>';
+        }
+
+        // Assist 2 line (only if present)
+        if (goal.assist2_id) {
+            detailsHtml += `<div class="goal-line">Assist 2: ${formatPlayer(goal.assist2_id)}</div>`;
+        }
+
+        detailsHtml += '</div>';
+        return detailsHtml;
     }
 
     // Split goals by team and render newest first
@@ -729,6 +996,7 @@ function renderGoalsList(goals) {
         return `
             <div class="goal-item ${cancelledClass}">
                 <span class="goal-time">${goal.time}</span>
+                ${formatGoalDetails(goal)}
                 <button class="cancel-goal-btn" onclick="cancelGoal('${goal.id}')" ${disabledAttr}>
                     ${goal.cancelled ? 'Cancelled' : 'Cancel'}
                 </button>
@@ -743,6 +1011,7 @@ function renderGoalsList(goals) {
         return `
             <div class="goal-item ${cancelledClass}">
                 <span class="goal-time">${goal.time}</span>
+                ${formatGoalDetails(goal)}
                 <button class="cancel-goal-btn" onclick="cancelGoal('${goal.id}')" ${disabledAttr}>
                     ${goal.cancelled ? 'Cancelled' : 'Cancel'}
                 </button>
@@ -791,8 +1060,11 @@ document.getElementById("clock").addEventListener("dblclick", () => {
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
         closeModal();
+        closeGoalModal();
     } else if (e.key === 'Enter' && document.getElementById('timeModal').classList.contains('active')) {
         applyTime();
+    } else if (e.key === 'Enter' && document.getElementById('goalModal').classList.contains('active')) {
+        submitGoal();
     }
 });
 
@@ -937,6 +1209,13 @@ class GameState:
         self.home_score = 0
         self.away_score = 0
         self.goals: list[dict] = []  # List of goals: {id, team, time, cancelled}
+        self.home_shots = 0
+        self.away_shots = 0
+        # Roster state
+        self.home_roster = []        # List of player_ids
+        self.away_roster = []        # List of player_ids
+        self.roster_details = {}     # Map: player_id -> player info dict
+        self.roster_loaded = False   # Flag for roster availability
 
     def add_event(self, event_type, payload=None):
         # Determine game_id: use mode if it's a game, otherwise None (for clock mode)
@@ -978,6 +1257,12 @@ class GameState:
             "home_score": self.home_score,
             "away_score": self.away_score,
             "goals": self.goals,
+            "home_shots": self.home_shots,
+            "away_shots": self.away_shots,
+            "home_roster": self.home_roster,
+            "away_roster": self.away_roster,
+            "roster_details": self.roster_details,
+            "roster_loaded": self.roster_loaded,
         }
         if self.current_game:
             result["current_game"] = self.current_game
@@ -1021,6 +1306,64 @@ def fetch_games_from_cloud():
             state.schedule_status = "unknown"
         return []
 
+def fetch_and_initialize_roster(game_id: str):
+    """
+    Fetch roster from cloud and create ROSTER_INITIALIZED events.
+
+    This should be called when switching to a game mode.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        response = requests.get(
+            f"{CLOUD_API_URL}/v1/games/{game_id}/roster",
+            timeout=5
+        )
+        response.raise_for_status()
+        roster_data = response.json()
+
+        # Create ROSTER_INITIALIZED event for home team
+        home_players = []
+        for player_id in roster_data["home_roster"]:
+            player_info = roster_data["players"].get(str(player_id), {})
+            home_players.append({
+                "player_id": player_id,
+                "full_name": player_info.get("full_name", "Unknown"),
+                "jersey_number": player_info.get("jersey_number"),
+                "position": player_info.get("position"),
+                "status": "active"
+            })
+
+        if home_players:
+            state.add_event("ROSTER_INITIALIZED", {
+                "team": "home",
+                "players": home_players
+            })
+
+        # Create ROSTER_INITIALIZED event for away team
+        away_players = []
+        for player_id in roster_data["away_roster"]:
+            player_info = roster_data["players"].get(str(player_id), {})
+            away_players.append({
+                "player_id": player_id,
+                "full_name": player_info.get("full_name", "Unknown"),
+                "jersey_number": player_info.get("jersey_number"),
+                "position": player_info.get("position"),
+                "status": "active"
+            })
+
+        if away_players:
+            state.add_event("ROSTER_INITIALIZED", {
+                "team": "away",
+                "players": away_players
+            })
+
+        logger.info(f"Roster initialized: {len(home_players)} home, {len(away_players)} away")
+        return True
+
+    except Exception as e:
+        logger.warning(f"Failed to fetch roster for {game_id}: {e}")
+        return False
+
 # ---------- State replay ----------
 def load_state_from_events():
     """Load state from events - used on startup (defaults to clock mode)."""
@@ -1053,8 +1396,15 @@ def load_game_state(game_id: str):
     state.home_score = result.get("home_score", 0)
     state.away_score = result.get("away_score", 0)
     state.goals = result.get("goals", [])
+    state.home_shots = result.get("home_shots", 0)
+    state.away_shots = result.get("away_shots", 0)
+    # Load roster state
+    state.home_roster = result.get("home_roster", [])
+    state.away_roster = result.get("away_roster", [])
+    state.roster_details = result.get("roster_details", {})
+    state.roster_loaded = bool(state.home_roster or state.away_roster)
 
-    logger.info(f"Game state loaded: {state.seconds}s, running={state.running}, score={state.home_score}-{state.away_score}, goals={len(state.goals)}")
+    logger.info(f"Game state loaded: {state.seconds}s, running={state.running}, score={state.home_score}-{state.away_score}, goals={len(state.goals)}, shots={state.home_shots}-{state.away_shots}, roster_loaded={state.roster_loaded}")
     return result["num_events"]
 
 # ---------- Broadcast ----------
@@ -1225,6 +1575,9 @@ async def set_time(request: dict):
 async def add_goal(request: dict):
     """Add a goal for a team."""
     team = request.get("team")  # "home" or "away"
+    scorer_id = request.get("scorer_id")  # player_id or None
+    assist1_id = request.get("assist1_id")  # player_id or None
+    assist2_id = request.get("assist2_id")  # player_id or None
 
     if state.mode == "clock":
         return {"status": "error", "message": "Cannot add goal in clock mode"}
@@ -1256,7 +1609,11 @@ async def add_goal(request: dict):
         "id": goal_id,
         "team": team,
         "time": game_time,
-        "cancelled": False
+        "cancelled": False,
+        # Add player IDs (store as strings for consistency)
+        "scorer_id": str(scorer_id) if scorer_id else None,
+        "assist1_id": str(assist1_id) if assist1_id else None,
+        "assist2_id": str(assist2_id) if assist2_id else None,
     }
     state.goals.append(goal)
 
@@ -1265,7 +1622,10 @@ async def add_goal(request: dict):
         "goal_id": goal_id,
         "value": 1,
         "time": game_time,
-        # Future fields: player, assist1, assist2, penalty_shot, empty_net, period
+        # Include player IDs in event payload
+        "scorer_id": str(scorer_id) if scorer_id else None,
+        "assist1_id": str(assist1_id) if assist1_id else None,
+        "assist2_id": str(assist2_id) if assist2_id else None,
     }
     state.add_event(event_type, payload)
 
@@ -1313,6 +1673,34 @@ async def cancel_goal(request: dict):
 
     await broadcast_state()
     return {"status": "ok", "goal": goal}
+
+
+@app.post("/add_shot")
+async def add_shot(request: dict):
+    """Add a shot for a team (anonymous - no player tracking)."""
+    team = request.get("team")  # "home" or "away"
+
+    if state.mode == "clock":
+        return {"status": "error", "message": "Cannot add shot in clock mode"}
+
+    if team not in ["home", "away"]:
+        return {"status": "error", "message": "Invalid team"}
+
+    # Update shot count
+    if team == "home":
+        state.home_shots += 1
+        event_type = "SHOT_HOME"
+        logger.info(f"Home shot recorded, total shots now {state.home_shots}")
+    else:
+        state.away_shots += 1
+        event_type = "SHOT_AWAY"
+        logger.info(f"Away shot recorded, total shots now {state.away_shots}")
+
+    # Store event (anonymous - no payload needed)
+    state.add_event(event_type, {})
+
+    await broadcast_state()
+    return {"status": "ok", "team": team, "shots": state.home_shots if team == "home" else state.away_shots}
 
 
 @app.post("/change_score")
@@ -1400,6 +1788,13 @@ async def select_mode(request: dict):
         state.home_score = 0
         state.away_score = 0
         state.goals = []
+        state.home_shots = 0
+        state.away_shots = 0
+        # Clear roster state
+        state.home_roster = []
+        state.away_roster = []
+        state.roster_details = {}
+        state.roster_loaded = False
         logger.info("Switched to clock mode")
     else:
         # Switch to a game mode - fetch game details
@@ -1429,6 +1824,16 @@ async def select_mode(request: dict):
                 state.add_event("CLOCK_SET", {"seconds": state.seconds})
                 logger.info(f"No prior state found, initializing game with {state.seconds}s and 0-0 score")
 
+            # Download roster if not already loaded
+            if not state.roster_loaded:
+                logger.info(f"Roster not loaded, fetching from cloud...")
+                success = fetch_and_initialize_roster(new_mode)
+                if success:
+                    # Reload state to pick up roster events
+                    load_game_state(new_mode)
+                else:
+                    logger.warning("Roster download failed - goals will be anonymous")
+
             logger.info(f"Selected game: {selected_game['home_team']} vs {selected_game['away_team']}")
         else:
             logger.warning(f"Game {new_mode} not found in available games, switching to clock mode")
@@ -1439,6 +1844,8 @@ async def select_mode(request: dict):
             state.home_score = 0
             state.away_score = 0
             state.goals = []
+            state.home_shots = 0
+            state.away_shots = 0
 
     await broadcast_state()
     return {"status": "ok", "mode": state.mode}
