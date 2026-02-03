@@ -77,7 +77,7 @@ Events are delivered to destinations with tracking:
 - `events` table: Stores all events
 - `deliveries` table: Tracks delivery status per destination (NULL/1/2 = pending/success/failure)
 - Event pusher polls every 0.5s for undelivered events
-- Supports multiple destinations: file (`events.log`) and cloud API (`http://localhost:8001`)
+- Supports delivery to cloud API (`http://localhost:8001`)
 
 ### Logging Coordination
 
@@ -92,7 +92,7 @@ Uses **queue-based logging** to coordinate output from multiple processes:
 ### Core Application
 - `src/score/app.py` - Main FastAPI app, WebSocket server, game loop, HTML UI
 - `src/score/state.py` - **Shared** event replay logic (used by both app and cloud)
-- `src/score/pusher.py` - Event delivery process (file writer, cloud pusher)
+- `src/score/pusher.py` - Event delivery process (cloud pusher)
 
 ### Cloud API
 - `src/score/cloud.py` - Cloud API simulator with schedule management, event reception, device management
@@ -339,8 +339,7 @@ Game state is broadcast to all connected WebSocket clients every 1 second. Keep 
 ## Common Debugging Steps
 
 1. **Check database contents**: Use sqlite3 CLI to inspect `game.db` or `cloud.db`
-2. **Review event log**: `tail -f events.log` shows delivered events in JSONL format
-3. **Check process status**: Game loop logs pusher health every second
-4. **Inspect cloud state**: Visit `http://localhost:8001/admin/games/state` to see reconstructed game state
-5. **Test event replay**: Unit tests in `tests/test_state.py` verify replay logic
-6. **Monitor logs**: Rich console output shows PID/TID for multi-process coordination
+2. **Check process status**: Game loop logs pusher health every second
+3. **Inspect cloud state**: Visit `http://localhost:8001/admin/games/state` to see reconstructed game state
+4. **Test event replay**: Unit tests in `tests/test_state.py` verify replay logic
+5. **Monitor logs**: Rich console output shows PID/TID for multi-process coordination

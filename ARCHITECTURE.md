@@ -18,8 +18,7 @@ graph TB
 
     subgraph "Event Pusher Process"
         Pusher[Event Pusher]
-        FileWriter[File Writer]
-        Output[events.log]
+        CloudPush[Cloud API Push]
     end
 
     subgraph "Logging Infrastructure"
@@ -35,8 +34,7 @@ graph TB
     GameLoop -->|Check Status| Pusher
 
     Pusher -->|Query Events| DB
-    Pusher -->|Write| FileWriter
-    FileWriter --> Output
+    Pusher -->|POST Events| CloudPush
 
     Pusher -->|Log Records| LogQueue
     State -->|Log Records| LogQueue

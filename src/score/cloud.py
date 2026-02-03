@@ -14,15 +14,38 @@ import sqlite3
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import requests
-from fastapi import FastAPI, HTTPException, Path, Query, WebSocket
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Path as FastAPIPath, Query, WebSocket, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
 import uvicorn
+
+from score.models import (
+    Game,
+    ScheduleResponse,
+    Event,
+    PostEventsRequest,
+    PostEventsResponse,
+    HeartbeatRequest,
+    HeartbeatResponse,
+    DeviceConfigResponse,
+    DeviceInfo,
+    CreateDeviceRequest,
+    CreateRinkRequest,
+    AssignDeviceRequest,
+    UpdateDeviceRequest,
+    DeviceListResponse,
+)
 
 # Set up logger
 logger = logging.getLogger("score.cloud")
+
+# Templates directory
+TEMPLATES_DIR = Path(__file__).parent / "templates"
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 
 # ---------- Database Configuration ----------
@@ -207,107 +230,6 @@ def init_db():
 init_db()
 
 
-# ---------- Pydantic Models ----------
-
-class Game(BaseModel):
-    game_id: str
-    home_team: str
-    away_team: str
-    start_time: str  # ISO 8601 format
-    period_length_min: int
-
-
-class ScheduleResponse(BaseModel):
-    schedule_version: str
-    games: list[Game]
-
-
-class Event(BaseModel):
-    event_id: str
-    seq: int
-    type: str
-    ts_local: str  # ISO 8601 format
-    payload: dict
-
-
-class PostEventsRequest(BaseModel):
-    device_id: str
-    session_id: str
-    events: list[Event]
-
-
-class PostEventsResponse(BaseModel):
-    acked_through: int
-    server_time: str
-
-
-class HeartbeatRequest(BaseModel):
-    device_id: str
-    current_game_id: Optional[str] = None
-    game_state: Optional[str] = None
-    clock_running: Optional[bool] = None
-    clock_value_ms: Optional[int] = None
-    last_event_seq: Optional[int] = None
-    app_version: Optional[str] = None
-    ts_local: str
-
-
-class HeartbeatResponse(BaseModel):
-    status: str
-    server_time: str
-
-
-class DeviceConfigResponse(BaseModel):
-    device_id: str
-    is_assigned: bool
-    rink_id: Optional[str] = None
-    sheet_name: Optional[str] = None
-    device_name: Optional[str] = None
-    message: Optional[str] = None
-
-
-class DeviceInfo(BaseModel):
-    device_id: str
-    rink_id: Optional[str] = None
-    sheet_name: Optional[str] = None
-    device_name: Optional[str] = None
-    is_assigned: bool
-    first_seen_at: int
-    last_seen_at: int
-    notes: Optional[str] = None
-
-
-class CreateDeviceRequest(BaseModel):
-    device_id: str
-    rink_id: Optional[str] = None
-    sheet_name: Optional[str] = None
-    device_name: Optional[str] = None
-    notes: Optional[str] = None
-
-
-class CreateRinkRequest(BaseModel):
-    rink_id: str
-    name: str
-
-
-class AssignDeviceRequest(BaseModel):
-    rink_id: str
-    sheet_name: str
-    device_name: Optional[str] = None
-    notes: Optional[str] = None
-
-
-class UpdateDeviceRequest(BaseModel):
-    rink_id: Optional[str] = None
-    sheet_name: Optional[str] = None
-    device_name: Optional[str] = None
-    notes: Optional[str] = None
-
-
-class DeviceListResponse(BaseModel):
-    devices: list[DeviceInfo]
-
-
 # ---------- WebSocket state tracking ----------
 websocket_clients = []
 
@@ -342,7 +264,7 @@ app = FastAPI(
 
 @app.get("/v1/rinks/{rink_id}/schedule", response_model=ScheduleResponse)
 async def get_schedule(
-    rink_id: str = Path(..., description="Rink ID"),
+    rink_id: str = FastAPIPath(..., description="Rink ID"),
     date: Optional[str] = Query(None, description="Date in YYYY-MM-DD format (defaults to today)")
 ):
     """
@@ -410,7 +332,7 @@ async def get_schedule(
 
 
 @app.get("/v1/games/{game_id}/roster")
-async def get_game_roster(game_id: str = Path(..., description="Game ID")):
+async def get_game_roster(game_id: str = FastAPIPath(..., description="Game ID")):
     """
     Get roster for a game as of game start time.
 
@@ -448,7 +370,7 @@ async def get_game_roster(game_id: str = Path(..., description="Game ID")):
 
 
 @app.get("/v1/devices/{device_id}/config", response_model=DeviceConfigResponse)
-async def get_device_config(device_id: str = Path(..., description="Device ID")):
+async def get_device_config(device_id: str = FastAPIPath(..., description="Device ID")):
     """
     Get configuration for a device.
 

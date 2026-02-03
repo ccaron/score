@@ -351,59 +351,6 @@ class BaseEventPusher(ABC):
         logger.info("Event pusher stopped.")
 
 
-class FileEventPusher(BaseEventPusher):
-    """Event pusher that writes JSONL to a local file."""
-
-    def __init__(self, db_path, output_path, destination=None):
-        """
-        Initialize file event pusher.
-
-        Args:
-            db_path: Path to SQLite database
-            output_path: Path to output file (e.g., events.log)
-            destination: Destination name for tracking (defaults to output_path)
-        """
-        if destination is None:
-            destination = output_path
-        super().__init__(db_path, destination)
-        self.output_path = output_path
-        logger.info(f"Output: {self.output_path}")
-
-    def deliver(self, event):
-        """
-        Write event as JSONL to file with proper error handling.
-
-        Args:
-            event: Event row from database
-
-        Raises:
-            TransientError: For temporary file issues (permissions, disk full)
-            PermanentError: For permanent issues (bad path)
-        """
-        jsonl_line = self.format_event_jsonl(event)
-        logger.debug(f"Writing event {event['id']} to {self.output_path}")
-
-        try:
-            with open(self.output_path, 'a') as f:
-                f.write(jsonl_line + '\n')
-
-        except FileNotFoundError as e:
-            # File or directory doesn't exist - permanent error
-            raise PermanentError(f"File not found: {e}")
-
-        except PermissionError as e:
-            # Permission denied - could be transient (file locked) or permanent
-            raise TransientError(f"Permission denied: {e}")
-
-        except OSError as e:
-            # Disk full, I/O errors - transient
-            raise TransientError(f"OS error: {e}")
-
-        except Exception as e:
-            # Other errors - let base class handle
-            raise
-
-
 class CloudEventPusher(BaseEventPusher):
     """Event pusher that sends events to score-cloud API via HTTP."""
 
@@ -515,5 +462,5 @@ class CloudEventPusher(BaseEventPusher):
 
 
 # For backwards compatibility
-EventPusher = FileEventPusher
+EventPusher = CloudEventPusher
 

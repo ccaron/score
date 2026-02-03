@@ -1,4 +1,5 @@
 """Tests for pusher error handling and retry logic."""
+import json
 import sqlite3
 import tempfile
 import time
@@ -11,6 +12,18 @@ from score.pusher import (
     TransientError,
     PermanentError
 )
+
+
+class MockPusher(BaseEventPusher):
+    """Mock pusher for testing base functionality."""
+
+    def __init__(self, db_path, destination="test-destination"):
+        super().__init__(db_path, destination)
+        self.delivered_events = []
+
+    def deliver(self, event):
+        """Record event as delivered."""
+        self.delivered_events.append(event)
 
 
 @pytest.fixture
@@ -151,13 +164,7 @@ def test_permanent_error_categorization(temp_db):
 
 def test_retry_count_tracking(temp_db):
     """Test that retry counts are tracked correctly."""
-    from score.pusher import FileEventPusher
-
-    pusher = FileEventPusher(
-        db_path=temp_db,
-        output_path="/nonexistent/path/events.log",
-        destination="test-destination"
-    )
+    pusher = MockPusher(temp_db)
 
     # Create a test event
     conn = sqlite3.connect(temp_db)
@@ -187,13 +194,7 @@ def test_retry_count_tracking(temp_db):
 
 def test_max_retries_prevents_further_attempts(temp_db):
     """Test that events exceeding max retries are not returned."""
-    from score.pusher import FileEventPusher
-
-    pusher = FileEventPusher(
-        db_path=temp_db,
-        output_path="/tmp/test.log",
-        destination="test-destination"
-    )
+    pusher = MockPusher(temp_db)
 
     # Create a test event
     conn = sqlite3.connect(temp_db)
@@ -214,13 +215,7 @@ def test_max_retries_prevents_further_attempts(temp_db):
 
 def test_backoff_delays_retry(temp_db):
     """Test that backoff delays prevent immediate retry."""
-    from score.pusher import FileEventPusher
-
-    pusher = FileEventPusher(
-        db_path=temp_db,
-        output_path="/tmp/test.log",
-        destination="test-destination"
-    )
+    pusher = MockPusher(temp_db)
 
     # Create a test event
     conn = sqlite3.connect(temp_db)
@@ -247,18 +242,13 @@ def test_backoff_delays_retry(temp_db):
 
 def test_database_schema_migration(temp_db):
     """Test that schema migration adds retry columns if missing."""
-    from score.pusher import FileEventPusher
-
     # Drop the new columns to simulate old schema
     conn = sqlite3.connect(temp_db)
     # Note: SQLite doesn't support DROP COLUMN easily, so we'll just verify the pusher adds them
     conn.close()
 
     # Initialize pusher - should add columns if missing
-    pusher = FileEventPusher(
-        db_path=temp_db,
-        output_path="/tmp/test.log"
-    )
+    pusher = MockPusher(temp_db)
 
     # Verify columns exist
     conn = sqlite3.connect(temp_db)
@@ -272,13 +262,7 @@ def test_database_schema_migration(temp_db):
 
 def test_successful_delivery_after_retries(temp_db):
     """Test that retry count is preserved when delivery finally succeeds."""
-    from score.pusher import FileEventPusher
-
-    pusher = FileEventPusher(
-        db_path=temp_db,
-        output_path="/tmp/test.log",
-        destination="test-destination"
-    )
+    pusher = MockPusher(temp_db)
 
     # Create a test event
     conn = sqlite3.connect(temp_db)

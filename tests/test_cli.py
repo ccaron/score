@@ -192,7 +192,7 @@ def test_has_undelivered_events_no_events(temp_db):
 
     with patch('score.app.DB_PATH', temp_db):
         state = GameState()
-        assert state.has_undelivered_events("events.log") is False
+        assert state.has_undelivered_events("test-destination") is False
 
 
 def test_has_undelivered_events_with_undelivered(temp_db):
@@ -207,7 +207,7 @@ def test_has_undelivered_events_with_undelivered(temp_db):
 
     with patch('score.app.DB_PATH', temp_db):
         state = GameState()
-        assert state.has_undelivered_events("events.log") is True
+        assert state.has_undelivered_events("test-destination") is True
 
 
 def test_has_undelivered_events_all_delivered(temp_db):
@@ -223,11 +223,11 @@ def test_has_undelivered_events_all_delivered(temp_db):
     # Mark all as delivered
     conn = sqlite3.connect(temp_db)
     conn.execute(
-        "INSERT INTO deliveries (event_id, destination, delivered, delivered_at) VALUES (1, 'events.log', 1, ?)",
+        "INSERT INTO deliveries (event_id, destination, delivered, delivered_at) VALUES (1, 'test-destination', 1, ?)",
         (int(time.time()),)
     )
     conn.execute(
-        "INSERT INTO deliveries (event_id, destination, delivered, delivered_at) VALUES (2, 'events.log', 1, ?)",
+        "INSERT INTO deliveries (event_id, destination, delivered, delivered_at) VALUES (2, 'test-destination', 1, ?)",
         (int(time.time()),)
     )
     conn.commit()
@@ -235,7 +235,7 @@ def test_has_undelivered_events_all_delivered(temp_db):
 
     with patch('score.app.DB_PATH', temp_db):
         state = GameState()
-        assert state.has_undelivered_events("events.log") is False
+        assert state.has_undelivered_events("test-destination") is False
 
 
 def test_has_undelivered_events_with_failures(temp_db):
@@ -251,11 +251,11 @@ def test_has_undelivered_events_with_failures(temp_db):
     # Mark first as success, second as failed
     conn = sqlite3.connect(temp_db)
     conn.execute(
-        "INSERT INTO deliveries (event_id, destination, delivered, delivered_at) VALUES (1, 'events.log', 1, ?)",
+        "INSERT INTO deliveries (event_id, destination, delivered, delivered_at) VALUES (1, 'test-destination', 1, ?)",
         (int(time.time()),)
     )
     conn.execute(
-        "INSERT INTO deliveries (event_id, destination, delivered) VALUES (2, 'events.log', 2)"
+        "INSERT INTO deliveries (event_id, destination, delivered) VALUES (2, 'test-destination', 2)"
     )
     conn.commit()
     conn.close()
@@ -263,7 +263,7 @@ def test_has_undelivered_events_with_failures(temp_db):
     with patch('score.app.DB_PATH', temp_db):
         state = GameState()
         # Should return True because event 2 has failed delivery (status=2)
-        assert state.has_undelivered_events("events.log") is True
+        assert state.has_undelivered_events("test-destination") is True
 
 
 def test_has_undelivered_events_mixed_state(temp_db):
@@ -280,11 +280,11 @@ def test_has_undelivered_events_mixed_state(temp_db):
     # Mark first as success, second as failed, third has no delivery record
     conn = sqlite3.connect(temp_db)
     conn.execute(
-        "INSERT INTO deliveries (event_id, destination, delivered, delivered_at) VALUES (1, 'events.log', 1, ?)",
+        "INSERT INTO deliveries (event_id, destination, delivered, delivered_at) VALUES (1, 'test-destination', 1, ?)",
         (int(time.time()),)
     )
     conn.execute(
-        "INSERT INTO deliveries (event_id, destination, delivered) VALUES (2, 'events.log', 2)"
+        "INSERT INTO deliveries (event_id, destination, delivered) VALUES (2, 'test-destination', 2)"
     )
     conn.commit()
     conn.close()
@@ -292,7 +292,7 @@ def test_has_undelivered_events_mixed_state(temp_db):
     with patch('score.app.DB_PATH', temp_db):
         state = GameState()
         # Should return True because event 2 failed and event 3 is undelivered
-        assert state.has_undelivered_events("events.log") is True
+        assert state.has_undelivered_events("test-destination") is True
 
 
 def test_has_undelivered_events_different_destination(temp_db):
@@ -315,8 +315,8 @@ def test_has_undelivered_events_different_destination(temp_db):
 
     with patch('score.app.DB_PATH', temp_db):
         state = GameState()
-        # Should return True for events.log (not delivered there yet)
-        assert state.has_undelivered_events("events.log") is True
+        # Should return True for test-destination (not delivered there yet)
+        assert state.has_undelivered_events("test-destination") is True
         # Should return False for other.log (delivered)
         assert state.has_undelivered_events("other.log") is False
 

@@ -1,3 +1,5 @@
+"""Tests for event pusher base functionality."""
+
 import json
 import os
 import sqlite3
@@ -6,7 +8,23 @@ import time
 
 import pytest
 
-from score.pusher import FileEventPusher
+from score.pusher import BaseEventPusher
+
+
+class MockPusher(BaseEventPusher):
+    """Mock pusher that records delivered events in memory."""
+
+    def __init__(self, db_path, destination="mock"):
+        super().__init__(db_path, destination)
+        self.delivered_events = []
+
+    def deliver(self, event):
+        """Record event as delivered."""
+        self.delivered_events.append({
+            'id': event['id'],
+            'type': event['type'],
+            'payload': json.loads(event['payload']) if event['payload'] else {}
+        })
 
 
 @pytest.fixture
@@ -44,19 +62,6 @@ def temp_db():
     os.unlink(db_path)
 
 
-@pytest.fixture
-def temp_output():
-    """Create a temporary output file."""
-    with tempfile.NamedTemporaryFile(suffix=".log", delete=False) as f:
-        output_path = f.name
-
-    yield output_path
-
-    # Cleanup
-    if os.path.exists(output_path):
-        os.unlink(output_path)
-
-
 def create_test_events(db_path, events):
     """
     Helper to create test events.
@@ -79,8 +84,8 @@ def create_test_events(db_path, events):
     conn.close()
 
 
-def test_basic_event_processing(temp_db, temp_output):
-    """Test basic event processing and JSONL output."""
+def test_basic_event_processing(temp_db):
+    """Test basic event processing."""
     # Create test events
     create_test_events(temp_db, [
         (0, "CLOCK_SET", {"seconds": 1200}),
@@ -89,7 +94,7 @@ def test_basic_event_processing(temp_db, temp_output):
     ])
 
     # Create pusher and process once
-    pusher = FileEventPusher(temp_db, temp_output)
+    pusher = MockPusher(temp_db)
     events = pusher.get_unprocessed_events()
 
     assert len(events) == 3
@@ -100,33 +105,16 @@ def test_basic_event_processing(temp_db, temp_output):
         retry_count = event['retry_count'] or 0
         pusher.mark_delivered(event['id'], success=True, retry_count=retry_count)
 
-    # Verify output file
-    with open(temp_output) as f:
-        lines = f.readlines()
-
-    assert len(lines) == 3
-
-    # Verify JSONL format
-    event1 = json.loads(lines[0])
-    assert event1['event_id'] == 1
-    assert event1['event_type'] == 'CLOCK_SET'
-    assert event1['event_payload'] == {"seconds": 1200}
-    assert 'event_timestamp' in event1
-
-    event2 = json.loads(lines[1])
-    assert event2['event_id'] == 2
-    assert event2['event_type'] == 'GAME_STARTED'
-    assert event2['event_payload'] == {}
-
-    event3 = json.loads(lines[2])
-    assert event3['event_id'] == 3
-    assert event3['event_type'] == 'GAME_PAUSED'
-    assert event3['event_payload'] == {}
+    # Verify events were delivered
+    assert len(pusher.delivered_events) == 3
+    assert pusher.delivered_events[0]['type'] == 'CLOCK_SET'
+    assert pusher.delivered_events[1]['type'] == 'GAME_STARTED'
+    assert pusher.delivered_events[2]['type'] == 'GAME_PAUSED'
 
     # Verify deliveries table
     conn = sqlite3.connect(temp_db)
     deliveries = conn.execute(
-        "SELECT * FROM deliveries WHERE destination=?", (temp_output,)
+        "SELECT * FROM deliveries WHERE destination=?", ("mock",)
     ).fetchall()
     conn.close()
 
@@ -135,8 +123,8 @@ def test_basic_event_processing(temp_db, temp_output):
         assert delivery[2] == 1  # delivered = success
 
 
-def test_game_state_reconstruction(temp_db, temp_output):
-    """Test that raw events are delivered in order."""
+def test_event_ordering(temp_db):
+    """Test that events are delivered in order."""
     create_test_events(temp_db, [
         (0, "CLOCK_SET", {"seconds": 1200}),
         (10, "GAME_STARTED", {}),
@@ -145,7 +133,7 @@ def test_game_state_reconstruction(temp_db, temp_output):
         (140, "GAME_PAUSED", {}),
     ])
 
-    pusher = FileEventPusher(temp_db, temp_output)
+    pusher = MockPusher(temp_db)
 
     # Get all events
     events = pusher.get_unprocessed_events()
@@ -159,14 +147,14 @@ def test_game_state_reconstruction(temp_db, temp_output):
     assert events[4]['id'] == 5
 
 
-def test_no_duplicate_deliveries(temp_db, temp_output):
+def test_no_duplicate_deliveries(temp_db):
     """Test that successfully delivered events are not reprocessed."""
     create_test_events(temp_db, [
         (0, "CLOCK_SET", {"seconds": 1200}),
         (10, "GAME_STARTED", {}),
     ])
 
-    pusher = FileEventPusher(temp_db, temp_output)
+    pusher = MockPusher(temp_db)
 
     # First pass - process all events
     events = pusher.get_unprocessed_events()
@@ -181,7 +169,7 @@ def test_no_duplicate_deliveries(temp_db, temp_output):
     assert len(events) == 0
 
 
-def test_delivery_retry_on_failure(temp_db, temp_output):
+def test_delivery_retry_on_failure(temp_db):
     """Test that failed deliveries are retried after backoff period."""
     from unittest.mock import patch
 
@@ -189,7 +177,7 @@ def test_delivery_retry_on_failure(temp_db, temp_output):
         (0, "CLOCK_SET", {"seconds": 1200}),
     ])
 
-    pusher = FileEventPusher(temp_db, temp_output)
+    pusher = MockPusher(temp_db)
 
     # First attempt - mark as failed
     events = pusher.get_unprocessed_events()
@@ -204,7 +192,7 @@ def test_delivery_retry_on_failure(temp_db, temp_output):
     conn = sqlite3.connect(temp_db)
     delivery = conn.execute(
         "SELECT delivered, retry_count FROM deliveries WHERE event_id=1 AND destination=?",
-        (temp_output,)
+        ("mock",)
     ).fetchone()
     conn.close()
 
@@ -230,21 +218,21 @@ def test_delivery_retry_on_failure(temp_db, temp_output):
     assert len(events) == 0
 
 
-def test_empty_database(temp_db, temp_output):
+def test_empty_database(temp_db):
     """Test graceful handling of empty database."""
-    pusher = FileEventPusher(temp_db, temp_output)
+    pusher = MockPusher(temp_db)
 
     events = pusher.get_unprocessed_events()
     assert len(events) == 0
 
 
-def test_event_payload_format(temp_db, temp_output):
+def test_event_payload_format(temp_db):
     """Test that JSONL output contains all required fields."""
     create_test_events(temp_db, [
         (0, "CLOCK_SET", {"seconds": 1200}),
     ])
 
-    pusher = FileEventPusher(temp_db, temp_output)
+    pusher = MockPusher(temp_db)
     events = pusher.get_unprocessed_events()
 
     jsonl = pusher.format_event_jsonl(events[0])
@@ -263,14 +251,14 @@ def test_event_payload_format(temp_db, temp_output):
     assert data['event_payload'] == {"seconds": 1200}
 
 
-def test_multiple_destinations(temp_db, temp_output):
+def test_multiple_destinations(temp_db):
     """Test that deliveries can track multiple destinations independently."""
     create_test_events(temp_db, [
         (0, "CLOCK_SET", {"seconds": 1200}),
     ])
 
-    pusher1 = FileEventPusher(temp_db, temp_output, destination="dest1")
-    pusher2 = FileEventPusher(temp_db, temp_output + ".2", destination="dest2")
+    pusher1 = MockPusher(temp_db, destination="dest1")
+    pusher2 = MockPusher(temp_db, destination="dest2")
 
     # Pusher1 delivers event
     events1 = pusher1.get_unprocessed_events()
