@@ -69,7 +69,7 @@ State is reconstructed by **replaying events**:
 - Events stored in SQLite with timestamps
 - State replay logic in `src/score/state.py` shared between score-app and score-cloud
 - On app start, all events are replayed to restore current state
-- Supports multiple event types: `CLOCK_SET`, `GAME_STARTED`, `GAME_PAUSED`, `GOAL_HOME`, `GOAL_AWAY`, `PLAYER_ADDED_HOME`, `PLAYER_ADDED_AWAY`, etc.
+- Supports multiple event types: `CLOCK_SET`, `GAME_STARTED`, `GAME_PAUSED`, `GOAL_HOME`, `GOAL_AWAY`, `SHOT_HOME`, `SHOT_AWAY`, `ROSTER_INITIALIZED`, `ROSTER_PLAYER_SCRATCHED`, `ROSTER_PLAYER_ACTIVATED`
 
 ### Delivery System
 
@@ -106,12 +106,14 @@ Uses **queue-based logging** to coordinate output from multiple processes:
 ### Testing
 Tests use pytest and are organized by feature:
 - `tests/test_cli.py` - Main app functionality
-- `tests/test_goals.py` - Goal scoring and cancellation
+- `tests/test_goals.py` - Goal scoring, cancellation, and attribution
 - `tests/test_state.py` - Event replay logic
 - `tests/test_event_pusher.py` - Event delivery
+- `tests/test_pusher_errors.py` - Pusher error handling
 - `tests/test_cloud_admin.py` - Cloud API admin endpoints
 - `tests/test_schedule.py` - Schedule download
 - `tests/test_multi_game.py` - Multi-game scenarios
+- `tests/test_log.py` - Logging infrastructure
 
 ## Database Schemas
 
@@ -122,7 +124,8 @@ Tests use pytest and are organized by feature:
 CREATE TABLE events (
     id INTEGER PRIMARY KEY,
     type TEXT NOT NULL,
-    payload TEXT,  -- JSON string
+    game_id TEXT,           -- Associated game
+    payload TEXT,           -- JSON string
     created_at INTEGER NOT NULL
 );
 
@@ -130,7 +133,7 @@ CREATE TABLE events (
 CREATE TABLE deliveries (
     event_id INTEGER,
     destination TEXT,
-    delivered INTEGER,  -- NULL/0=pending, 1=success, 2=failed
+    delivered INTEGER,      -- 0=pending, 1=success, 2=failed
     delivered_at INTEGER,
     PRIMARY KEY (event_id, destination)
 );
@@ -162,6 +165,8 @@ CREATE TABLE games (
     rink_id TEXT,
     home_team TEXT,
     away_team TEXT,
+    home_abbrev TEXT,           -- Team abbreviation (e.g., "TOR")
+    away_abbrev TEXT,
     start_time TEXT,
     period_length_min INTEGER
 );
@@ -171,7 +176,7 @@ CREATE TABLE received_events (
     id INTEGER PRIMARY KEY,
     game_id TEXT,
     device_id TEXT,
-    event_id TEXT UNIQUE,  -- Idempotency key
+    event_id TEXT UNIQUE,       -- Idempotency key
     seq INTEGER,
     type TEXT,
     payload TEXT,
@@ -186,6 +191,52 @@ CREATE TABLE heartbeats (
     game_state TEXT,
     received_at INTEGER
 );
+
+-- Schedule version tracking
+CREATE TABLE schedule_versions (
+    rink_id TEXT PRIMARY KEY,
+    version TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+-- Players (master data from NHL API)
+CREATE TABLE players (
+    player_id INTEGER PRIMARY KEY,
+    full_name TEXT NOT NULL,
+    first_name TEXT NOT NULL,
+    last_name TEXT NOT NULL,
+    jersey_number INTEGER,
+    position TEXT,              -- C, LW, RW, D, G
+    shoots_catches TEXT,        -- L, R
+    height_inches INTEGER,
+    weight_pounds INTEGER,
+    birth_date TEXT,
+    birth_city TEXT,
+    birth_country TEXT,
+    created_at INTEGER NOT NULL
+);
+
+-- Teams (master data)
+CREATE TABLE teams (
+    team_abbrev TEXT PRIMARY KEY,  -- e.g., "TOR", "MTL"
+    city TEXT NOT NULL,
+    team_name TEXT NOT NULL,
+    full_name TEXT NOT NULL,
+    conference TEXT,
+    division TEXT,
+    created_at INTEGER NOT NULL
+);
+
+-- Team rosters (temporal tracking)
+CREATE TABLE team_rosters (
+    id INTEGER PRIMARY KEY,
+    player_id INTEGER NOT NULL,
+    team_abbrev TEXT NOT NULL,
+    roster_status TEXT NOT NULL,   -- Y (active), I (injured), etc.
+    added_at INTEGER NOT NULL,     -- When player joined team
+    removed_at INTEGER,            -- When player left (NULL if current)
+    UNIQUE(player_id, team_abbrev, added_at)
+);
 ```
 
 ## State Management Details
@@ -199,10 +250,23 @@ state = {
     "last_update": timestamp,
     "home_score": 0,
     "away_score": 0,
-    "goals": [],           # Goal history with cancellation status
-    "home_roster": [],     # Player IDs
+    "goals": [],            # Goal history (see structure below)
+    "home_shots": 0,        # Shot count
+    "away_shots": 0,
+    "home_roster": [],      # Active player IDs
     "away_roster": [],
-    "roster_details": {}   # Player info dict
+    "roster_details": {}    # player_id -> player info dict
+}
+
+# Goal structure includes attribution:
+goal = {
+    "id": "goal_uuid",
+    "team": "home" | "away",
+    "time": "12:34",        # Clock time when scored
+    "cancelled": False,
+    "scorer_id": player_id,  # Optional
+    "assist1_id": player_id, # Optional
+    "assist2_id": player_id  # Optional
 }
 ```
 
