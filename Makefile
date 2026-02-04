@@ -1,4 +1,4 @@
-.PHONY: run run-app run-cloud run_container test kill-app kill-cloud
+.PHONY: run run-app run-cloud run_container test kill-app kill-cloud schedule
 
 # Create virtual environment if it doesn't exist
 .venv:
@@ -37,3 +37,9 @@ run_container:
 
 test: .venv/.installed
 	uv run pytest tests/
+
+# Generate a schedule from a YAML config file
+# Usage: make schedule CONFIG=examples/schedule.yaml
+CONFIG ?= examples/schedule.yaml
+schedule: .venv/.installed
+	uv run score-schedule $(CONFIG)

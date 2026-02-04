@@ -1,0 +1,112 @@
+# Schedule configuration for Beer League Bronze Divisions
+# 3 divisions scheduled together for optimal ice utilization
+
+# League/Season context
+league_id: "beer"
+season_id: "2025-2026"
+
+# Venue
+rink_id: "sharks-ice"
+sheets:
+  - sheet_id: "NHL"
+    name: "NHL"
+  - sheet_id: "Olympic"
+    name: "Olympic"
+
+# Solver settings (optional - these are the defaults)
+solver:
+  timeout_seconds: 600        # How long to search for better solutions
+  # Constraint weights (higher = more important, 0 = disabled)
+  weight_packing: 10           # Pack games into earlier dates
+  weight_time_slot: 5        # Balance games across time slots (19:00, 20:00, 21:00)
+  weight_opponent: 5          # Spread games across different opponents
+  weight_sheet: 0            # Balance games across ice sheets
+  weight_home_away: 0        # Balance home/away games
+  weight_no_consecutive_opponent: 0  # Penalize same opponent in back-to-back weeks
+  # Hard constraints
+  max_consecutive_byes: 0        # Max bye weeks in a row (1 = never 2 byes in a row, 0 = disabled)
+
+# Divisions with their teams
+divisions:
+  - division_id: "bronze-a"
+    games_per_team: 14
+    teams:
+      - registration_id: "reg-scholars-2025"
+        name: "Gentleman Scholars"
+        abbreviation: "GTS"
+      - registration_id: "reg-califorce-2025"
+        name: "CaliForce"
+        abbreviation: "CAL"
+      - registration_id: "reg-mullets-2025"
+        name: "Slippery Mullets"
+        abbreviation: "MUL"
+      - registration_id: "reg-southpuck-2025"
+        name: "South Puck"
+        abbreviation: "SPK"
+      - registration_id: "reg-roughcuts-2025"
+        name: "Roughcuts"
+        abbreviation: "RGH"
+
+  - division_id: "bronze-aa"
+    games_per_team: 14
+    teams:
+      - registration_id: "reg-reillys-2025"
+        name: "Reillys"
+        abbreviation: "RLY"
+      - registration_id: "reg-bullies-2025"
+        name: "South Bay Bullies"
+        abbreviation: "SBB"
+      - registration_id: "reg-delivery-2025"
+        name: "Delivery Boys"
+        abbreviation: "DEL"
+      - registration_id: "reg-fighters-2025"
+        name: "Fighters"
+        abbreviation: "FGT"
+      - registration_id: "reg-lawless-2025"
+        name: "Lawless"
+        abbreviation: "LAW"
+
+  - division_id: "bronze-aaa"
+    games_per_team: 14
+    teams:
+      - registration_id: "reg-stpats-2025"
+        name: "St Pats"
+        abbreviation: "STP"
+      - registration_id: "reg-maroons-2025"
+        name: "Maroons"
+        abbreviation: "MAR"
+      - registration_id: "reg-iceland-2025"
+        name: "Iceland"
+        abbreviation: "ICE"
+      - registration_id: "reg-taxi-2025"
+        name: "Taxi Squad"
+        abbreviation: "TXI"
+      - registration_id: "reg-feeders-2025"
+        name: "Bottom Feeders"
+        abbreviation: "BTF"
+
+# Schedule parameters
+game_settings:
+  period_length_min: 15
+  num_periods: 3
+  game_type: "regular"
+
+# Available time slots
+schedule:
+  # Days of the week this league plays
+  days_of_week: ["sunday"]
+
+  # Date range for the season
+  start_date: "2025-10-05"
+  end_date: "2026-03-29"
+
+  # Excluded dates (holidays, rink closures)
+  blackout_dates:
+    - "2025-12-28"
+    - "2026-01-04"
+
+  # Time slots per day (ordered early to late)
+  time_slots:
+    - "19:00"
+    - "20:00"
+    - "21:00"
