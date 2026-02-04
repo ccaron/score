@@ -650,6 +650,7 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
             <a href="/admin/players">Players</a>
             <a href="/admin/rinks-admin">Rinks</a>
             <a href="/admin/rule-sets-admin">Rules</a>
+            <a href="/admin/seed">Seed</a>
         </div>
         <div class="container">
             <h1>Devices</h1>
@@ -1244,6 +1245,7 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
             <a href="/admin/players">Players</a>
             <a href="/admin/rinks-admin">Rinks</a>
             <a href="/admin/rule-sets-admin">Rules</a>
+            <a href="/admin/seed">Seed</a>
         </div>
         <div class="container">
             <h1>Games</h1>
@@ -1612,6 +1614,7 @@ async def get_teams_admin(format: Optional[str] = Query(None, description="Respo
             <a href="/admin/players">Players</a>
             <a href="/admin/rinks-admin">Rinks</a>
             <a href="/admin/rule-sets-admin">Rules</a>
+            <a href="/admin/seed">Seed</a>
         </div>
         <div class="container">
             <h1>Teams</h1>
@@ -1762,6 +1765,7 @@ async def get_players_admin(format: Optional[str] = Query(None, description="Res
             <a href="/admin/players" class="active">Players</a>
             <a href="/admin/rinks-admin">Rinks</a>
             <a href="/admin/rule-sets-admin">Rules</a>
+            <a href="/admin/seed">Seed</a>
         </div>
         <div class="container wide">
             <h1>Players</h1>
@@ -1897,6 +1901,7 @@ async def list_leagues(format: Optional[str] = Query(None)):
             <a href="/admin/players">Players</a>
             <a href="/admin/rinks-admin">Rinks</a>
             <a href="/admin/rule-sets-admin">Rules</a>
+            <a href="/admin/seed">Seed</a>
         </div>
         <div class="container">
             <h1>Leagues</h1>
@@ -1988,6 +1993,7 @@ async def list_seasons(format: Optional[str] = Query(None)):
             <a href="/admin/players">Players</a>
             <a href="/admin/rinks-admin">Rinks</a>
             <a href="/admin/rule-sets-admin">Rules</a>
+            <a href="/admin/seed">Seed</a>
         </div>
         <div class="container">
             <h1>Seasons</h1>
@@ -2077,6 +2083,7 @@ async def list_divisions(format: Optional[str] = Query(None)):
             <a href="/admin/players">Players</a>
             <a href="/admin/rinks-admin">Rinks</a>
             <a href="/admin/rule-sets-admin">Rules</a>
+            <a href="/admin/seed">Seed</a>
         </div>
         <div class="container">
             <h1>Divisions</h1>
@@ -2402,6 +2409,7 @@ async def list_rinks_admin(format: Optional[str] = Query(None)):
             <a href="/admin/players">Players</a>
             <a href="/admin/rinks-admin" class="active">Rinks</a>
             <a href="/admin/rule-sets-admin">Rules</a>
+            <a href="/admin/seed">Seed</a>
         </div>
         <div class="container">
             <h1>Rinks</h1>
@@ -2746,6 +2754,443 @@ async def list_registrations_admin(format: Optional[str] = Query(None)):
     </html>
     '''
     return HTMLResponse(content=html)
+
+
+# ---------- Database Seeding Admin Page ----------
+
+from pydantic import BaseModel as PydanticBaseModel
+
+
+class SeedRequest(PydanticBaseModel):
+    """Request to seed database."""
+    categories: list[str] = []
+    player_count: int = 120
+    game_count: int = 8
+    seed_all: bool = False
+
+
+class ClearRequest(PydanticBaseModel):
+    """Request to clear database."""
+    confirm: bool = False
+
+
+@app.get("/admin/seed")
+async def seed_admin_page():
+    """Admin page for database seeding."""
+    from fastapi.responses import HTMLResponse
+
+    db = get_db()
+
+    # Get current counts
+    counts = {
+        "leagues": db.execute("SELECT COUNT(*) FROM leagues").fetchone()[0],
+        "seasons": db.execute("SELECT COUNT(*) FROM seasons").fetchone()[0],
+        "divisions": db.execute("SELECT COUNT(*) FROM divisions").fetchone()[0],
+        "rinks": db.execute("SELECT COUNT(*) FROM rinks").fetchone()[0],
+        "teams": db.execute("SELECT COUNT(*) FROM teams").fetchone()[0],
+        "players": db.execute("SELECT COUNT(*) FROM players").fetchone()[0],
+        "registrations": db.execute("SELECT COUNT(*) FROM team_registrations").fetchone()[0],
+        "rosters": db.execute("SELECT COUNT(*) FROM roster_entries").fetchone()[0],
+        "games": db.execute("SELECT COUNT(*) FROM games").fetchone()[0],
+    }
+
+    db.close()
+
+    html = f'''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>score-cloud | Seed Database</title>
+        <link rel="stylesheet" href="/static/admin.css">
+        <style>
+            .seed-container {{
+                display: flex;
+                gap: 24px;
+            }}
+            .seed-options {{
+                flex: 1;
+                background: #fafafa;
+                border: 1px solid #e0e0e0;
+                border-radius: 4px;
+                padding: 16px;
+            }}
+            .seed-options h3 {{
+                margin: 0 0 12px 0;
+                font-size: 12px;
+                text-transform: uppercase;
+                color: #666;
+            }}
+            .seed-option {{
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                margin-bottom: 8px;
+            }}
+            .seed-option input[type="checkbox"] {{
+                flex-shrink: 0;
+                width: 16px;
+                height: 16px;
+            }}
+            .seed-option label {{
+                min-width: 140px;
+            }}
+            .seed-option .number-input {{
+                width: 60px;
+                text-align: right;
+                flex-shrink: 0;
+            }}
+            .seed-option .count {{
+                color: #666;
+                font-size: 12px;
+                white-space: nowrap;
+            }}
+            .seed-actions {{
+                width: 200px;
+                flex-shrink: 0;
+            }}
+            .seed-actions button {{
+                width: 100%;
+                padding: 10px 16px;
+                margin-bottom: 8px;
+                font-size: 13px;
+            }}
+            .btn-seed-all {{
+                background: #1a1a2e;
+                color: white;
+            }}
+            .btn-seed-all:hover {{
+                background: #2d2d44;
+            }}
+            .btn-seed-selected {{
+                background: #1e7e34;
+                color: white;
+            }}
+            .btn-clear {{
+                background: #dc3545;
+                color: white;
+            }}
+            #status {{
+                margin-top: 16px;
+                padding: 12px;
+                border-radius: 4px;
+                display: none;
+            }}
+            #status.success {{
+                background: #e6f4ea;
+                color: #1e7e34;
+                border: 1px solid #c3e6cb;
+            }}
+            #status.error {{
+                background: #fce4ec;
+                color: #c62828;
+                border: 1px solid #f5c6cb;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="nav">
+            <a href="/admin/devices">Devices</a>
+            <a href="/admin/games/state">Games</a>
+            <a href="/admin/leagues">Leagues</a>
+            <a href="/admin/seasons">Seasons</a>
+            <a href="/admin/divisions">Divisions</a>
+            <a href="/admin/teams">Teams</a>
+            <a href="/admin/players">Players</a>
+            <a href="/admin/rinks-admin">Rinks</a>
+            <a href="/admin/rule-sets-admin">Rules</a>
+            <a href="/admin/seed" class="active">Seed</a>
+        </div>
+        <div class="container">
+            <h1>Database Seeding</h1>
+            <div class="content">
+                <div class="hint">
+                    Seed the database with sample data for development and testing.
+                    Existing data will not be overwritten.
+                </div>
+
+                <div class="seed-container">
+                    <div class="seed-options">
+                        <h3>Seed Options</h3>
+
+                        <div class="seed-option">
+                            <input type="checkbox" id="seed-leagues" checked>
+                            <label for="seed-leagues">Leagues</label>
+                            <span class="count">({counts['leagues']} existing)</span>
+                        </div>
+
+                        <div class="seed-option">
+                            <input type="checkbox" id="seed-seasons" checked>
+                            <label for="seed-seasons">Seasons</label>
+                            <span class="count">({counts['seasons']} existing)</span>
+                        </div>
+
+                        <div class="seed-option">
+                            <input type="checkbox" id="seed-divisions" checked>
+                            <label for="seed-divisions">Divisions</label>
+                            <span class="count">({counts['divisions']} existing)</span>
+                        </div>
+
+                        <div class="seed-option">
+                            <input type="checkbox" id="seed-rinks" checked>
+                            <label for="seed-rinks">Rinks</label>
+                            <span class="count">({counts['rinks']} existing)</span>
+                        </div>
+
+                        <div class="seed-option">
+                            <input type="checkbox" id="seed-teams" checked>
+                            <label for="seed-teams">Teams</label>
+                            <span class="count">({counts['teams']} existing)</span>
+                        </div>
+
+                        <div class="seed-option">
+                            <input type="checkbox" id="seed-players" checked>
+                            <label for="seed-players">Players</label>
+                            <input type="number" id="player-count" class="number-input" value="120" min="10" max="500">
+                            <span class="count">({counts['players']} existing)</span>
+                        </div>
+
+                        <div class="seed-option">
+                            <input type="checkbox" id="seed-registrations" checked>
+                            <label for="seed-registrations">Team Registrations</label>
+                            <span class="count">({counts['registrations']} existing)</span>
+                        </div>
+
+                        <div class="seed-option">
+                            <input type="checkbox" id="seed-rosters" checked>
+                            <label for="seed-rosters">Roster Entries</label>
+                            <span class="count">({counts['rosters']} existing)</span>
+                        </div>
+
+                        <div class="seed-option">
+                            <input type="checkbox" id="seed-games" checked>
+                            <label for="seed-games">Games</label>
+                            <input type="number" id="game-count" class="number-input" value="8" min="1" max="50">
+                            <span class="count">({counts['games']} existing)</span>
+                        </div>
+                    </div>
+
+                    <div class="seed-actions">
+                        <h3>Actions</h3>
+                        <button class="btn-seed-all" onclick="seedAll()">Seed All</button>
+                        <button class="btn-seed-selected" onclick="seedSelected()">Seed Selected</button>
+                        <button class="btn-clear" onclick="clearAll()">Clear All Data</button>
+                    </div>
+                </div>
+
+                <div id="status"></div>
+            </div>
+        </div>
+
+        <script>
+        function showStatus(message, type) {{
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = type;
+            status.style.display = 'block';
+        }}
+
+        function getSelectedCategories() {{
+            const categories = [];
+            if (document.getElementById('seed-leagues').checked) categories.push('leagues');
+            if (document.getElementById('seed-seasons').checked) categories.push('seasons');
+            if (document.getElementById('seed-divisions').checked) categories.push('divisions');
+            if (document.getElementById('seed-rinks').checked) categories.push('rinks');
+            if (document.getElementById('seed-teams').checked) categories.push('teams');
+            if (document.getElementById('seed-players').checked) categories.push('players');
+            if (document.getElementById('seed-registrations').checked) categories.push('registrations');
+            if (document.getElementById('seed-rosters').checked) categories.push('rosters');
+            if (document.getElementById('seed-games').checked) categories.push('games');
+            return categories;
+        }}
+
+        async function seedAll() {{
+            showStatus('Seeding all data...', 'success');
+
+            try {{
+                const response = await fetch('/admin/seed', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        seed_all: true,
+                        player_count: parseInt(document.getElementById('player-count').value),
+                        game_count: parseInt(document.getElementById('game-count').value)
+                    }})
+                }});
+
+                const result = await response.json();
+
+                if (response.ok) {{
+                    const seeded = result.seeded;
+                    const summary = Object.entries(seeded)
+                        .filter(([k, v]) => v > 0)
+                        .map(([k, v]) => `${{k}}: ${{v}}`)
+                        .join(', ');
+                    showStatus(`Seeded: ${{summary}}`, 'success');
+                    setTimeout(() => location.reload(), 2000);
+                }} else {{
+                    showStatus(`Error: ${{result.detail || 'Failed to seed'}}`, 'error');
+                }}
+            }} catch (error) {{
+                showStatus(`Error: ${{error.message}}`, 'error');
+            }}
+        }}
+
+        async function seedSelected() {{
+            const categories = getSelectedCategories();
+            if (categories.length === 0) {{
+                showStatus('Please select at least one category', 'error');
+                return;
+            }}
+
+            showStatus('Seeding selected categories...', 'success');
+
+            try {{
+                const response = await fetch('/admin/seed', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        categories: categories,
+                        player_count: parseInt(document.getElementById('player-count').value),
+                        game_count: parseInt(document.getElementById('game-count').value)
+                    }})
+                }});
+
+                const result = await response.json();
+
+                if (response.ok) {{
+                    const seeded = result.seeded;
+                    const summary = Object.entries(seeded)
+                        .filter(([k, v]) => v > 0)
+                        .map(([k, v]) => `${{k}}: ${{v}}`)
+                        .join(', ');
+                    showStatus(`Seeded: ${{summary || 'nothing new'}}`, 'success');
+                    setTimeout(() => location.reload(), 2000);
+                }} else {{
+                    showStatus(`Error: ${{result.detail || 'Failed to seed'}}`, 'error');
+                }}
+            }} catch (error) {{
+                showStatus(`Error: ${{error.message}}`, 'error');
+            }}
+        }}
+
+        async function clearAll() {{
+            if (!confirm('Are you sure you want to clear ALL data? This cannot be undone.')) {{
+                return;
+            }}
+
+            showStatus('Clearing all data...', 'success');
+
+            try {{
+                const response = await fetch('/admin/seed/clear', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ confirm: true }})
+                }});
+
+                const result = await response.json();
+
+                if (response.ok) {{
+                    showStatus('All data cleared', 'success');
+                    setTimeout(() => location.reload(), 1500);
+                }} else {{
+                    showStatus(`Error: ${{result.detail || 'Failed to clear'}}`, 'error');
+                }}
+            }} catch (error) {{
+                showStatus(`Error: ${{error.message}}`, 'error');
+            }}
+        }}
+        </script>
+    </body>
+    </html>
+    '''
+
+    return HTMLResponse(content=html)
+
+
+@app.post("/admin/seed")
+async def execute_seed(request: SeedRequest):
+    """Execute database seeding."""
+    from score.seed import (
+        seed_leagues, seed_seasons, seed_divisions, seed_rinks,
+        seed_teams, seed_players, seed_league_seasons,
+        seed_registrations, seed_rosters, seed_games
+    )
+
+    db = get_db()
+    results = {}
+
+    try:
+        if request.seed_all:
+            # Seed everything in order
+            results["leagues"] = seed_leagues(db)
+            results["seasons"] = seed_seasons(db)
+            results["divisions"] = seed_divisions(db)
+            results["rinks"] = seed_rinks(db)
+            results["teams"] = seed_teams(db)
+            results["players"] = seed_players(db, request.player_count)
+            results["league_seasons"] = seed_league_seasons(db)
+            results["registrations"] = seed_registrations(db)
+            results["rosters"] = seed_rosters(db)
+            results["games"] = seed_games(db, request.game_count)
+        else:
+            # Seed only selected categories (in dependency order)
+            if "leagues" in request.categories:
+                results["leagues"] = seed_leagues(db)
+            if "seasons" in request.categories:
+                results["seasons"] = seed_seasons(db)
+            if "divisions" in request.categories:
+                results["divisions"] = seed_divisions(db)
+            if "rinks" in request.categories:
+                results["rinks"] = seed_rinks(db)
+            if "teams" in request.categories:
+                results["teams"] = seed_teams(db)
+            if "players" in request.categories:
+                results["players"] = seed_players(db, request.player_count)
+            # League seasons is implicit when seeding registrations
+            if "registrations" in request.categories:
+                results["league_seasons"] = seed_league_seasons(db)
+                results["registrations"] = seed_registrations(db)
+            if "rosters" in request.categories:
+                results["rosters"] = seed_rosters(db)
+            if "games" in request.categories:
+                results["games"] = seed_games(db, request.game_count)
+
+        db.commit()
+
+    finally:
+        db.close()
+
+    logger.info(f"Database seeded: {results}")
+
+    return {
+        "status": "ok",
+        "seeded": results
+    }
+
+
+@app.post("/admin/seed/clear")
+async def clear_seed_data(request: ClearRequest):
+    """Clear all seeded data from database."""
+    if not request.confirm:
+        raise HTTPException(status_code=400, detail="Must confirm to clear data")
+
+    from score.seed import clear_all
+
+    db = get_db()
+
+    try:
+        counts = clear_all(db)
+        db.commit()
+    finally:
+        db.close()
+
+    logger.info(f"Database cleared: {counts}")
+
+    return {
+        "status": "ok",
+        "cleared": counts
+    }
 
 
 def main():
