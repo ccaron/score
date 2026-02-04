@@ -384,6 +384,9 @@ CREATE TABLE IF NOT EXISTS games (
 
     created_at INTEGER NOT NULL,
 
+    -- Prevent duplicate games at same sheet/time
+    UNIQUE (sheet_id, start_time),
+
     FOREIGN KEY (rink_id) REFERENCES rinks(rink_id),
     FOREIGN KEY (sheet_id) REFERENCES rink_sheets(sheet_id),
     FOREIGN KEY (home_registration_id) REFERENCES team_registrations(registration_id),

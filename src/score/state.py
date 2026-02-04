@@ -400,9 +400,9 @@ def get_game_roster_at_time(db_path, game_id, target_time):
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
-    # Get game info including team abbreviations
+    # Get game info including registration IDs
     game = conn.execute("""
-        SELECT home_abbrev, away_abbrev
+        SELECT home_registration_id, away_registration_id
         FROM games
         WHERE game_id = ?
     """, (game_id,)).fetchone()
@@ -415,36 +415,38 @@ def get_game_roster_at_time(db_path, game_id, target_time):
             "roster_details": {}
         }
 
-    home_abbrev = game["home_abbrev"]
-    away_abbrev = game["away_abbrev"]
+    home_reg_id = game["home_registration_id"]
+    away_reg_id = game["away_registration_id"]
 
-    # Temporal query for home roster
+    # Temporal query for home roster using roster_entries
     home_players = []
-    if home_abbrev:
+    if home_reg_id:
         home_players = conn.execute("""
             SELECT p.player_id, p.full_name, p.first_name, p.last_name,
-                   p.jersey_number, p.position, p.shoots_catches,
-                   tr.roster_status
-            FROM team_rosters tr
-            JOIN players p ON tr.player_id = p.player_id
-            WHERE tr.team_abbrev = ?
-              AND tr.added_at <= ?
-              AND (tr.removed_at IS NULL OR tr.removed_at > ?)
-        """, (home_abbrev, target_time, target_time)).fetchall()
+                   p.shoots_catches,
+                   re.jersey_number, re.position, re.roster_status,
+                   re.is_captain, re.is_alternate
+            FROM roster_entries re
+            JOIN players p ON re.player_id = p.player_id
+            WHERE re.registration_id = ?
+              AND re.added_at <= ?
+              AND (re.removed_at IS NULL OR re.removed_at > ?)
+        """, (home_reg_id, target_time, target_time)).fetchall()
 
-    # Temporal query for away roster
+    # Temporal query for away roster using roster_entries
     away_players = []
-    if away_abbrev:
+    if away_reg_id:
         away_players = conn.execute("""
             SELECT p.player_id, p.full_name, p.first_name, p.last_name,
-                   p.jersey_number, p.position, p.shoots_catches,
-                   tr.roster_status
-            FROM team_rosters tr
-            JOIN players p ON tr.player_id = p.player_id
-            WHERE tr.team_abbrev = ?
-              AND tr.added_at <= ?
-              AND (tr.removed_at IS NULL OR tr.removed_at > ?)
-        """, (away_abbrev, target_time, target_time)).fetchall()
+                   p.shoots_catches,
+                   re.jersey_number, re.position, re.roster_status,
+                   re.is_captain, re.is_alternate
+            FROM roster_entries re
+            JOIN players p ON re.player_id = p.player_id
+            WHERE re.registration_id = ?
+              AND re.added_at <= ?
+              AND (re.removed_at IS NULL OR re.removed_at > ?)
+        """, (away_reg_id, target_time, target_time)).fetchall()
 
     conn.close()
 

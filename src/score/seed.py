@@ -398,51 +398,81 @@ def seed_games(conn: sqlite3.Connection, game_count: int = 8) -> int:
     if len(regs) < 2:
         return 0
 
-    # Create games
+    # Create games - distribute across days with unique matchups per day
     today = datetime.now().replace(hour=19, minute=0, second=0, microsecond=0)
 
-    for i in range(game_count):
-        game_id = f"game-{int(time.time())}-{i}"
+    # Track which teams are playing on each day to avoid conflicts
+    teams_playing_today = set()
+    teams_playing_tomorrow = set()
 
-        # Alternate between days
-        game_date = today + timedelta(days=i % 2, hours=(i // 2) * 2)
-        start_time = game_date.isoformat()
+    # Create matchups by pairing teams
+    games_created = 0
+    reg_list = list(regs)
 
-        # Pick sheet
-        sheet = sheets[i % len(sheets)]
+    for day_offset in range(2):  # Today and tomorrow
+        teams_playing = teams_playing_today if day_offset == 0 else teams_playing_tomorrow
+        game_date = today + timedelta(days=day_offset)
+        hour_offset = 0
 
-        # Pick teams (home vs away)
-        home_idx = (i * 2) % len(regs)
-        away_idx = (i * 2 + 1) % len(regs)
-        home_reg = regs[home_idx]
-        away_reg = regs[away_idx]
+        # Create games for this day
+        for i in range(0, len(reg_list) - 1, 2):
+            if games_created >= game_count:
+                break
 
-        try:
-            conn.execute("""
-                INSERT INTO games (
-                    game_id, rink_id, sheet_id, home_registration_id, away_registration_id,
-                    home_team, away_team, home_abbrev, away_abbrev,
-                    scheduled_start, start_time, period_length_min, num_periods, game_type, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 3, 'regular', ?)
-            """, (
-                game_id,
-                sheet["rink_id"],
-                sheet["sheet_id"],
-                home_reg["registration_id"],
-                away_reg["registration_id"],
-                home_reg["name"],
-                away_reg["name"],
-                home_reg["abbreviation"],
-                away_reg["abbreviation"],
-                start_time,
-                start_time,
-                15,  # 15 min periods for rec games
-                now,
-            ))
-            count += 1
-        except sqlite3.IntegrityError:
-            pass
+            home_reg = reg_list[i]
+            away_reg = reg_list[i + 1]
+
+            # Skip if either team already playing today
+            if home_reg["team_id"] in teams_playing or away_reg["team_id"] in teams_playing:
+                continue
+
+            # Mark teams as playing
+            teams_playing.add(home_reg["team_id"])
+            teams_playing.add(away_reg["team_id"])
+
+            # Pick sheet (rotate through available sheets)
+            sheet = sheets[games_created % len(sheets)]
+
+            # Calculate game time (stagger by 2 hours)
+            game_time = game_date + timedelta(hours=hour_offset)
+            start_time = game_time.isoformat()
+            hour_offset += 2
+
+            # Create stable game_id based on date and teams
+            date_str = game_time.strftime("%Y%m%d")
+            game_id = f"game-{date_str}-{home_reg['abbreviation']}-{away_reg['abbreviation']}"
+
+            try:
+                conn.execute("""
+                    INSERT INTO games (
+                        game_id, rink_id, sheet_id, home_registration_id, away_registration_id,
+                        home_team, away_team, home_abbrev, away_abbrev,
+                        scheduled_start, start_time, period_length_min, num_periods, game_type, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 3, 'regular', ?)
+                """, (
+                    game_id,
+                    sheet["rink_id"],
+                    sheet["sheet_id"],
+                    home_reg["registration_id"],
+                    away_reg["registration_id"],
+                    home_reg["name"],
+                    away_reg["name"],
+                    home_reg["abbreviation"],
+                    away_reg["abbreviation"],
+                    start_time,
+                    start_time,
+                    20,  # period_length_min
+                    now,
+                ))
+                games_created += 1
+                count += 1
+            except sqlite3.IntegrityError:
+                # Game already exists (duplicate)
+                pass
+
+        # Rotate teams for next day to get different matchups
+        reg_list = reg_list[1:] + reg_list[:1]
 
     return count
 

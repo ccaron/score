@@ -26,11 +26,61 @@ def temp_cloud_db():
     """)
 
     conn.execute("""
+        CREATE TABLE leagues (
+            league_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            league_type TEXT,
+            description TEXT,
+            website TEXT,
+            logo_url TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE seasons (
+            season_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            start_date TEXT NOT NULL,
+            end_date TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE divisions (
+            division_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            division_type TEXT,
+            parent_division_id TEXT,
+            description TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+
+    conn.execute("""
+        CREATE TABLE team_registrations (
+            registration_id TEXT PRIMARY KEY,
+            team_id TEXT NOT NULL,
+            league_id TEXT,
+            season_id TEXT,
+            tournament_id TEXT,
+            division_id TEXT NOT NULL,
+            registered_at INTEGER NOT NULL,
+            withdrawn_at INTEGER
+        )
+    """)
+
+    conn.execute("""
         CREATE TABLE games (
             game_id TEXT PRIMARY KEY,
             rink_id TEXT NOT NULL,
             home_team TEXT NOT NULL,
             away_team TEXT NOT NULL,
+            home_abbrev TEXT,
+            away_abbrev TEXT,
+            home_registration_id TEXT,
+            away_registration_id TEXT,
             start_time TEXT NOT NULL,
             period_length_min INTEGER NOT NULL,
             created_at INTEGER NOT NULL,

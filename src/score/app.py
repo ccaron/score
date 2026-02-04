@@ -644,6 +644,9 @@ async def change_score(request: dict):
 @app.get("/games")
 async def get_games():
     """Get available games from the cloud API."""
+    # Only fetch games if device is assigned
+    if not DEVICE_CONFIG or not DEVICE_CONFIG.get("is_assigned"):
+        return {"games": []}
     games = fetch_games_from_cloud()
     return {"games": games}
 

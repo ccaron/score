@@ -54,6 +54,35 @@ def get_db():
     return conn
 
 
+# ---------- Admin Navigation Helper ----------
+ADMIN_NAV_ITEMS = [
+    ("devices", "/admin/devices", "Devices"),
+    ("games", "/admin/games/state", "Games"),
+    ("events", "/admin/events", "Events"),
+    ("leagues", "/admin/leagues", "Leagues"),
+    ("seasons", "/admin/seasons", "Seasons"),
+    ("divisions", "/admin/divisions", "Divisions"),
+    ("teams", "/admin/teams", "Teams"),
+    ("players", "/admin/players", "Players"),
+    ("rosters", "/admin/rosters", "Rosters"),
+    ("rinks", "/admin/rinks-admin", "Rinks"),
+    ("rules", "/admin/rule-sets-admin", "Rules"),
+    ("officials", "/admin/officials-admin", "Officials"),
+    ("tournaments", "/admin/tournaments-admin", "Tournaments"),
+    ("registrations", "/admin/registrations-admin", "Registrations"),
+    ("seed", "/admin/seed", "Seed"),
+]
+
+
+def admin_nav(active_page: str) -> str:
+    """Generate admin navigation HTML with the active page highlighted."""
+    links = []
+    for page_id, href, label in ADMIN_NAV_ITEMS:
+        css_class = ' class="active"' if page_id == active_page else ""
+        links.append(f'<a href="{href}"{css_class}>{label}</a>')
+    return '<div class="nav">\n            ' + '\n            '.join(links) + '\n        </div>'
+
+
 def init_db():
     """Initialize cloud database schema."""
     from score.schema import init_schema
@@ -138,11 +167,20 @@ async def get_schedule(
 
     # Query games for the rink on the specified date OR next date (to catch evening games)
     # Match games where start_time begins with either date
+    # Join with registrations to get organizational context
     games = db.execute("""
-        SELECT game_id, home_team, away_team, start_time, period_length_min
-        FROM games
-        WHERE rink_id = ? AND (start_time LIKE ? OR start_time LIKE ?)
-        ORDER BY start_time
+        SELECT DISTINCT g.game_id, g.home_team, g.away_team, g.home_abbrev, g.away_abbrev,
+               g.start_time, g.period_length_min,
+               l.name as league_name,
+               s.name as season_name,
+               d.name as division_name
+        FROM games g
+        LEFT JOIN team_registrations tr ON g.home_registration_id = tr.registration_id
+        LEFT JOIN leagues l ON tr.league_id = l.league_id
+        LEFT JOIN seasons s ON tr.season_id = s.season_id
+        LEFT JOIN divisions d ON tr.division_id = d.division_id
+        WHERE g.rink_id = ? AND (g.start_time LIKE ? OR g.start_time LIKE ?)
+        ORDER BY g.start_time
     """, (rink_id, f"{date}%", f"{next_date}%")).fetchall()
 
     db.close()
@@ -152,8 +190,13 @@ async def get_schedule(
             game_id=g["game_id"],
             home_team=g["home_team"],
             away_team=g["away_team"],
+            home_abbrev=g["home_abbrev"],
+            away_abbrev=g["away_abbrev"],
             start_time=g["start_time"],
-            period_length_min=g["period_length_min"]
+            period_length_min=g["period_length_min"],
+            league_name=g["league_name"],
+            season_name=g["season_name"],
+            division_name=g["division_name"],
         )
         for g in games
     ]
@@ -640,18 +683,7 @@ async def list_devices(format: Optional[str] = Query(None, description="Response
         <link rel="stylesheet" href="/static/admin.css">
     </head>
     <body>
-        <div class="nav">
-            <a href="/admin/devices" class="active">Devices</a>
-            <a href="/admin/games/state">Games</a>
-            <a href="/admin/leagues">Leagues</a>
-            <a href="/admin/seasons">Seasons</a>
-            <a href="/admin/divisions">Divisions</a>
-            <a href="/admin/teams">Teams</a>
-            <a href="/admin/players">Players</a>
-            <a href="/admin/rinks-admin">Rinks</a>
-            <a href="/admin/rule-sets-admin">Rules</a>
-            <a href="/admin/seed">Seed</a>
-        </div>
+        {admin_nav("devices")}
         <div class="container">
             <h1>Devices</h1>
             <div class="content">
@@ -1130,6 +1162,191 @@ async def get_latest_heartbeats():
     }
 
 
+@app.get("/admin/events")
+async def list_events_admin(format: Optional[str] = Query(None, description="Response format: 'json' or 'html'")):
+    """
+    Admin page to view all received events with column filters.
+
+    Returns HTML for browser viewing or JSON if format=json parameter is provided.
+    """
+    from fastapi.responses import HTMLResponse
+
+    db = get_db()
+
+    events = db.execute("""
+        SELECT * FROM received_events
+        ORDER BY received_at DESC, seq DESC
+        LIMIT 1000
+    """).fetchall()
+
+    db.close()
+
+    events_list = [dict(e) for e in events]
+
+    # Return JSON if requested
+    if format == "json":
+        return {"event_count": len(events_list), "events": events_list}
+
+    # Generate HTML view
+    import datetime
+
+    def format_timestamp(ts):
+        if ts:
+            return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+        return "-"
+
+    def truncate_payload(payload, max_len=50):
+        if not payload:
+            return "-"
+        if len(payload) > max_len:
+            return payload[:max_len] + "..."
+        return payload
+
+    rows_html = ""
+    if not events_list:
+        rows_html = '<tr><td colspan="9" style="text-align: center; color: #666; padding: 40px;">No events found.</td></tr>'
+    else:
+        for e in events_list:
+            rows_html += f'''
+            <tr>
+                <td class="event-id">{e["id"]}</td>
+                <td class="game-id">{e["game_id"]}</td>
+                <td class="device-id">{e["device_id"]}</td>
+                <td class="session-id">{e["session_id"][:8] if e["session_id"] else "-"}...</td>
+                <td>{e["seq"]}</td>
+                <td><span class="event-type">{e["type"]}</span></td>
+                <td class="timestamp">{e["ts_local"]}</td>
+                <td class="payload" title="{e["payload"] or ""}">{truncate_payload(e["payload"])}</td>
+                <td class="timestamp">{format_timestamp(e["received_at"])}</td>
+            </tr>'''
+
+    html = f'''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>score-cloud | Events</title>
+        <link rel="stylesheet" href="/static/admin.css">
+        <style>
+            .event-id {{ font-family: monospace; font-size: 0.9em; }}
+            .game-id {{ font-family: monospace; font-size: 0.85em; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+            .device-id {{ font-family: monospace; font-size: 0.85em; }}
+            .session-id {{ font-family: monospace; font-size: 0.85em; color: #666; }}
+            .event-type {{
+                display: inline-block;
+                padding: 2px 8px;
+                background: #e8f4fc;
+                border-radius: 4px;
+                font-size: 0.85em;
+                font-weight: 500;
+                color: #1565c0;
+            }}
+            .payload {{
+                font-family: monospace;
+                font-size: 0.8em;
+                max-width: 200px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                color: #666;
+            }}
+            .payload:hover {{
+                cursor: help;
+            }}
+        </style>
+    </head>
+    <body>
+        {admin_nav("events")}
+        <div class="container wide">
+            <h1>Events</h1>
+            <div class="content overflow">
+                <div class="hint">
+                    Showing most recent 1000 events received from devices. Hover over payload to see full content.
+                </div>
+
+                <table id="eventsTable" class="wide">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Game ID</th>
+                            <th>Device ID</th>
+                            <th>Session</th>
+                            <th>Seq</th>
+                            <th>Type</th>
+                            <th>Local Time</th>
+                            <th>Payload</th>
+                            <th>Received</th>
+                        </tr>
+                        <tr class="filter-row">
+                            <td><input type="text" id="filterId" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterGameId" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterDeviceId" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterSession" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterSeq" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterType" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterLocalTime" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterPayload" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td><input type="text" id="filterReceived" placeholder="Filter..." onkeyup="filterTable()"></td>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows_html}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <script>
+        function filterTable() {{
+            const filters = {{
+                id: document.getElementById('filterId').value.toLowerCase(),
+                gameId: document.getElementById('filterGameId').value.toLowerCase(),
+                deviceId: document.getElementById('filterDeviceId').value.toLowerCase(),
+                session: document.getElementById('filterSession').value.toLowerCase(),
+                seq: document.getElementById('filterSeq').value.toLowerCase(),
+                type: document.getElementById('filterType').value.toLowerCase(),
+                localTime: document.getElementById('filterLocalTime').value.toLowerCase(),
+                payload: document.getElementById('filterPayload').value.toLowerCase(),
+                received: document.getElementById('filterReceived').value.toLowerCase()
+            }};
+
+            const rows = document.querySelectorAll('#eventsTable tbody tr');
+
+            rows.forEach(row => {{
+                if (row.cells.length < 9) return; // Skip empty row
+
+                const id = row.cells[0].textContent.toLowerCase();
+                const gameId = row.cells[1].textContent.toLowerCase();
+                const deviceId = row.cells[2].textContent.toLowerCase();
+                const session = row.cells[3].textContent.toLowerCase();
+                const seq = row.cells[4].textContent.toLowerCase();
+                const type = row.cells[5].textContent.toLowerCase();
+                const localTime = row.cells[6].textContent.toLowerCase();
+                const payload = row.cells[7].getAttribute('title')?.toLowerCase() || row.cells[7].textContent.toLowerCase();
+                const received = row.cells[8].textContent.toLowerCase();
+
+                const match =
+                    id.includes(filters.id) &&
+                    gameId.includes(filters.gameId) &&
+                    deviceId.includes(filters.deviceId) &&
+                    session.includes(filters.session) &&
+                    seq.includes(filters.seq) &&
+                    type.includes(filters.type) &&
+                    localTime.includes(filters.localTime) &&
+                    payload.includes(filters.payload) &&
+                    received.includes(filters.received);
+
+                row.style.display = match ? '' : 'none';
+            }});
+        }}
+        </script>
+    </body>
+    </html>
+    '''
+
+    return HTMLResponse(content=html)
+
+
 @app.get("/admin/events/{game_id}")
 async def get_game_events(game_id: str):
     """Get all events for a specific game."""
@@ -1226,7 +1443,7 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
         }
 
     # Generate HTML view with JavaScript auto-update
-    html = """
+    html = f"""
     <!DOCTYPE html>
     <html>
     <head>
@@ -1235,18 +1452,7 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
         <link rel="stylesheet" href="/static/admin.css">
     </head>
     <body>
-        <div class="nav">
-            <a href="/admin/devices">Devices</a>
-            <a href="/admin/games/state" class="active">Games</a>
-            <a href="/admin/leagues">Leagues</a>
-            <a href="/admin/seasons">Seasons</a>
-            <a href="/admin/divisions">Divisions</a>
-            <a href="/admin/teams">Teams</a>
-            <a href="/admin/players">Players</a>
-            <a href="/admin/rinks-admin">Rinks</a>
-            <a href="/admin/rule-sets-admin">Rules</a>
-            <a href="/admin/seed">Seed</a>
-        </div>
+        {admin_nav("games")}
         <div class="container">
             <h1>Games</h1>
             <div class="content">
@@ -1281,14 +1487,14 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
         </div>
 
         <script>
-        function formatClock(seconds) {
+        function formatClock(seconds) {{
             const mins = Math.floor(seconds / 60);
             const secs = seconds % 60;
-            return `${mins}:${secs.toString().padStart(2, '0')}`;
-        }
+            return `${{mins}}:${{secs.toString().padStart(2, '0')}}`;
+        }}
 
-        function filterTable() {
-            const filters = {
+        function filterTable() {{
+            const filters = {{
                 gameId: document.getElementById('filterGameId').value.toLowerCase(),
                 gameDate: document.getElementById('filterGameDate').value.toLowerCase(),
                 teams: document.getElementById('filterTeams').value.toLowerCase(),
@@ -1296,12 +1502,12 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
                 clock: document.getElementById('filterClock').value.toLowerCase(),
                 status: document.getElementById('filterStatus').value.toLowerCase(),
                 period: document.getElementById('filterPeriod').value.toLowerCase()
-            };
+            }};
 
             const tbody = document.getElementById('gamesBody');
             const rows = tbody.getElementsByTagName('tr');
 
-            for (let i = 0; i < rows.length; i++) {
+            for (let i = 0; i < rows.length; i++) {{
                 const cells = rows[i].getElementsByTagName('td');
                 if (cells.length < 7) continue; // Skip "no games" row
 
@@ -1323,49 +1529,49 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
                     period.includes(filters.period);
 
                 rows[i].style.display = match ? '' : 'none';
-            }
-        }
+            }}
+        }}
 
-        function updateGameStates() {
+        function updateGameStates() {{
             fetch('/admin/games/state?format=json')
                 .then(response => response.json())
-                .then(data => {
+                .then(data => {{
                     const tbody = document.getElementById('gamesBody');
 
-                    if (data.games.length === 0) {
+                    if (data.games.length === 0) {{
                         tbody.innerHTML = '<tr><td colspan="7" class="no-games">No games found</td></tr>';
                         return;
-                    }
+                    }}
 
                     let html = '';
-                    data.games.forEach(game => {
+                    data.games.forEach(game => {{
                         const status = game.clock_running ? 'running' : 'paused';
                         const statusText = game.clock_running ? 'Running' : 'Paused';
                         const clock = formatClock(game.clock_seconds);
-                        const score = `${game.home_score} - ${game.away_score}`;
+                        const score = `${{game.home_score}} - ${{game.away_score}}`;
                         // Convert UTC timestamp to local date (handles timezone offset)
                         const startTime = new Date(game.start_time);
                         const gameDate = startTime.toLocaleDateString('en-CA'); // YYYY-MM-DD format
 
                         html += `
                             <tr>
-                                <td class="game-id">${game.game_id}</td>
-                                <td>${gameDate}</td>
-                                <td>${game.home_team} vs ${game.away_team}</td>
-                                <td><strong>${score}</strong></td>
-                                <td class="clock">${clock}</td>
-                                <td><span class="status ${status}">${statusText}</span></td>
-                                <td>${game.period_length_min} min</td>
+                                <td class="game-id">${{game.game_id}}</td>
+                                <td>${{gameDate}}</td>
+                                <td>${{game.home_team}} vs ${{game.away_team}}</td>
+                                <td><strong>${{score}}</strong></td>
+                                <td class="clock">${{clock}}</td>
+                                <td><span class="status ${{status}}">${{statusText}}</span></td>
+                                <td>${{game.period_length_min}} min</td>
                             </tr>
                         `;
-                    });
+                    }});
 
                     tbody.innerHTML = html;
-                })
-                .catch(error => {
+                }})
+                .catch(error => {{
                     console.error('Error fetching game states:', error);
-                });
-        }
+                }});
+        }}
 
         // Load game states on page load
         updateGameStates();
@@ -1469,18 +1675,7 @@ async def get_rosters_admin(format: Optional[str] = Query(None, description="Res
         </script>
     </head>
     <body>
-        <div class="nav">
-            <a href="/admin/devices">Devices</a>
-            <a href="/admin/games/state">Games</a>
-            <a href="/admin/leagues">Leagues</a>
-            <a href="/admin/seasons">Seasons</a>
-            <a href="/admin/divisions">Divisions</a>
-            <a href="/admin/teams">Teams</a>
-            <a href="/admin/players">Players</a>
-            <a href="/admin/rinks-admin">Rinks</a>
-            <a href="/admin/rule-sets-admin">Rules</a>
-            <a href="/admin/rosters" class="active">Rosters</a>
-        </div>
+        {admin_nav("rosters")}
         <div class="container">
             <h1>Team Rosters</h1>
             <div class="content">
@@ -1604,18 +1799,7 @@ async def get_teams_admin(format: Optional[str] = Query(None, description="Respo
         </script>
     </head>
     <body>
-        <div class="nav">
-            <a href="/admin/devices">Devices</a>
-            <a href="/admin/games/state">Games</a>
-            <a href="/admin/leagues">Leagues</a>
-            <a href="/admin/seasons">Seasons</a>
-            <a href="/admin/divisions">Divisions</a>
-            <a href="/admin/teams" class="active">Teams</a>
-            <a href="/admin/players">Players</a>
-            <a href="/admin/rinks-admin">Rinks</a>
-            <a href="/admin/rule-sets-admin">Rules</a>
-            <a href="/admin/seed">Seed</a>
-        </div>
+        {admin_nav("teams")}
         <div class="container">
             <h1>Teams</h1>
             <div class="content">
@@ -1755,18 +1939,7 @@ async def get_players_admin(format: Optional[str] = Query(None, description="Res
         </script>
     </head>
     <body>
-        <div class="nav">
-            <a href="/admin/devices">Devices</a>
-            <a href="/admin/games/state">Games</a>
-            <a href="/admin/leagues">Leagues</a>
-            <a href="/admin/seasons">Seasons</a>
-            <a href="/admin/divisions">Divisions</a>
-            <a href="/admin/teams">Teams</a>
-            <a href="/admin/players" class="active">Players</a>
-            <a href="/admin/rinks-admin">Rinks</a>
-            <a href="/admin/rule-sets-admin">Rules</a>
-            <a href="/admin/seed">Seed</a>
-        </div>
+        {admin_nav("players")}
         <div class="container wide">
             <h1>Players</h1>
             <div class="content overflow">
@@ -1891,18 +2064,7 @@ async def list_leagues(format: Optional[str] = Query(None)):
         <link rel="stylesheet" href="/static/admin.css">
     </head>
     <body>
-        <div class="nav">
-            <a href="/admin/devices">Devices</a>
-            <a href="/admin/games/state">Games</a>
-            <a href="/admin/leagues" class="active">Leagues</a>
-            <a href="/admin/seasons">Seasons</a>
-            <a href="/admin/divisions">Divisions</a>
-            <a href="/admin/teams">Teams</a>
-            <a href="/admin/players">Players</a>
-            <a href="/admin/rinks-admin">Rinks</a>
-            <a href="/admin/rule-sets-admin">Rules</a>
-            <a href="/admin/seed">Seed</a>
-        </div>
+        {admin_nav("leagues")}
         <div class="container">
             <h1>Leagues</h1>
             <div class="content">
@@ -1983,18 +2145,7 @@ async def list_seasons(format: Optional[str] = Query(None)):
         <link rel="stylesheet" href="/static/admin.css">
     </head>
     <body>
-        <div class="nav">
-            <a href="/admin/devices">Devices</a>
-            <a href="/admin/games/state">Games</a>
-            <a href="/admin/leagues">Leagues</a>
-            <a href="/admin/seasons" class="active">Seasons</a>
-            <a href="/admin/divisions">Divisions</a>
-            <a href="/admin/teams">Teams</a>
-            <a href="/admin/players">Players</a>
-            <a href="/admin/rinks-admin">Rinks</a>
-            <a href="/admin/rule-sets-admin">Rules</a>
-            <a href="/admin/seed">Seed</a>
-        </div>
+        {admin_nav("seasons")}
         <div class="container">
             <h1>Seasons</h1>
             <div class="content">
@@ -2073,18 +2224,7 @@ async def list_divisions(format: Optional[str] = Query(None)):
         <link rel="stylesheet" href="/static/admin.css">
     </head>
     <body>
-        <div class="nav">
-            <a href="/admin/devices">Devices</a>
-            <a href="/admin/games/state">Games</a>
-            <a href="/admin/leagues">Leagues</a>
-            <a href="/admin/seasons">Seasons</a>
-            <a href="/admin/divisions" class="active">Divisions</a>
-            <a href="/admin/teams">Teams</a>
-            <a href="/admin/players">Players</a>
-            <a href="/admin/rinks-admin">Rinks</a>
-            <a href="/admin/rule-sets-admin">Rules</a>
-            <a href="/admin/seed">Seed</a>
-        </div>
+        {admin_nav("divisions")}
         <div class="container">
             <h1>Divisions</h1>
             <div class="content">
@@ -2399,18 +2539,7 @@ async def list_rinks_admin(format: Optional[str] = Query(None)):
         <link rel="stylesheet" href="/static/admin.css">
     </head>
     <body>
-        <div class="nav">
-            <a href="/admin/devices">Devices</a>
-            <a href="/admin/games/state">Games</a>
-            <a href="/admin/leagues">Leagues</a>
-            <a href="/admin/seasons">Seasons</a>
-            <a href="/admin/divisions">Divisions</a>
-            <a href="/admin/teams">Teams</a>
-            <a href="/admin/players">Players</a>
-            <a href="/admin/rinks-admin" class="active">Rinks</a>
-            <a href="/admin/rule-sets-admin">Rules</a>
-            <a href="/admin/seed">Seed</a>
-        </div>
+        {admin_nav("rinks")}
         <div class="container">
             <h1>Rinks</h1>
             <div class="content">
@@ -2477,17 +2606,7 @@ async def list_rule_sets_admin(format: Optional[str] = Query(None)):
         <link rel="stylesheet" href="/static/admin.css">
     </head>
     <body>
-        <div class="nav">
-            <a href="/admin/devices">Devices</a>
-            <a href="/admin/games/state">Games</a>
-            <a href="/admin/leagues">Leagues</a>
-            <a href="/admin/seasons">Seasons</a>
-            <a href="/admin/divisions">Divisions</a>
-            <a href="/admin/teams">Teams</a>
-            <a href="/admin/players">Players</a>
-            <a href="/admin/rinks-admin">Rinks</a>
-            <a href="/admin/rule-sets-admin" class="active">Rules</a>
-        </div>
+        {admin_nav("rules")}
         <div class="container">
             <h1>Rule Sets</h1>
             <div class="content">
@@ -2557,18 +2676,7 @@ async def list_officials_admin(format: Optional[str] = Query(None)):
         <link rel="stylesheet" href="/static/admin.css">
     </head>
     <body>
-        <div class="nav">
-            <a href="/admin/devices">Devices</a>
-            <a href="/admin/games/state">Games</a>
-            <a href="/admin/leagues">Leagues</a>
-            <a href="/admin/seasons">Seasons</a>
-            <a href="/admin/divisions">Divisions</a>
-            <a href="/admin/teams">Teams</a>
-            <a href="/admin/players">Players</a>
-            <a href="/admin/rinks-admin">Rinks</a>
-            <a href="/admin/rule-sets-admin">Rules</a>
-            <a href="/admin/officials-admin" class="active">Officials</a>
-        </div>
+        {admin_nav("officials")}
         <div class="container">
             <h1>Officials</h1>
             <div class="content">
@@ -2630,18 +2738,7 @@ async def list_tournaments_admin(format: Optional[str] = Query(None)):
         <link rel="stylesheet" href="/static/admin.css">
     </head>
     <body>
-        <div class="nav">
-            <a href="/admin/devices">Devices</a>
-            <a href="/admin/games/state">Games</a>
-            <a href="/admin/leagues">Leagues</a>
-            <a href="/admin/seasons">Seasons</a>
-            <a href="/admin/divisions">Divisions</a>
-            <a href="/admin/teams">Teams</a>
-            <a href="/admin/players">Players</a>
-            <a href="/admin/rinks-admin">Rinks</a>
-            <a href="/admin/rule-sets-admin">Rules</a>
-            <a href="/admin/tournaments-admin" class="active">Tournaments</a>
-        </div>
+        {admin_nav("tournaments")}
         <div class="container">
             <h1>Tournaments</h1>
             <div class="content">
@@ -2720,18 +2817,7 @@ async def list_registrations_admin(format: Optional[str] = Query(None)):
         <link rel="stylesheet" href="/static/admin.css">
     </head>
     <body>
-        <div class="nav">
-            <a href="/admin/devices">Devices</a>
-            <a href="/admin/games/state">Games</a>
-            <a href="/admin/leagues">Leagues</a>
-            <a href="/admin/seasons">Seasons</a>
-            <a href="/admin/divisions">Divisions</a>
-            <a href="/admin/teams">Teams</a>
-            <a href="/admin/players">Players</a>
-            <a href="/admin/rinks-admin">Rinks</a>
-            <a href="/admin/rule-sets-admin">Rules</a>
-            <a href="/admin/registrations-admin" class="active">Registrations</a>
-        </div>
+        {admin_nav("registrations")}
         <div class="container">
             <h1>Team Registrations</h1>
             <div class="content">
@@ -2889,18 +2975,7 @@ async def seed_admin_page():
         </style>
     </head>
     <body>
-        <div class="nav">
-            <a href="/admin/devices">Devices</a>
-            <a href="/admin/games/state">Games</a>
-            <a href="/admin/leagues">Leagues</a>
-            <a href="/admin/seasons">Seasons</a>
-            <a href="/admin/divisions">Divisions</a>
-            <a href="/admin/teams">Teams</a>
-            <a href="/admin/players">Players</a>
-            <a href="/admin/rinks-admin">Rinks</a>
-            <a href="/admin/rule-sets-admin">Rules</a>
-            <a href="/admin/seed" class="active">Seed</a>
-        </div>
+        {admin_nav("seed")}
         <div class="container">
             <h1>Database Seeding</h1>
             <div class="content">

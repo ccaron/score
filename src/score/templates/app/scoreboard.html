@@ -24,6 +24,10 @@ body {
 .clock {
     font-size: 8em;
     font-weight: 700;
+    font-family: 'SF Mono', 'Menlo', 'Roboto Mono', 'Fira Code', ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+    min-width: 4.5em;
+    text-align: center;
     margin: 0.5em;
     cursor: pointer;
     user-select: none;
@@ -572,6 +576,8 @@ select option {
     </div>
 </div>
 
+<div class="clock" id="clockDisplay">20:00</div>
+
 <div class="scoreboard-container hidden" id="scoreboardContainer">
     <div class="team-column">
         <div class="team-header">
@@ -587,7 +593,7 @@ select option {
         <div class="goals-list" id="homeGoals"></div>
     </div>
 
-    <div class="clock" id="clock">20:00</div>
+    <div class="clock" id="gameClock">20:00</div>
 
     <div class="team-column">
         <div class="team-header">
@@ -614,6 +620,7 @@ select option {
 </div>
 
 <div class="hint">Double-click the clock to set time</div>
+<div class="game-context" id="gameContext" style="display: none; margin-top: 0.5em; font-size: 0.85em; opacity: 0.6;"></div>
 
 <div class="modal" id="timeModal">
     <div class="modal-content">
@@ -712,13 +719,16 @@ ws.onmessage = (event) => {
     }
 
     // Update clock display based on mode
+    const clockDisplay = document.getElementById("clockDisplay");
+    const gameClock = document.getElementById("gameClock");
     if (data.mode === 'clock') {
-        document.getElementById("clock").textContent = data.current_time;
+        clockDisplay.textContent = data.current_time;
+        clockDisplay.style.display = 'block';
     } else {
+        clockDisplay.style.display = 'none';
         const mins = Math.floor(data.seconds / 60);
         const secs = data.seconds % 60;
-        document.getElementById("clock").textContent =
-            `${mins}:${secs.toString().padStart(2,'0')}`;
+        gameClock.textContent = `${mins}:${secs.toString().padStart(2,'0')}`;
     }
 
     // Update scoreboard visibility and content
@@ -753,13 +763,29 @@ ws.onmessage = (event) => {
 
     // Update hint text
     const hintElement = document.querySelector(".hint");
+    const contextElement = document.getElementById("gameContext");
     if (data.mode === 'clock') {
         hintElement.textContent = "Showing current time";
+        contextElement.style.display = 'none';
     } else {
         if (data.current_game) {
             hintElement.textContent = `${data.current_game.home_team} vs ${data.current_game.away_team} - Double-click to set time`;
+
+            // Show organizational context if available
+            const parts = [];
+            if (data.current_game.league_name) parts.push(data.current_game.league_name);
+            if (data.current_game.season_name) parts.push(data.current_game.season_name);
+            if (data.current_game.division_name) parts.push(data.current_game.division_name);
+
+            if (parts.length > 0) {
+                contextElement.textContent = parts.join(' | ');
+                contextElement.style.display = 'block';
+            } else {
+                contextElement.style.display = 'none';
+            }
         } else {
             hintElement.textContent = "Double-click the clock to set time";
+            contextElement.style.display = 'none';
         }
     }
 
@@ -1019,7 +1045,7 @@ function applyTime() {
     closeModal();
 }
 
-document.getElementById("clock").addEventListener("dblclick", () => {
+document.getElementById("gameClock").addEventListener("dblclick", () => {
     // Only allow setting time in game mode (not clock mode)
     if (currentMode === 'clock') {
         return;

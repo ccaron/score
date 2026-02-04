@@ -15,6 +15,10 @@ class Game(BaseModel):
     away_abbrev: Optional[str] = None
     start_time: str  # ISO 8601 format
     period_length_min: int
+    # Organizational context
+    league_name: Optional[str] = None
+    season_name: Optional[str] = None
+    division_name: Optional[str] = None
 
 
 class ScheduleResponse(BaseModel):
