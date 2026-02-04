@@ -29,6 +29,11 @@ def replay_events(events, current_time=None):
             - home_score: Home team score
             - away_score: Away team score
             - goals: List of goals with cancellation status
+            - period: Current period number
+            - penalties: List of active penalties
+            - home_goalie_id: Current home goalie player ID
+            - away_goalie_id: Current away goalie player ID
+            - faceoffs: Faceoff win counts {home: n, away: n}
     """
     if current_time is None:
         current_time = int(time.time())
@@ -41,6 +46,13 @@ def replay_events(events, current_time=None):
     goals = []  # Track goals for display
     home_shots = 0
     away_shots = 0
+
+    # New state tracking
+    period = 1
+    penalties = []  # List of active penalties
+    home_goalie_id = None
+    away_goalie_id = None
+    faceoffs = {"home": 0, "away": 0}
 
     # Roster state tracking
     home_roster = []        # List of active player IDs
@@ -60,18 +72,95 @@ def replay_events(events, current_time=None):
         if event["type"] == "CLOCK_SET":
             seconds = payload.get("seconds", 0)
             logger.debug(f"Replayed CLOCK_SET: {seconds}s")
-        elif event["type"] == "GAME_STARTED":
+
+        # Period events
+        elif event["type"] == "PERIOD_START":
+            period = payload.get("period", period)
             running = True
             last_update = event_time
-            logger.debug("Replayed GAME_STARTED")
-        elif event["type"] == "GAME_PAUSED":
+            logger.debug(f"Replayed PERIOD_START: period={period}")
+        elif event["type"] == "PERIOD_END":
+            if running:
+                elapsed = event_time - last_update
+                seconds = max(0, seconds - elapsed)
+            running = False
+            last_update = event_time
+            logger.debug(f"Replayed PERIOD_END: period={period}")
+
+        # Game flow events
+        elif event["type"] in ("GAME_STARTED", "GAME_START", "CLOCK_START"):
+            running = True
+            last_update = event_time
+            logger.debug(f"Replayed {event['type']}")
+        elif event["type"] in ("GAME_PAUSED", "GAME_END", "CLOCK_STOP"):
             # Calculate elapsed time if was running
             if running:
                 elapsed = event_time - last_update
                 seconds = max(0, seconds - elapsed)
             running = False
             last_update = event_time
-            logger.debug(f"Replayed GAME_PAUSED: {seconds}s remaining")
+            logger.debug(f"Replayed {event['type']}: {seconds}s remaining")
+
+        # Penalty events
+        elif event["type"] == "PENALTY":
+            penalty = {
+                "penalty_id": payload.get("penalty_id"),
+                "team": payload.get("team"),
+                "player_id": payload.get("player_id"),
+                "infraction": payload.get("infraction"),
+                "severity": payload.get("severity"),
+                "duration_min": payload.get("duration_min", 2),
+                "period": period,
+                "time_assessed": payload.get("time", seconds),
+                "started": False,
+                "ended": False,
+            }
+            penalties.append(penalty)
+            logger.debug(f"Replayed PENALTY: {penalty['team']} {penalty['infraction']}")
+
+        elif event["type"] == "PENALTY_START":
+            penalty_id = payload.get("penalty_id")
+            for p in penalties:
+                if p["penalty_id"] == penalty_id:
+                    p["started"] = True
+                    p["start_time"] = event_time
+                    break
+            logger.debug(f"Replayed PENALTY_START: {penalty_id}")
+
+        elif event["type"] == "PENALTY_END":
+            penalty_id = payload.get("penalty_id")
+            for p in penalties:
+                if p["penalty_id"] == penalty_id:
+                    p["ended"] = True
+                    p["end_time"] = event_time
+                    break
+            logger.debug(f"Replayed PENALTY_END: {penalty_id}")
+
+        # Goalie events
+        elif event["type"] == "GOALIE_IN":
+            team = payload.get("team")
+            player_id = payload.get("player_id")
+            if team == "home":
+                home_goalie_id = player_id
+            elif team == "away":
+                away_goalie_id = player_id
+            logger.debug(f"Replayed GOALIE_IN: {team} goalie {player_id}")
+
+        elif event["type"] == "GOALIE_OUT":
+            team = payload.get("team")
+            if team == "home":
+                home_goalie_id = None
+            elif team == "away":
+                away_goalie_id = None
+            logger.debug(f"Replayed GOALIE_OUT: {team}")
+
+        # Faceoff events
+        elif event["type"] == "FACEOFF":
+            winner = payload.get("winner")
+            if winner in ("home", "away"):
+                faceoffs[winner] += 1
+            logger.debug(f"Replayed FACEOFF: {winner} wins (location: {payload.get('location')})")
+
         elif event["type"] == "GOAL_HOME":
             # Goal event with value (+1 for goal, -1 for cancellation)
             goal_value = payload.get("value", 1)
@@ -237,7 +326,13 @@ def replay_events(events, current_time=None):
         "away_shots": away_shots,
         "home_roster": home_roster,
         "away_roster": away_roster,
-        "roster_details": roster_details
+        "roster_details": roster_details,
+        # New state fields
+        "period": period,
+        "penalties": penalties,
+        "home_goalie_id": home_goalie_id,
+        "away_goalie_id": away_goalie_id,
+        "faceoffs": faceoffs,
     }
 
 

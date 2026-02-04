@@ -19,11 +19,11 @@ run: .venv/.installed
 
 run-app: .venv/.installed
 	@echo "Starting score-app in background..."
-	@uv run score-app &
+	@uv run score-app
 
 run-cloud: .venv/.installed
 	@echo "Starting score-cloud in background..."
-	@uv run score-cloud &
+	@uv run score-cloud
 
 kill-app:
 	@pkill -f "score-app" || echo "score-app not running"

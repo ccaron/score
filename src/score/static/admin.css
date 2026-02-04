@@ -1,0 +1,356 @@
+/* Professional admin styles for score-cloud */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f5f5f5;
+    min-height: 100vh;
+    font-size: 14px;
+    color: #333;
+}
+
+/* Navigation - compact top bar */
+.nav {
+    background: #1a1a2e;
+    padding: 0 20px;
+    display: flex;
+    align-items: center;
+    height: 42px;
+}
+
+.nav a {
+    color: #a0a0a0;
+    text-decoration: none;
+    padding: 0 14px;
+    font-size: 13px;
+    font-weight: 500;
+    height: 42px;
+    line-height: 42px;
+    border-bottom: 2px solid transparent;
+}
+
+.nav a:hover {
+    color: #fff;
+    background: rgba(255,255,255,0.05);
+}
+
+.nav a.active {
+    color: #fff;
+    border-bottom-color: #4a9eff;
+}
+
+/* Main container */
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.container.wide {
+    max-width: 1600px;
+}
+
+/* Header */
+.header {
+    margin-bottom: 20px;
+}
+
+.header h1 {
+    font-size: 1.4em;
+    font-weight: 600;
+    color: #1a1a2e;
+    margin-bottom: 4px;
+}
+
+.header p {
+    color: #666;
+    font-size: 13px;
+}
+
+/* Standalone h1 */
+h1 {
+    font-size: 1.4em;
+    font-weight: 600;
+    color: #1a1a2e;
+    margin-bottom: 16px;
+}
+
+/* Content area */
+.content {
+    background: #fff;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    padding: 16px;
+}
+
+.content.overflow {
+    overflow-x: auto;
+}
+
+/* Hint text */
+.hint {
+    margin-bottom: 12px;
+    color: #666;
+    font-size: 12px;
+}
+
+/* Tables - compact and efficient */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+table.wide {
+    min-width: 1200px;
+}
+
+th {
+    background: #fafafa;
+    padding: 8px 10px;
+    text-align: left;
+    font-weight: 600;
+    color: #333;
+    border-bottom: 1px solid #e0e0e0;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+th.nowrap {
+    white-space: nowrap;
+}
+
+td {
+    padding: 6px 10px;
+    border-bottom: 1px solid #eee;
+    color: #333;
+    vertical-align: middle;
+}
+
+td.nowrap {
+    white-space: nowrap;
+}
+
+tr:hover {
+    background: #f8f9fa;
+}
+
+/* Monospace IDs */
+.device-id,
+.game-id,
+.player-id,
+.team-abbrev {
+    font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+    font-size: 12px;
+    color: #0066cc;
+}
+
+/* Clock display */
+.clock {
+    font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+    font-weight: 600;
+}
+
+/* Form inputs - compact */
+input,
+select,
+textarea {
+    width: 100%;
+    padding: 5px 8px;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    font-size: 13px;
+}
+
+textarea {
+    resize: vertical;
+    min-height: 32px;
+    font-family: inherit;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+    outline: none;
+    border-color: #4a9eff;
+}
+
+/* Filter row */
+.filter-row input {
+    padding: 4px 6px;
+    font-size: 12px;
+}
+
+.filter-row td {
+    padding: 4px 10px;
+    background: #fafafa;
+}
+
+/* Badges - minimal */
+.badge {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.badge.assigned {
+    background: #e6f4ea;
+    color: #1e7e34;
+}
+
+.badge.unassigned {
+    background: #fff3e0;
+    color: #e65100;
+}
+
+/* Status indicators */
+.status {
+    font-size: 12px;
+}
+
+.status.running {
+    color: #1e7e34;
+}
+
+.status.paused {
+    color: #666;
+}
+
+.status-badge {
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.status-badge.active {
+    background: #e6f4ea;
+    color: #1e7e34;
+}
+
+.status-badge.inactive {
+    background: #fce4ec;
+    color: #c62828;
+}
+
+/* Timestamps */
+.timestamp {
+    font-size: 12px;
+    color: #666;
+}
+
+/* Buttons - compact */
+button {
+    padding: 4px 10px;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.btn-save {
+    background: #1e7e34;
+    color: white;
+}
+
+.btn-save:hover {
+    background: #166628;
+}
+
+.btn-unassign {
+    background: #dc3545;
+    color: white;
+}
+
+.btn-unassign:hover {
+    background: #c82333;
+}
+
+.btn-delete {
+    background: #6c757d;
+    color: white;
+}
+
+.btn-delete:hover {
+    background: #5a6268;
+}
+
+/* Actions column */
+.actions {
+    display: flex;
+    gap: 4px;
+}
+
+/* Messages */
+.message {
+    padding: 8px 12px;
+    border-radius: 3px;
+    margin-bottom: 12px;
+    display: none;
+    font-size: 13px;
+}
+
+.message.success {
+    background: #e6f4ea;
+    color: #1e7e34;
+    border: 1px solid #c3e6cb;
+}
+
+.message.error {
+    background: #fce4ec;
+    color: #c62828;
+    border: 1px solid #f5c6cb;
+}
+
+/* Rink section */
+.rink-section {
+    margin-bottom: 20px;
+}
+
+.rink-section h3 {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 10px;
+    color: #333;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+/* Add rink form */
+.add-rink-form {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.add-rink-form input {
+    padding: 5px 8px;
+    font-size: 13px;
+}
+
+.add-rink-form button {
+    padding: 5px 12px;
+    background: #1a1a2e;
+    color: white;
+    white-space: nowrap;
+}
+
+.add-rink-form button:hover {
+    background: #2d2d44;
+}
+
+/* No data message */
+.no-games {
+    text-align: center;
+    padding: 40px 20px;
+    color: #666;
+}
