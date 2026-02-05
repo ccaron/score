@@ -313,7 +313,9 @@ def load_game_state(game_id: str):
 
 # ---------- Broadcast ----------
 async def broadcast_state():
-    data = json.dumps({"state": state.to_dict()})
+    state_dict = state.to_dict()
+    logger.debug(f"Broadcasting state: mode={state_dict['mode']}, scores={state_dict['home_score']}-{state_dict['away_score']}")
+    data = json.dumps({"state": state_dict})
     dead = []
 
     for ws in state.clients:
@@ -572,6 +574,10 @@ async def cancel_goal(request: dict):
         "goal_id": goal_id,
         "value": -1,
         "time": goal["time"],
+        # Include player IDs so assists can be properly subtracted
+        "scorer_id": goal.get("scorer_id"),
+        "assist1_id": goal.get("assist1_id"),
+        "assist2_id": goal.get("assist2_id"),
     }
     state.add_event(event_type, payload)
 
@@ -742,6 +748,7 @@ async def select_mode(request: dict):
                     logger.warning("Roster download failed - goals will be anonymous")
 
             logger.info(f"Selected game: {selected_game['home_team']} vs {selected_game['away_team']}")
+            logger.info(f"Game state after load: {state.home_score}-{state.away_score}, {len(state.goals)} goals")
         else:
             logger.warning(f"Game {new_mode} not found in available games, switching to clock mode")
             logger.warning(f"Available game IDs were: {[g['game_id'] for g in games]}")

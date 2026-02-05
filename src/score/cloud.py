@@ -59,6 +59,7 @@ ADMIN_NAV_ITEMS = [
     ("devices", "/admin/devices", "Devices"),
     ("games", "/admin/games/state", "Games"),
     ("events", "/admin/events", "Events"),
+    ("stats", "/admin/stats", "Stats"),
     ("leagues", "/admin/leagues", "Leagues"),
     ("seasons", "/admin/seasons", "Seasons"),
     ("divisions", "/admin/divisions", "Divisions"),
@@ -3266,6 +3267,289 @@ async def clear_seed_data(request: ClearRequest):
         "status": "ok",
         "cleared": counts
     }
+
+
+# ---------- Admin: Stats Query Functions ----------
+def get_final_games(db, league_id=None, season_id=None, division_id=None):
+    """Get list of game IDs considered 'final' for stats purposes.
+
+    Problem: score-app doesn't update games.game_status to 'final'.
+    Workaround: Consider games with GAME_END events OR games older than 3 hours
+    OR just return all games matching the league/season/division filter.
+    """
+    # Build query based on filters
+    if league_id or season_id or division_id:
+        # Filter by league/season/division context
+        query = """
+            SELECT DISTINCT g.game_id
+            FROM games g
+            LEFT JOIN team_registrations hr ON g.home_registration_id = hr.registration_id
+            LEFT JOIN team_registrations ar ON g.away_registration_id = ar.registration_id
+            WHERE 1=1
+        """
+        if league_id:
+            query += f" AND (hr.league_id = '{league_id}' OR ar.league_id = '{league_id}')"
+        if season_id:
+            query += f" AND (hr.season_id = '{season_id}' OR ar.season_id = '{season_id}')"
+        if division_id:
+            query += f" AND (hr.division_id = '{division_id}' OR ar.division_id = '{division_id}')"
+
+        rows = db.execute(query).fetchall()
+        game_ids = [dict(r)["game_id"] for r in rows]
+        return game_ids
+    else:
+        # No filters - try to find games with GAME_END events
+        # If none exist, return empty (will show all events unfiltered)
+        query = """
+            SELECT DISTINCT game_id
+            FROM received_events
+            WHERE type IN ('GAME_END', 'GAME_FINALIZED')
+        """
+        rows = db.execute(query).fetchall()
+        game_ids = [dict(r)["game_id"] for r in rows]
+        return game_ids if game_ids else None  # None means "no filter"
+
+
+def query_top_scorers(db, league_id=None, season_id=None, division_id=None, final_only=True, limit=20):
+    """Query top goal scorers from events, properly filtered by team context."""
+
+    # Build WHERE clause for team registration filters
+    filter_conditions = []
+    if league_id:
+        filter_conditions.append(f"tr.league_id = '{league_id}'")
+    if season_id:
+        filter_conditions.append(f"tr.season_id = '{season_id}'")
+    if division_id:
+        filter_conditions.append(f"tr.division_id = '{division_id}'")
+
+    team_filter = f"AND ({' AND '.join(filter_conditions)})" if filter_conditions else ""
+
+    query = f"""
+        SELECT
+            json_extract(e.payload, '$.scorer_id') as player_id,
+            p.full_name,
+            SUM(json_extract(e.payload, '$.value')) as goals
+        FROM received_events e
+        JOIN games g ON e.game_id = g.game_id
+        LEFT JOIN team_registrations tr ON (
+            CASE
+                WHEN e.type = 'GOAL_HOME' THEN g.home_registration_id = tr.registration_id
+                WHEN e.type = 'GOAL_AWAY' THEN g.away_registration_id = tr.registration_id
+            END
+        )
+        LEFT JOIN players p ON json_extract(e.payload, '$.scorer_id') = p.player_id
+        WHERE (e.type = 'GOAL_HOME' OR e.type = 'GOAL_AWAY')
+            AND json_extract(e.payload, '$.scorer_id') IS NOT NULL
+            {team_filter}
+        GROUP BY player_id, p.full_name
+        HAVING goals > 0
+        ORDER BY goals DESC
+        LIMIT {limit}
+    """
+
+    rows = db.execute(query).fetchall()
+    return [dict(r) for r in rows]
+
+
+def query_top_assists(db, league_id=None, season_id=None, division_id=None, final_only=True, limit=20):
+    """Query top assist leaders from events, properly filtered by team context."""
+
+    # Build WHERE clause for team registration filters
+    filter_conditions = []
+    if league_id:
+        filter_conditions.append(f"tr.league_id = '{league_id}'")
+    if season_id:
+        filter_conditions.append(f"tr.season_id = '{season_id}'")
+    if division_id:
+        filter_conditions.append(f"tr.division_id = '{division_id}'")
+
+    team_filter = f"AND ({' AND '.join(filter_conditions)})" if filter_conditions else ""
+
+    # Query both assist1_id and assist2_id, combining them in a UNION
+    # This sums values for both primary and secondary assists (handles cancellations)
+    query = f"""
+        SELECT
+            assists.player_id,
+            p.full_name,
+            SUM(assists.value) as assists
+        FROM (
+            -- Primary assists
+            SELECT
+                json_extract(e.payload, '$.assist1_id') as player_id,
+                e.game_id,
+                e.type,
+                json_extract(e.payload, '$.value') as value
+            FROM received_events e
+            WHERE (e.type = 'GOAL_HOME' OR e.type = 'GOAL_AWAY')
+                AND json_extract(e.payload, '$.assist1_id') IS NOT NULL
+
+            UNION ALL
+
+            -- Secondary assists
+            SELECT
+                json_extract(e.payload, '$.assist2_id') as player_id,
+                e.game_id,
+                e.type,
+                json_extract(e.payload, '$.value') as value
+            FROM received_events e
+            WHERE (e.type = 'GOAL_HOME' OR e.type = 'GOAL_AWAY')
+                AND json_extract(e.payload, '$.assist2_id') IS NOT NULL
+        ) assists
+        JOIN games g ON assists.game_id = g.game_id
+        LEFT JOIN team_registrations tr ON (
+            CASE
+                WHEN assists.type = 'GOAL_HOME' THEN g.home_registration_id = tr.registration_id
+                WHEN assists.type = 'GOAL_AWAY' THEN g.away_registration_id = tr.registration_id
+            END
+        )
+        LEFT JOIN players p ON assists.player_id = p.player_id
+        WHERE 1=1
+            {team_filter}
+        GROUP BY assists.player_id, p.full_name
+        HAVING assists > 0
+        ORDER BY assists DESC
+        LIMIT {limit}
+    """
+
+    rows = db.execute(query).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------- Admin: Stats Page ----------
+@app.get("/admin/stats")
+async def stats_page(
+    league_id: Optional[str] = Query(None),
+    season_id: Optional[str] = Query(None),
+    division_id: Optional[str] = Query(None),
+    final_only: bool = Query(True),
+    format: Optional[str] = Query(None)
+):
+    """Statistics leaderboards page."""
+    from fastapi.responses import HTMLResponse
+
+    db = get_db()
+
+    # Get filter options
+    leagues = db.execute("SELECT league_id, name FROM leagues ORDER BY name").fetchall()
+    seasons = db.execute("SELECT season_id, name FROM seasons ORDER BY start_date DESC").fetchall()
+    divisions = db.execute("SELECT division_id, name FROM divisions ORDER BY name").fetchall()
+
+    # Query player stats
+    scorers = query_top_scorers(db, league_id, season_id, division_id, final_only)
+    assists_leaders = query_top_assists(db, league_id, season_id, division_id, final_only)
+    points_leaders = []  # TODO: implement
+    penalty_leaders = []  # TODO: implement
+    standings = []  # TODO: implement
+
+    db.close()
+
+    if format == "json":
+        return {
+            "scorers": scorers,
+            "assists": assists_leaders,
+            "points": points_leaders,
+            "penalties": penalty_leaders,
+            "standings": standings
+        }
+
+    # Generate HTML
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>score-cloud | Stats</title>
+    <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+    {admin_nav("stats")}
+    <div class="container wide">
+        <h1>League Statistics</h1>
+
+        <p class="hint">Player and team statistics computed from game events. Use filters to narrow by league, season, or division.</p>
+
+        <!-- Filters -->
+        <div class="filters">
+            <label>League:
+                <select id="leagueFilter" onchange="applyFilters()">
+                    <option value="">All Leagues</option>
+                    {''.join(f'<option value="{dict(l)["league_id"]}" {"selected" if dict(l)["league_id"] == league_id else ""}>{dict(l)["name"]}</option>' for l in leagues)}
+                </select>
+            </label>
+
+            <label>Season:
+                <select id="seasonFilter" onchange="applyFilters()">
+                    <option value="">All Seasons</option>
+                    {''.join(f'<option value="{dict(s)["season_id"]}" {"selected" if dict(s)["season_id"] == season_id else ""}>{dict(s)["name"]}</option>' for s in seasons)}
+                </select>
+            </label>
+
+            <label>Division:
+                <select id="divisionFilter" onchange="applyFilters()">
+                    <option value="">All Divisions</option>
+                    {''.join(f'<option value="{dict(d)["division_id"]}" {"selected" if dict(d)["division_id"] == division_id else ""}>{dict(d)["name"]}</option>' for d in divisions)}
+                </select>
+            </label>
+
+            <label>
+                <input type="checkbox" id="finalOnly" {"checked" if final_only else ""} onchange="applyFilters()">
+                Final games only
+            </label>
+        </div>
+
+        <!-- Leaderboards -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <h2>Top Scorers</h2>
+                {'<table><thead><tr><th>Player</th><th>Goals</th></tr></thead><tbody>' if scorers else '<p style="color: #666; font-size: 13px;">No goals found</p>'}
+                {''.join(f'<tr><td>{s["full_name"] or "Unknown Player"}</td><td><strong>{s["goals"]}</strong></td></tr>' for s in scorers)}
+                {'</tbody></table>' if scorers else ''}
+            </div>
+
+            <div class="stat-card">
+                <h2>Top Assists</h2>
+                {'<table><thead><tr><th>Player</th><th>Assists</th></tr></thead><tbody>' if assists_leaders else '<p style="color: #666; font-size: 13px;">No assists found</p>'}
+                {''.join(f'<tr><td>{s["full_name"] or "Unknown Player"}</td><td><strong>{s["assists"]}</strong></td></tr>' for s in assists_leaders)}
+                {'</tbody></table>' if assists_leaders else ''}
+            </div>
+
+            <div class="stat-card">
+                <h2>Top Points</h2>
+                <p style="color: #666; font-size: 13px;">Coming soon</p>
+            </div>
+
+            <div class="stat-card">
+                <h2>Penalty Leaders</h2>
+                <p style="color: #666; font-size: 13px;">Coming soon</p>
+            </div>
+        </div>
+
+        <!-- Team Standings -->
+        <div class="content">
+            <h2>Team Standings</h2>
+            <p style="color: #666; font-size: 13px;">Coming soon</p>
+        </div>
+    </div>
+
+    <script>
+    function applyFilters() {{
+        const league = document.getElementById('leagueFilter').value;
+        const season = document.getElementById('seasonFilter').value;
+        const division = document.getElementById('divisionFilter').value;
+        const finalOnly = document.getElementById('finalOnly').checked;
+
+        const params = new URLSearchParams();
+        if (league) params.set('league_id', league);
+        if (season) params.set('season_id', season);
+        if (division) params.set('division_id', division);
+        params.set('final_only', finalOnly);
+
+        window.location.href = '/admin/stats?' + params.toString();
+    }}
+    </script>
+</body>
+</html>"""
+
+    return HTMLResponse(content=html)
 
 
 def main():
