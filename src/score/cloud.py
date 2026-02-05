@@ -88,7 +88,7 @@ def init_db():
     from score.schema import init_schema
     # Set fresh_start=True to drop old tables and use new schema
     # After initial migration, set to False to preserve data
-    init_schema(CLOUD_DB_PATH, fresh_start=True)
+    init_schema(CLOUD_DB_PATH, fresh_start=False)
 
 
 init_db()

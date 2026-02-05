@@ -280,10 +280,18 @@ def load_state_from_events():
 def load_game_state(game_id: str):
     """Load state for a specific game by replaying its events."""
     from score.state import load_game_state_from_db
+    import time
 
     logger.info(f"Loading state for game {game_id}...")
 
     result = load_game_state_from_db(DB_PATH, game_id)
+
+    # If game is running, calculate elapsed time since last event for display
+    if result["running"]:
+        current_time = int(time.time())
+        elapsed = current_time - result["last_update"]
+        result["seconds"] = max(0, result["seconds"] - elapsed)
+        logger.debug(f"Game is running - adjusted for {elapsed}s elapsed since last event")
 
     # Update global state with replayed values
     state.seconds = result["seconds"]

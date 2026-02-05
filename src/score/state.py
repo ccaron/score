@@ -16,10 +16,15 @@ def replay_events(events, current_time=None):
     """
     Replay a list of events to reconstruct game state.
 
+    This function is DETERMINISTIC - replaying the same events always produces
+    the same state as of the last event timestamp.
+
     Args:
         events: List of event rows with 'type', 'payload', and timestamp field
                 Each event should have fields accessible as dict keys
-        current_time: Current timestamp for calculating elapsed time (defaults to now)
+        current_time: Optional timestamp to calculate elapsed time for running clock.
+                     ONLY use when displaying "current" state. For historical replay
+                     or deterministic processing, do NOT pass this parameter.
 
     Returns:
         dict with:
@@ -35,12 +40,9 @@ def replay_events(events, current_time=None):
             - away_goalie_id: Current away goalie player ID
             - faceoffs: Faceoff win counts {home: n, away: n}
     """
-    if current_time is None:
-        current_time = int(time.time())
-
     seconds = 0
     running = False
-    last_update = current_time
+    last_update = 0  # Will be set by first event, or remains 0 if no events
     home_score = 0
     away_score = 0
     goals = []  # Track goals for display
@@ -309,11 +311,12 @@ def replay_events(events, current_time=None):
 
             logger.debug(f"Replayed ROSTER_PLAYER_ACTIVATED: {team} player {player_id}")
 
-    # If still running, account for current elapsed time
-    if running:
+    # If current_time is provided AND clock is running, calculate elapsed time
+    # This is ONLY for display purposes - deterministic replay should not pass current_time
+    if current_time is not None and running:
         elapsed = current_time - last_update
         seconds = max(0, seconds - elapsed)
-        logger.debug(f"Game is running - adjusted for {elapsed}s elapsed time")
+        logger.debug(f"Game is running - adjusted for {elapsed}s elapsed time (current_time provided)")
 
     return {
         "seconds": seconds,
