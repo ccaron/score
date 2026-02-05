@@ -1598,15 +1598,18 @@ async def get_rosters_admin(format: Optional[str] = Query(None, description="Res
     # Get all roster entries with player details
     rosters = db.execute("""
         SELECT DISTINCT
-            tr.team_abbrev,
+            t.abbreviation as team_abbrev,
             p.player_id,
             p.full_name,
-            tr.roster_status,
-            tr.added_at,
-            tr.removed_at
-        FROM team_rosters tr
-        JOIN players p ON tr.player_id = p.player_id
-        ORDER BY tr.team_abbrev, p.full_name
+            re.jersey_number,
+            re.roster_status,
+            re.added_at,
+            re.removed_at
+        FROM roster_entries re
+        JOIN players p ON re.player_id = p.player_id
+        JOIN team_registrations tr ON re.registration_id = tr.registration_id
+        JOIN teams t ON tr.team_id = t.team_id
+        ORDER BY t.abbreviation, p.full_name
     """).fetchall()
 
     db.close()
@@ -1625,7 +1628,7 @@ async def get_rosters_admin(format: Optional[str] = Query(None, description="Res
 
     rosters_html = ""
     if not rosters:
-        rosters_html = '<tr><td colspan="5" style="text-align: center; color: #999; padding: 40px;">No rosters found.</td></tr>'
+        rosters_html = '<tr><td colspan="6" style="text-align: center; color: #999; padding: 40px;">No rosters found.</td></tr>'
     else:
         for r in rosters:
             status_class = "active" if r["roster_status"] == "active" else "inactive"
@@ -1635,6 +1638,7 @@ async def get_rosters_admin(format: Optional[str] = Query(None, description="Res
             <tr>
                 <td class="team-abbrev">{r["team_abbrev"]}</td>
                 <td>{r["full_name"]}</td>
+                <td>{r["jersey_number"] or "-"}</td>
                 <td><span class="status-badge {status_class}">{r["roster_status"]}</span></td>
                 <td class="timestamp">{format_timestamp(r["added_at"])}</td>
                 <td class="timestamp">{removed_display}</td>
@@ -1659,11 +1663,11 @@ async def get_rosters_admin(format: Optional[str] = Query(None, description="Res
                 const rows = document.querySelectorAll('#rostersTable tbody tr');
 
                 rows.forEach(row => {{
-                    if (row.cells.length < 3) return; // Skip empty row
+                    if (row.cells.length < 5) return; // Skip empty row
 
                     const team = row.cells[0].textContent.toLowerCase();
                     const name = row.cells[1].textContent.toLowerCase();
-                    const status = row.cells[2].textContent.toLowerCase();
+                    const status = row.cells[3].textContent.toLowerCase();
 
                     const match =
                         team.includes(filters.team) &&
@@ -1685,6 +1689,7 @@ async def get_rosters_admin(format: Optional[str] = Query(None, description="Res
                         <tr>
                             <th>Team</th>
                             <th>Player Name</th>
+                            <th>#</th>
                             <th>Status</th>
                             <th>Added</th>
                             <th>Removed</th>
@@ -1692,6 +1697,7 @@ async def get_rosters_admin(format: Optional[str] = Query(None, description="Res
                         <tr class="filter-row">
                             <td><input type="text" id="filterTeam" placeholder="Filter..." onkeyup="filterTable()"></td>
                             <td><input type="text" id="filterName" placeholder="Filter..." onkeyup="filterTable()"></td>
+                            <td></td>
                             <td><input type="text" id="filterStatus" placeholder="Filter..." onkeyup="filterTable()"></td>
                             <td></td>
                             <td></td>
@@ -1724,7 +1730,7 @@ async def get_teams_admin(format: Optional[str] = Query(None, description="Respo
     db = get_db()
 
     teams = db.execute("""
-        SELECT team_id, name, city, abbreviation, team_type, created_at
+        SELECT team_id, name, abbreviation, created_at
         FROM teams
         ORDER BY name
     """).fetchall()
@@ -1745,16 +1751,14 @@ async def get_teams_admin(format: Optional[str] = Query(None, description="Respo
 
     teams_html = ""
     if not teams:
-        teams_html = '<tr><td colspan="6" style="text-align: center; color: #999; padding: 40px;">No teams found.</td></tr>'
+        teams_html = '<tr><td colspan="4" style="text-align: center; color: #999; padding: 40px;">No teams found.</td></tr>'
     else:
         for t in teams:
             teams_html += f'''
             <tr>
                 <td class="team-abbrev">{t["team_id"]}</td>
                 <td>{t["name"] or "-"}</td>
-                <td>{t["city"] or "-"}</td>
                 <td>{t["abbreviation"] or "-"}</td>
-                <td>{t["team_type"] or "-"}</td>
                 <td class="timestamp">{format_timestamp(t["created_at"])}</td>
             </tr>
             '''
@@ -1771,28 +1775,22 @@ async def get_teams_admin(format: Optional[str] = Query(None, description="Respo
                 const filters = {{
                     teamId: document.getElementById('filterTeamId').value.toLowerCase(),
                     name: document.getElementById('filterName').value.toLowerCase(),
-                    city: document.getElementById('filterCity').value.toLowerCase(),
-                    abbrev: document.getElementById('filterAbbrev').value.toLowerCase(),
-                    teamType: document.getElementById('filterTeamType').value.toLowerCase()
+                    abbrev: document.getElementById('filterAbbrev').value.toLowerCase()
                 }};
 
                 const rows = document.querySelectorAll('#teamsTable tbody tr');
 
                 rows.forEach(row => {{
-                    if (row.cells.length < 5) return; // Skip empty row
+                    if (row.cells.length < 4) return; // Skip empty row
 
                     const teamId = row.cells[0].textContent.toLowerCase();
                     const name = row.cells[1].textContent.toLowerCase();
-                    const city = row.cells[2].textContent.toLowerCase();
-                    const abbrev = row.cells[3].textContent.toLowerCase();
-                    const teamType = row.cells[4].textContent.toLowerCase();
+                    const abbrev = row.cells[2].textContent.toLowerCase();
 
                     const match =
                         teamId.includes(filters.teamId) &&
                         name.includes(filters.name) &&
-                        city.includes(filters.city) &&
-                        abbrev.includes(filters.abbrev) &&
-                        teamType.includes(filters.teamType);
+                        abbrev.includes(filters.abbrev);
 
                     row.style.display = match ? '' : 'none';
                 }});
@@ -1809,17 +1807,13 @@ async def get_teams_admin(format: Optional[str] = Query(None, description="Respo
                         <tr>
                             <th>Team ID</th>
                             <th>Name</th>
-                            <th>City</th>
                             <th>Abbrev</th>
-                            <th>Type</th>
                             <th>Created</th>
                         </tr>
                         <tr class="filter-row">
                             <td><input type="text" id="filterTeamId" placeholder="Filter..." onkeyup="filterTable()"></td>
                             <td><input type="text" id="filterName" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td><input type="text" id="filterCity" placeholder="Filter..." onkeyup="filterTable()"></td>
                             <td><input type="text" id="filterAbbrev" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td><input type="text" id="filterTeamType" placeholder="Filter..." onkeyup="filterTable()"></td>
                             <td></td>
                         </tr>
                     </thead>
@@ -1848,9 +1842,7 @@ async def get_players_admin(format: Optional[str] = Query(None, description="Res
     db = get_db()
 
     players = db.execute("""
-        SELECT player_id, full_name, first_name, last_name,
-               shoots_catches, height_inches, weight_pounds,
-               birth_date, birth_city, birth_country, created_at
+        SELECT player_id, first_name, last_name, created_at
         FROM players
         ORDER BY last_name, first_name
     """).fetchall()
@@ -1871,24 +1863,14 @@ async def get_players_admin(format: Optional[str] = Query(None, description="Res
 
     players_html = ""
     if not players:
-        players_html = '<tr><td colspan="11" style="text-align: center; color: #999; padding: 40px;">No players found.</td></tr>'
+        players_html = '<tr><td colspan="4" style="text-align: center; color: #999; padding: 40px;">No players found.</td></tr>'
     else:
         for p in players:
-            height_str = f'{p["height_inches"] // 12}\'{p["height_inches"] % 12}"' if p["height_inches"] else "-"
-            weight_str = f'{p["weight_pounds"]} lbs' if p["weight_pounds"] else "-"
-
             players_html += f'''
             <tr>
                 <td class="player-id">{p["player_id"]}</td>
-                <td>{p["full_name"]}</td>
                 <td>{p["first_name"] or "-"}</td>
                 <td>{p["last_name"] or "-"}</td>
-                <td>{p["shoots_catches"] or "-"}</td>
-                <td>{height_str}</td>
-                <td>{weight_str}</td>
-                <td>{p["birth_date"] or "-"}</td>
-                <td>{p["birth_city"] or "-"}</td>
-                <td>{p["birth_country"] or "-"}</td>
                 <td class="timestamp">{format_timestamp(p["created_at"])}</td>
             </tr>
             '''
@@ -1904,35 +1886,23 @@ async def get_players_admin(format: Optional[str] = Query(None, description="Res
             function filterTable() {{
                 const filters = {{
                     playerId: document.getElementById('filterPlayerId').value.toLowerCase(),
-                    fullName: document.getElementById('filterFullName').value.toLowerCase(),
                     firstName: document.getElementById('filterFirstName').value.toLowerCase(),
-                    lastName: document.getElementById('filterLastName').value.toLowerCase(),
-                    shoots: document.getElementById('filterShoots').value.toLowerCase(),
-                    birthCity: document.getElementById('filterBirthCity').value.toLowerCase(),
-                    birthCountry: document.getElementById('filterBirthCountry').value.toLowerCase()
+                    lastName: document.getElementById('filterLastName').value.toLowerCase()
                 }};
 
                 const rows = document.querySelectorAll('#playersTable tbody tr');
 
                 rows.forEach(row => {{
-                    if (row.cells.length < 11) return; // Skip empty row
+                    if (row.cells.length < 4) return; // Skip empty row
 
                     const playerId = row.cells[0].textContent.toLowerCase();
-                    const fullName = row.cells[1].textContent.toLowerCase();
-                    const firstName = row.cells[2].textContent.toLowerCase();
-                    const lastName = row.cells[3].textContent.toLowerCase();
-                    const shoots = row.cells[4].textContent.toLowerCase();
-                    const birthCity = row.cells[8].textContent.toLowerCase();
-                    const birthCountry = row.cells[9].textContent.toLowerCase();
+                    const firstName = row.cells[1].textContent.toLowerCase();
+                    const lastName = row.cells[2].textContent.toLowerCase();
 
                     const match =
                         playerId.includes(filters.playerId) &&
-                        fullName.includes(filters.fullName) &&
                         firstName.includes(filters.firstName) &&
-                        lastName.includes(filters.lastName) &&
-                        shoots.includes(filters.shoots) &&
-                        birthCity.includes(filters.birthCity) &&
-                        birthCountry.includes(filters.birthCountry);
+                        lastName.includes(filters.lastName);
 
                     row.style.display = match ? '' : 'none';
                 }});
@@ -1952,28 +1922,14 @@ async def get_players_admin(format: Optional[str] = Query(None, description="Res
                     <thead>
                         <tr>
                             <th>Player ID</th>
-                            <th>Full Name</th>
                             <th>First Name</th>
                             <th>Last Name</th>
-                            <th>S/C</th>
-                            <th>Height</th>
-                            <th>Weight</th>
-                            <th>Birth Date</th>
-                            <th>Birth City</th>
-                            <th>Birth Country</th>
                             <th>Created</th>
                         </tr>
                         <tr class="filter-row">
                             <td><input type="text" id="filterPlayerId" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td><input type="text" id="filterFullName" placeholder="Filter..." onkeyup="filterTable()"></td>
                             <td><input type="text" id="filterFirstName" placeholder="Filter..." onkeyup="filterTable()"></td>
                             <td><input type="text" id="filterLastName" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td><input type="text" id="filterShoots" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td></td>
-                            <td></td>
-                            <td></td>
-                            <td><input type="text" id="filterBirthCity" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td><input type="text" id="filterBirthCountry" placeholder="Filter..." onkeyup="filterTable()"></td>
                             <td></td>
                         </tr>
                     </thead>

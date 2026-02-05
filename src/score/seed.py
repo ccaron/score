@@ -338,12 +338,18 @@ def seed_registrations(conn: sqlite3.Connection) -> int:
 
 
 def seed_rosters(conn: sqlite3.Connection) -> int:
-    """Add players to team rosters."""
+    """Add players to team rosters.
+
+    Creates realistic rosters with some players registered on multiple teams
+    in different divisions with different jersey numbers.
+    """
     now = int(time.time())
     count = 0
 
-    # Get all registrations
-    registrations = conn.execute("SELECT registration_id FROM team_registrations").fetchall()
+    # Get all registrations grouped by division
+    registrations = conn.execute("""
+        SELECT registration_id, division_id FROM team_registrations
+    """).fetchall()
 
     # Get all players
     players = conn.execute("SELECT player_id FROM players ORDER BY player_id").fetchall()
@@ -351,18 +357,70 @@ def seed_rosters(conn: sqlite3.Connection) -> int:
     if not players or not registrations:
         return 0
 
-    # Distribute players across teams (15 per team)
-    players_per_team = len(players) // len(registrations)
+    # Group registrations by division
+    regs_by_division = {}
+    for reg in registrations:
+        div_id = reg["division_id"]
+        if div_id not in regs_by_division:
+            regs_by_division[div_id] = []
+        regs_by_division[div_id].append(reg["registration_id"])
+
+    divisions = list(regs_by_division.keys())
+
+    # Reserve first 10 players as "multi-team" players who play in different divisions
+    multi_team_players = players[:min(10, len(players) // 4)]
+    regular_players = players[len(multi_team_players):]
+
+    # Add multi-team players to teams in different divisions with different jersey numbers
+    if len(divisions) >= 2:
+        for i, player_row in enumerate(multi_team_players):
+            player_id = player_row["player_id"]
+
+            # Pick 2 different divisions for this player
+            div1 = divisions[i % len(divisions)]
+            div2 = divisions[(i + 1) % len(divisions)]
+
+            # Pick a team from each division
+            if regs_by_division[div1] and regs_by_division[div2]:
+                reg1 = regs_by_division[div1][i % len(regs_by_division[div1])]
+                reg2 = regs_by_division[div2][i % len(regs_by_division[div2])]
+
+                # Different jersey numbers for each team
+                jersey1 = (i % 15) + 1  # 1-15
+                jersey2 = ((i + 7) % 15) + 1  # Different number
+
+                position = random.choice(POSITIONS)
+
+                try:
+                    conn.execute("""
+                        INSERT INTO roster_entries (registration_id, player_id, jersey_number, position, roster_status, added_at)
+                        VALUES (?, ?, ?, ?, 'active', ?)
+                    """, (reg1, player_id, jersey1, position, now))
+                    count += 1
+                except sqlite3.IntegrityError:
+                    pass
+
+                try:
+                    conn.execute("""
+                        INSERT INTO roster_entries (registration_id, player_id, jersey_number, position, roster_status, added_at)
+                        VALUES (?, ?, ?, ?, 'active', ?)
+                    """, (reg2, player_id, jersey2, position, now))
+                    count += 1
+                except sqlite3.IntegrityError:
+                    pass
+
+    # Distribute remaining regular players across teams (15 per team)
+    players_per_team = max(1, len(regular_players) // len(registrations))
     player_idx = 0
 
     for reg in registrations:
         reg_id = reg["registration_id"]
 
         for jersey_num in range(1, min(players_per_team + 1, 16)):
-            if player_idx >= len(players):
+            if player_idx >= len(regular_players):
                 break
 
-            player_id = players[player_idx]["player_id"]
+            player_id = regular_players[player_idx]["player_id"]
             position = random.choice(POSITIONS)
 
             try:
