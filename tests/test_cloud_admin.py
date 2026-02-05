@@ -684,3 +684,141 @@ def test_stats_decrease_after_goal_cancellation(client, temp_db):
     assert marchand_assists["assists"] == 1
 
 
+def test_points_leaderboard(client, temp_db):
+    """Test that points (goals + assists) are correctly aggregated in stats page."""
+    import json
+
+    # Set up test data
+    conn = sqlite3.connect(temp_db)
+    current_time = int(time.time())
+
+    # Create league, season, division
+    conn.execute("""
+        INSERT INTO leagues (league_id, name, created_at)
+        VALUES ('league-1', 'Test League', ?)
+    """, (current_time,))
+
+    conn.execute("""
+        INSERT INTO seasons (season_id, name, start_date, created_at)
+        VALUES ('season-1', '2025-2026', '2025-09-01', ?)
+    """, (current_time,))
+
+    conn.execute("""
+        INSERT INTO divisions (division_id, name, created_at)
+        VALUES ('div-1', 'Division A', ?)
+    """, (current_time,))
+
+    # Create team registrations
+    conn.execute("""
+        INSERT INTO team_registrations (registration_id, team_id, league_id, season_id, division_id, registered_at)
+        VALUES ('reg-home', 'team-bruins', 'league-1', 'season-1', 'div-1', ?)
+    """, (current_time,))
+
+    conn.execute("""
+        INSERT INTO team_registrations (registration_id, team_id, league_id, season_id, division_id, registered_at)
+        VALUES ('reg-away', 'team-habs', 'league-1', 'season-1', 'div-1', ?)
+    """, (current_time,))
+
+    # Create rink and game
+    conn.execute("""
+        INSERT INTO rinks (rink_id, name, created_at)
+        VALUES ('rink-1', 'Test Arena', ?)
+    """, (current_time,))
+
+    conn.execute("""
+        INSERT INTO games (game_id, rink_id, home_team, away_team, home_registration_id, away_registration_id, start_time, period_length_min, created_at)
+        VALUES ('game-1', 'rink-1', 'Bruins', 'Canadiens', 'reg-home', 'reg-away', '2025-09-15T19:00:00Z', 20, ?)
+    """, (current_time,))
+
+    # Create players
+    conn.execute("""
+        INSERT INTO players (player_id, full_name, first_name, last_name, jersey_number, created_at)
+        VALUES
+            (8471214, 'Brad Marchand', 'Brad', 'Marchand', 63, ?),
+            (8474564, 'David Pastrnak', 'David', 'Pastrnak', 88, ?),
+            (8475791, 'Charlie McAvoy', 'Charlie', 'McAvoy', 73, ?)
+    """, (current_time, current_time, current_time))
+
+    # Create goal events with assists
+    # Goal 1: Marchand scores (1G), Pastrnak primary assist (1A), McAvoy secondary assist (1A)
+    conn.execute("""
+        INSERT INTO received_events (game_id, device_id, session_id, event_id, seq, type, ts_local, payload, received_at)
+        VALUES ('game-1', 'dev-1', 'session-1', 'evt-1', 1, 'GOAL_HOME', '2025-09-15T19:15:00Z', ?, ?)
+    """, (json.dumps({
+        "goal_id": "goal-1",
+        "value": 1,
+        "time": "15:00",
+        "scorer_id": "8471214",
+        "assist1_id": "8474564",
+        "assist2_id": "8475791"
+    }), current_time))
+
+    # Goal 2: Pastrnak scores (1G), Marchand primary assist (1A)
+    conn.execute("""
+        INSERT INTO received_events (game_id, device_id, session_id, event_id, seq, type, ts_local, payload, received_at)
+        VALUES ('game-1', 'dev-1', 'session-1', 'evt-2', 2, 'GOAL_HOME', '2025-09-15T19:25:00Z', ?, ?)
+    """, (json.dumps({
+        "goal_id": "goal-2",
+        "value": 1,
+        "time": "10:00",
+        "scorer_id": "8474564",
+        "assist1_id": "8471214",
+        "assist2_id": None
+    }), current_time))
+
+    # Goal 3: Marchand scores (1G), Pastrnak primary assist (1A), McAvoy secondary assist (1A)
+    conn.execute("""
+        INSERT INTO received_events (game_id, device_id, session_id, event_id, seq, type, ts_local, payload, received_at)
+        VALUES ('game-1', 'dev-1', 'session-1', 'evt-3', 3, 'GOAL_HOME', '2025-09-15T19:35:00Z', ?, ?)
+    """, (json.dumps({
+        "goal_id": "goal-3",
+        "value": 1,
+        "time": "5:00",
+        "scorer_id": "8471214",
+        "assist1_id": "8474564",
+        "assist2_id": "8475791"
+    }), current_time))
+
+    conn.commit()
+    conn.close()
+
+    # Query stats page with JSON format
+    response = client.get("/admin/stats?format=json")
+
+    assert response.status_code == 200
+    data = response.json()
+
+    # Check points leaderboard
+    points = data["points"]
+    assert len(points) > 0
+
+    # Marchand should have 3 points (2 goals + 1 assist) - ranked first due to more goals
+    marchand = next((p for p in points if p["player_id"] == "8471214"), None)
+    assert marchand is not None
+    assert marchand["points"] == 3
+    assert marchand["goals"] == 2
+    assert marchand["assists"] == 1
+    assert marchand["full_name"] == "Brad Marchand"
+
+    # Pastrnak should have 3 points (1 goal + 2 assists) - ranked second (fewer goals than Marchand)
+    pastrnak = next((p for p in points if p["player_id"] == "8474564"), None)
+    assert pastrnak is not None
+    assert pastrnak["points"] == 3
+    assert pastrnak["goals"] == 1
+    assert pastrnak["assists"] == 2
+    assert pastrnak["full_name"] == "David Pastrnak"
+
+    # McAvoy should have 2 points (0 goals + 2 assists)
+    mcavoy = next((p for p in points if p["player_id"] == "8475791"), None)
+    assert mcavoy is not None
+    assert mcavoy["points"] == 2
+    assert mcavoy["goals"] == 0
+    assert mcavoy["assists"] == 2
+    assert mcavoy["full_name"] == "Charlie McAvoy"
+
+    # Verify ordering - ties broken by goals (Marchand 2G > Pastrnak 1G)
+    assert points[0]["player_id"] == "8471214"  # Marchand first (3pts, 2G)
+    assert points[1]["player_id"] == "8474564"  # Pastrnak second (3pts, 1G)
+
+
+

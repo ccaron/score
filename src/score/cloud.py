@@ -3415,6 +3415,86 @@ def query_top_assists(db, league_id=None, season_id=None, division_id=None, fina
     return [dict(r) for r in rows]
 
 
+def query_top_points(db, league_id=None, season_id=None, division_id=None, final_only=True, limit=20):
+    """Query top point leaders (goals + assists) from events, properly filtered by team context."""
+
+    # Build WHERE clause for team registration filters
+    filter_conditions = []
+    if league_id:
+        filter_conditions.append(f"tr.league_id = '{league_id}'")
+    if season_id:
+        filter_conditions.append(f"tr.season_id = '{season_id}'")
+    if division_id:
+        filter_conditions.append(f"tr.division_id = '{division_id}'")
+
+    team_filter = f"AND ({' AND '.join(filter_conditions)})" if filter_conditions else ""
+
+    # Combine goals and assists in a single query
+    query = f"""
+        SELECT
+            all_points.player_id,
+            p.full_name,
+            SUM(points) as points,
+            SUM(CASE WHEN point_type = 'goal' THEN points ELSE 0 END) as goals,
+            SUM(CASE WHEN point_type = 'assist' THEN points ELSE 0 END) as assists
+        FROM (
+            -- Goals
+            SELECT
+                json_extract(e.payload, '$.scorer_id') as player_id,
+                e.game_id,
+                e.type,
+                json_extract(e.payload, '$.value') as points,
+                'goal' as point_type
+            FROM received_events e
+            WHERE (e.type = 'GOAL_HOME' OR e.type = 'GOAL_AWAY')
+                AND json_extract(e.payload, '$.scorer_id') IS NOT NULL
+
+            UNION ALL
+
+            -- Primary assists
+            SELECT
+                json_extract(e.payload, '$.assist1_id') as player_id,
+                e.game_id,
+                e.type,
+                json_extract(e.payload, '$.value') as points,
+                'assist' as point_type
+            FROM received_events e
+            WHERE (e.type = 'GOAL_HOME' OR e.type = 'GOAL_AWAY')
+                AND json_extract(e.payload, '$.assist1_id') IS NOT NULL
+
+            UNION ALL
+
+            -- Secondary assists
+            SELECT
+                json_extract(e.payload, '$.assist2_id') as player_id,
+                e.game_id,
+                e.type,
+                json_extract(e.payload, '$.value') as points,
+                'assist' as point_type
+            FROM received_events e
+            WHERE (e.type = 'GOAL_HOME' OR e.type = 'GOAL_AWAY')
+                AND json_extract(e.payload, '$.assist2_id') IS NOT NULL
+        ) all_points
+        JOIN games g ON all_points.game_id = g.game_id
+        LEFT JOIN team_registrations tr ON (
+            CASE
+                WHEN all_points.type = 'GOAL_HOME' THEN g.home_registration_id = tr.registration_id
+                WHEN all_points.type = 'GOAL_AWAY' THEN g.away_registration_id = tr.registration_id
+            END
+        )
+        LEFT JOIN players p ON all_points.player_id = p.player_id
+        WHERE 1=1
+            {team_filter}
+        GROUP BY all_points.player_id, p.full_name
+        HAVING points > 0
+        ORDER BY points DESC, goals DESC
+        LIMIT {limit}
+    """
+
+    rows = db.execute(query).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ---------- Admin: Stats Page ----------
 @app.get("/admin/stats")
 async def stats_page(
@@ -3437,7 +3517,7 @@ async def stats_page(
     # Query player stats
     scorers = query_top_scorers(db, league_id, season_id, division_id, final_only)
     assists_leaders = query_top_assists(db, league_id, season_id, division_id, final_only)
-    points_leaders = []  # TODO: implement
+    points_leaders = query_top_points(db, league_id, season_id, division_id, final_only)
     penalty_leaders = []  # TODO: implement
     standings = []  # TODO: implement
 
@@ -3497,30 +3577,23 @@ async def stats_page(
         </div>
 
         <!-- Leaderboards -->
-        <div class="stats-grid">
-            <div class="stat-card">
-                <h2>Top Scorers</h2>
-                {'<table><thead><tr><th>Player</th><th>Goals</th></tr></thead><tbody>' if scorers else '<p style="color: #666; font-size: 13px;">No goals found</p>'}
-                {''.join(f'<tr><td>{s["full_name"] or "Unknown Player"}</td><td><strong>{s["goals"]}</strong></td></tr>' for s in scorers)}
-                {'</tbody></table>' if scorers else ''}
-            </div>
-
-            <div class="stat-card">
-                <h2>Top Assists</h2>
-                {'<table><thead><tr><th>Player</th><th>Assists</th></tr></thead><tbody>' if assists_leaders else '<p style="color: #666; font-size: 13px;">No assists found</p>'}
-                {''.join(f'<tr><td>{s["full_name"] or "Unknown Player"}</td><td><strong>{s["assists"]}</strong></td></tr>' for s in assists_leaders)}
-                {'</tbody></table>' if assists_leaders else ''}
-            </div>
-
-            <div class="stat-card">
-                <h2>Top Points</h2>
-                <p style="color: #666; font-size: 13px;">Coming soon</p>
-            </div>
-
-            <div class="stat-card">
-                <h2>Penalty Leaders</h2>
-                <p style="color: #666; font-size: 13px;">Coming soon</p>
-            </div>
+        <div class="content">
+            <h2>Player Statistics</h2>
+            {'<p style="color: #666; font-size: 13px;">No statistics found</p>' if not points_leaders else f'''
+            <table id="statsTable">
+                <thead>
+                    <tr>
+                        <th>Player</th>
+                        <th class="sortable" onclick="sortTable(1)" style="cursor: pointer;">Points ▼</th>
+                        <th class="sortable" onclick="sortTable(2)" style="cursor: pointer;">Goals</th>
+                        <th class="sortable" onclick="sortTable(3)" style="cursor: pointer;">Assists</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {''.join(f'<tr><td>{p["full_name"] or "Unknown Player"}</td><td><strong>{p["points"]}</strong></td><td>{p["goals"]}</td><td>{p["assists"]}</td></tr>' for p in points_leaders)}
+                </tbody>
+            </table>
+            '''}
         </div>
 
         <!-- Team Standings -->
@@ -3531,6 +3604,52 @@ async def stats_page(
     </div>
 
     <script>
+    let sortColumn = 1;  // Default sort by Points (column 1)
+    let sortAscending = false;  // Default descending
+
+    function sortTable(column) {{
+        const table = document.getElementById('statsTable');
+        const tbody = table.getElementsByTagName('tbody')[0];
+        const rows = Array.from(tbody.getElementsByTagName('tr'));
+
+        // Toggle direction if clicking same column
+        if (sortColumn === column) {{
+            sortAscending = !sortAscending;
+        }} else {{
+            sortColumn = column;
+            sortAscending = false;  // New column defaults to descending
+        }}
+
+        // Sort rows
+        rows.sort((a, b) => {{
+            let aVal = a.getElementsByTagName('td')[column].textContent.trim();
+            let bVal = b.getElementsByTagName('td')[column].textContent.trim();
+
+            // Convert to numbers for numeric columns
+            if (column > 0) {{
+                aVal = parseInt(aVal) || 0;
+                bVal = parseInt(bVal) || 0;
+            }}
+
+            if (aVal === bVal) return 0;
+            if (sortAscending) {{
+                return aVal > bVal ? 1 : -1;
+            }} else {{
+                return aVal < bVal ? 1 : -1;
+            }}
+        }});
+
+        // Re-append rows in sorted order
+        rows.forEach(row => tbody.appendChild(row));
+
+        // Update header indicators
+        const headers = table.getElementsByTagName('th');
+        for (let i = 1; i < headers.length; i++) {{
+            const arrow = i === column ? (sortAscending ? ' ▲' : ' ▼') : '';
+            headers[i].textContent = headers[i].textContent.replace(/ [▲▼]/, '') + arrow;
+        }}
+    }}
+
     function applyFilters() {{
         const league = document.getElementById('leagueFilter').value;
         const season = document.getElementById('seasonFilter').value;
