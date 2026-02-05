@@ -155,6 +155,39 @@ def temp_db():
         )
     """)
 
+    # Teams table
+    conn.execute("""
+        CREATE TABLE teams (
+            team_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            city TEXT,
+            abbreviation TEXT,
+            team_type TEXT,
+            logo_url TEXT,
+            primary_color TEXT,
+            secondary_color TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+
+    # Roster entries table
+    conn.execute("""
+        CREATE TABLE roster_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            registration_id TEXT NOT NULL,
+            player_id INTEGER NOT NULL,
+            jersey_number INTEGER,
+            position TEXT,
+            roster_status TEXT DEFAULT 'active',
+            is_captain INTEGER DEFAULT 0,
+            is_alternate INTEGER DEFAULT 0,
+            added_at INTEGER NOT NULL,
+            removed_at INTEGER,
+            FOREIGN KEY (registration_id) REFERENCES team_registrations(registration_id),
+            FOREIGN KEY (player_id) REFERENCES players(player_id)
+        )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -448,6 +481,14 @@ def test_assists_leaderboard(client, temp_db):
         VALUES ('div-1', 'Division A', ?)
     """, (current_time,))
 
+    # Create teams
+    conn.execute("""
+        INSERT INTO teams (team_id, name, city, abbreviation, created_at)
+        VALUES
+            ('team-bruins', 'Bruins', 'Boston', 'BOS', ?),
+            ('team-habs', 'Canadiens', 'Montreal', 'MTL', ?)
+    """, (current_time, current_time))
+
     # Create team registrations
     conn.execute("""
         INSERT INTO team_registrations (registration_id, team_id, league_id, season_id, division_id, registered_at)
@@ -585,6 +626,14 @@ def test_stats_decrease_after_goal_cancellation(client, temp_db):
         VALUES ('div-1', 'Division A', ?)
     """, (current_time,))
 
+    # Create teams
+    conn.execute("""
+        INSERT INTO teams (team_id, name, city, abbreviation, created_at)
+        VALUES
+            ('team-bruins', 'Bruins', 'Boston', 'BOS', ?),
+            ('team-habs', 'Canadiens', 'Montreal', 'MTL', ?)
+    """, (current_time, current_time))
+
     # Create team registrations
     conn.execute("""
         INSERT INTO team_registrations (registration_id, team_id, league_id, season_id, division_id, registered_at)
@@ -708,6 +757,14 @@ def test_points_leaderboard(client, temp_db):
         VALUES ('div-1', 'Division A', ?)
     """, (current_time,))
 
+    # Create teams
+    conn.execute("""
+        INSERT INTO teams (team_id, name, city, abbreviation, created_at)
+        VALUES
+            ('team-bruins', 'Bruins', 'Boston', 'BOS', ?),
+            ('team-habs', 'Canadiens', 'Montreal', 'MTL', ?)
+    """, (current_time, current_time))
+
     # Create team registrations
     conn.execute("""
         INSERT INTO team_registrations (registration_id, team_id, league_id, season_id, division_id, registered_at)
@@ -737,6 +794,15 @@ def test_points_leaderboard(client, temp_db):
             (8471214, 'Brad Marchand', 'Brad', 'Marchand', 63, ?),
             (8474564, 'David Pastrnak', 'David', 'Pastrnak', 88, ?),
             (8475791, 'Charlie McAvoy', 'Charlie', 'McAvoy', 73, ?)
+    """, (current_time, current_time, current_time))
+
+    # Add roster entries with jersey numbers
+    conn.execute("""
+        INSERT INTO roster_entries (registration_id, player_id, jersey_number, position, added_at)
+        VALUES
+            ('reg-home', 8471214, 63, 'LW', ?),
+            ('reg-home', 8474564, 88, 'RW', ?),
+            ('reg-home', 8475791, 73, 'D', ?)
     """, (current_time, current_time, current_time))
 
     # Create goal events with assists
@@ -799,6 +865,11 @@ def test_points_leaderboard(client, temp_db):
     assert marchand["goals"] == 2
     assert marchand["assists"] == 1
     assert marchand["full_name"] == "Brad Marchand"
+    assert marchand["team_abbrev"] == "BOS"
+    assert marchand["jersey_number"] == 63
+    assert marchand["league_name"] == "Test League"
+    assert marchand["season_name"] == "2025-2026"
+    assert marchand["division_name"] == "Division A"
 
     # Pastrnak should have 3 points (1 goal + 2 assists) - ranked second (fewer goals than Marchand)
     pastrnak = next((p for p in points if p["player_id"] == "8474564"), None)
@@ -807,6 +878,11 @@ def test_points_leaderboard(client, temp_db):
     assert pastrnak["goals"] == 1
     assert pastrnak["assists"] == 2
     assert pastrnak["full_name"] == "David Pastrnak"
+    assert pastrnak["team_abbrev"] == "BOS"
+    assert pastrnak["jersey_number"] == 88
+    assert pastrnak["league_name"] == "Test League"
+    assert pastrnak["season_name"] == "2025-2026"
+    assert pastrnak["division_name"] == "Division A"
 
     # McAvoy should have 2 points (0 goals + 2 assists)
     mcavoy = next((p for p in points if p["player_id"] == "8475791"), None)
@@ -815,6 +891,11 @@ def test_points_leaderboard(client, temp_db):
     assert mcavoy["goals"] == 0
     assert mcavoy["assists"] == 2
     assert mcavoy["full_name"] == "Charlie McAvoy"
+    assert mcavoy["team_abbrev"] == "BOS"
+    assert mcavoy["jersey_number"] == 73
+    assert mcavoy["league_name"] == "Test League"
+    assert mcavoy["season_name"] == "2025-2026"
+    assert mcavoy["division_name"] == "Division A"
 
     # Verify ordering - ties broken by goals (Marchand 2G > Pastrnak 1G)
     assert points[0]["player_id"] == "8471214"  # Marchand first (3pts, 2G)

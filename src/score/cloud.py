@@ -3434,6 +3434,11 @@ def query_top_points(db, league_id=None, season_id=None, division_id=None, final
         SELECT
             all_points.player_id,
             p.full_name,
+            MAX(re.jersey_number) as jersey_number,
+            MAX(t.abbreviation) as team_abbrev,
+            MAX(l.name) as league_name,
+            MAX(s.name) as season_name,
+            MAX(d.name) as division_name,
             SUM(points) as points,
             SUM(CASE WHEN point_type = 'goal' THEN points ELSE 0 END) as goals,
             SUM(CASE WHEN point_type = 'assist' THEN points ELSE 0 END) as assists
@@ -3482,6 +3487,13 @@ def query_top_points(db, league_id=None, season_id=None, division_id=None, final
                 WHEN all_points.type = 'GOAL_AWAY' THEN g.away_registration_id = tr.registration_id
             END
         )
+        LEFT JOIN teams t ON tr.team_id = t.team_id
+        LEFT JOIN leagues l ON tr.league_id = l.league_id
+        LEFT JOIN seasons s ON tr.season_id = s.season_id
+        LEFT JOIN divisions d ON tr.division_id = d.division_id
+        LEFT JOIN roster_entries re ON tr.registration_id = re.registration_id
+            AND all_points.player_id = re.player_id
+            AND re.removed_at IS NULL
         LEFT JOIN players p ON all_points.player_id = p.player_id
         WHERE 1=1
             {team_filter}
@@ -3508,11 +3520,6 @@ async def stats_page(
     from fastapi.responses import HTMLResponse
 
     db = get_db()
-
-    # Get filter options
-    leagues = db.execute("SELECT league_id, name FROM leagues ORDER BY name").fetchall()
-    seasons = db.execute("SELECT season_id, name FROM seasons ORDER BY start_date DESC").fetchall()
-    divisions = db.execute("SELECT division_id, name FROM divisions ORDER BY name").fetchall()
 
     # Query player stats
     scorers = query_top_scorers(db, league_id, season_id, division_id, final_only)
@@ -3545,36 +3552,7 @@ async def stats_page(
     <div class="container wide">
         <h1>League Statistics</h1>
 
-        <p class="hint">Player and team statistics computed from game events. Use filters to narrow by league, season, or division.</p>
-
-        <!-- Filters -->
-        <div class="filters">
-            <label>League:
-                <select id="leagueFilter" onchange="applyFilters()">
-                    <option value="">All Leagues</option>
-                    {''.join(f'<option value="{dict(l)["league_id"]}" {"selected" if dict(l)["league_id"] == league_id else ""}>{dict(l)["name"]}</option>' for l in leagues)}
-                </select>
-            </label>
-
-            <label>Season:
-                <select id="seasonFilter" onchange="applyFilters()">
-                    <option value="">All Seasons</option>
-                    {''.join(f'<option value="{dict(s)["season_id"]}" {"selected" if dict(s)["season_id"] == season_id else ""}>{dict(s)["name"]}</option>' for s in seasons)}
-                </select>
-            </label>
-
-            <label>Division:
-                <select id="divisionFilter" onchange="applyFilters()">
-                    <option value="">All Divisions</option>
-                    {''.join(f'<option value="{dict(d)["division_id"]}" {"selected" if dict(d)["division_id"] == division_id else ""}>{dict(d)["name"]}</option>' for d in divisions)}
-                </select>
-            </label>
-
-            <label>
-                <input type="checkbox" id="finalOnly" {"checked" if final_only else ""} onchange="applyFilters()">
-                Final games only
-            </label>
-        </div>
+        <p class="hint">Player and team statistics computed from game events. Type in column headers to filter.</p>
 
         <!-- Leaderboards -->
         <div class="content">
@@ -3583,14 +3561,30 @@ async def stats_page(
             <table id="statsTable">
                 <thead>
                     <tr>
+                        <th>League</th>
+                        <th>Season</th>
+                        <th>Division</th>
+                        <th>Team</th>
                         <th>Player</th>
-                        <th class="sortable" onclick="sortTable(1)" style="cursor: pointer;">Points ▼</th>
-                        <th class="sortable" onclick="sortTable(2)" style="cursor: pointer;">Goals</th>
-                        <th class="sortable" onclick="sortTable(3)" style="cursor: pointer;">Assists</th>
+                        <th>#</th>
+                        <th class="sortable" onclick="sortTable(6)" style="cursor: pointer;">Goals</th>
+                        <th class="sortable" onclick="sortTable(7)" style="cursor: pointer;">Assists</th>
+                        <th class="sortable" onclick="sortTable(8)" style="cursor: pointer;">Points ▼</th>
+                    </tr>
+                    <tr class="filter-row">
+                        <td><input type="text" id="filterLeague" placeholder="Filter..." onkeyup="filterStatsTable()"></td>
+                        <td><input type="text" id="filterSeason" placeholder="Filter..." onkeyup="filterStatsTable()"></td>
+                        <td><input type="text" id="filterDivision" placeholder="Filter..." onkeyup="filterStatsTable()"></td>
+                        <td><input type="text" id="filterTeam" placeholder="Filter..." onkeyup="filterStatsTable()"></td>
+                        <td><input type="text" id="filterPlayer" placeholder="Filter..." onkeyup="filterStatsTable()"></td>
+                        <td></td>
+                        <td></td>
+                        <td></td>
+                        <td></td>
                     </tr>
                 </thead>
                 <tbody>
-                    {''.join(f'<tr><td>{p["full_name"] or "Unknown Player"}</td><td><strong>{p["points"]}</strong></td><td>{p["goals"]}</td><td>{p["assists"]}</td></tr>' for p in points_leaders)}
+                    {''.join(f'<tr><td>{p["league_name"] or "-"}</td><td>{p["season_name"] or "-"}</td><td>{p["division_name"] or "-"}</td><td>{p["team_abbrev"] or "-"}</td><td>{p["full_name"] or "Unknown Player"}</td><td>{p["jersey_number"] or "-"}</td><td>{p["goals"]}</td><td>{p["assists"]}</td><td><strong>{p["points"]}</strong></td></tr>' for p in points_leaders)}
                 </tbody>
             </table>
             '''}
@@ -3604,8 +3598,41 @@ async def stats_page(
     </div>
 
     <script>
-    let sortColumn = 1;  // Default sort by Points (column 1)
+    let sortColumn = 8;  // Default sort by Points (column 8)
     let sortAscending = false;  // Default descending
+
+    function filterStatsTable() {{
+        const filters = {{
+            league: document.getElementById('filterLeague').value.toLowerCase(),
+            season: document.getElementById('filterSeason').value.toLowerCase(),
+            division: document.getElementById('filterDivision').value.toLowerCase(),
+            team: document.getElementById('filterTeam').value.toLowerCase(),
+            player: document.getElementById('filterPlayer').value.toLowerCase()
+        }};
+
+        const tbody = document.querySelector('#statsTable tbody');
+        const rows = tbody.getElementsByTagName('tr');
+
+        for (let i = 0; i < rows.length; i++) {{
+            const cells = rows[i].getElementsByTagName('td');
+            if (cells.length < 9) continue;
+
+            const league = cells[0].textContent.toLowerCase();
+            const season = cells[1].textContent.toLowerCase();
+            const division = cells[2].textContent.toLowerCase();
+            const team = cells[3].textContent.toLowerCase();
+            const player = cells[4].textContent.toLowerCase();
+
+            const match =
+                league.includes(filters.league) &&
+                season.includes(filters.season) &&
+                division.includes(filters.division) &&
+                team.includes(filters.team) &&
+                player.includes(filters.player);
+
+            rows[i].style.display = match ? '' : 'none';
+        }}
+    }}
 
     function sortTable(column) {{
         const table = document.getElementById('statsTable');
@@ -3625,8 +3652,9 @@ async def stats_page(
             let aVal = a.getElementsByTagName('td')[column].textContent.trim();
             let bVal = b.getElementsByTagName('td')[column].textContent.trim();
 
-            // Convert to numbers for numeric columns
-            if (column > 0) {{
+            // Convert to numbers for numeric columns (jersey, goals, assists, points)
+            // Column 5 = jersey, columns 6-8 = stats
+            if (column === 5 || column >= 6) {{
                 aVal = parseInt(aVal) || 0;
                 bVal = parseInt(bVal) || 0;
             }}
@@ -3644,25 +3672,10 @@ async def stats_page(
 
         // Update header indicators
         const headers = table.getElementsByTagName('th');
-        for (let i = 1; i < headers.length; i++) {{
+        for (let i = 6; i < headers.length; i++) {{  // Only update sortable columns (6-8: Goals, Assists, Points)
             const arrow = i === column ? (sortAscending ? ' ▲' : ' ▼') : '';
             headers[i].textContent = headers[i].textContent.replace(/ [▲▼]/, '') + arrow;
         }}
-    }}
-
-    function applyFilters() {{
-        const league = document.getElementById('leagueFilter').value;
-        const season = document.getElementById('seasonFilter').value;
-        const division = document.getElementById('divisionFilter').value;
-        const finalOnly = document.getElementById('finalOnly').checked;
-
-        const params = new URLSearchParams();
-        if (league) params.set('league_id', league);
-        if (season) params.set('season_id', season);
-        if (division) params.set('division_id', division);
-        params.set('final_only', finalOnly);
-
-        window.location.href = '/admin/stats?' + params.toString();
     }}
     </script>
 </body>
