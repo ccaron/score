@@ -38,6 +38,15 @@ uv run score-cloud
 uv run score-push-events
 ```
 
+### Schedule Generation
+```bash
+# Generate a schedule from YAML config
+make schedule CONFIG=examples/schedule.yaml
+
+# Or directly
+uv run score-schedule examples/schedule.yaml
+```
+
 ### Docker
 ```bash
 make run_container
@@ -93,25 +102,35 @@ Uses **queue-based logging** to coordinate output from multiple processes:
 - `src/score/app.py` - Main FastAPI app, WebSocket server, game loop, HTML UI
 - `src/score/state.py` - **Shared** event replay logic (used by both app and cloud)
 - `src/score/pusher.py` - Event delivery process (cloud pusher)
+- `src/score/db.py` - Local database utilities and initialization
 
 ### Cloud API
 - `src/score/cloud.py` - Cloud API simulator with schedule management, event reception, device management
-- Database: `cloud.db` (rinks, games, devices, received_events, heartbeats)
+- `src/score/schema.py` - Cloud database schema definitions (all table DDL, indexes, default data)
+- `src/score/seed.py` - Database seeding functions for development/testing
+- Database: `cloud.db`
 
-### Configuration & Utilities
+### Models & Configuration
+- `src/score/models.py` - Shared Pydantic models for API requests/responses
 - `src/score/config.py` - Database paths, cloud API URL
 - `src/score/device.py` - Device ID generation from MAC address
 - `src/score/log.py` - Queue-based logging setup
+
+### Schedule Generation
+- `src/score/scheduler.py` - Schedule generation using OR-Tools CP-SAT solver
+- `examples/schedule.yaml` - Example schedule configuration
 
 ### Testing
 Tests use pytest and are organized by feature:
 - `tests/test_cli.py` - Main app functionality
 - `tests/test_goals.py` - Goal scoring, cancellation, and attribution
 - `tests/test_state.py` - Event replay logic
+- `tests/test_replay_determinism.py` - Event replay determinism verification
 - `tests/test_event_pusher.py` - Event delivery
 - `tests/test_pusher_errors.py` - Pusher error handling
 - `tests/test_cloud_admin.py` - Cloud API admin endpoints
 - `tests/test_schedule.py` - Schedule download
+- `tests/test_scheduler.py` - Schedule generation
 - `tests/test_multi_game.py` - Multi-game scenarios
 - `tests/test_log.py` - Logging infrastructure
 
@@ -141,103 +160,39 @@ CREATE TABLE deliveries (
 
 ### Cloud Database (`cloud.db`)
 
-```sql
--- Rinks/venues
-CREATE TABLE rinks (
-    rink_id TEXT PRIMARY KEY,
-    name TEXT
-);
+The cloud database schema is defined in `src/score/schema.py`. Key entity groups:
 
--- Devices (mini PCs)
-CREATE TABLE devices (
-    device_id TEXT PRIMARY KEY,  -- Generated from MAC address
-    rink_id TEXT,
-    sheet_name TEXT,
-    device_name TEXT,
-    is_assigned INTEGER,
-    first_seen_at INTEGER,
-    last_seen_at INTEGER
-);
+**Permanent Entities:**
+- `leagues` - Organizations that run competitions
+- `seasons` - Time periods for competitions
+- `divisions` - Team groupings (supports nesting via `parent_division_id`)
+- `tournaments` - Time-bound events (alternative to league+season)
+- `teams` - Team organizations
+- `players` - Individual athletes
+- `rinks` - Physical venues
+- `rink_sheets` - Ice surfaces within a rink
+- `officials` - Referees and linesmen
 
--- Game schedules
-CREATE TABLE games (
-    game_id TEXT PRIMARY KEY,
-    rink_id TEXT,
-    home_team TEXT,
-    away_team TEXT,
-    home_abbrev TEXT,           -- Team abbreviation (e.g., "TOR")
-    away_abbrev TEXT,
-    start_time TEXT,
-    period_length_min INTEGER
-);
+**Rule Configuration:**
+- `rule_sets` - League-specific rules (period length, checking rules, point systems)
+- `rule_set_infractions` - Penalty definitions per rule set
 
--- Events uploaded from devices
-CREATE TABLE received_events (
-    id INTEGER PRIMARY KEY,
-    game_id TEXT,
-    device_id TEXT,
-    event_id TEXT UNIQUE,       -- Idempotency key
-    seq INTEGER,
-    type TEXT,
-    payload TEXT,
-    received_at INTEGER
-);
+**Temporal Participation:**
+- `league_seasons` - League operates during a season
+- `team_registrations` - Team competing in a context (THE ROSTER anchor)
+- `roster_entries` - Player on a team's roster with temporal tracking (`added_at`/`removed_at`)
+- `spare_players` - Players available to sub
 
--- Device heartbeats
-CREATE TABLE heartbeats (
-    device_id TEXT,
-    ts_local TEXT,
-    current_game_id TEXT,
-    game_state TEXT,
-    received_at INTEGER
-);
+**Games & Events:**
+- `games` - Scheduled games with venue, teams, timing
+- `events` - Append-only event log per game
+- `game_officials` - Officials assigned to games
 
--- Schedule version tracking
-CREATE TABLE schedule_versions (
-    rink_id TEXT PRIMARY KEY,
-    version TEXT NOT NULL,
-    updated_at INTEGER NOT NULL
-);
-
--- Players (master data from NHL API)
-CREATE TABLE players (
-    player_id INTEGER PRIMARY KEY,
-    full_name TEXT NOT NULL,
-    first_name TEXT NOT NULL,
-    last_name TEXT NOT NULL,
-    jersey_number INTEGER,
-    position TEXT,              -- C, LW, RW, D, G
-    shoots_catches TEXT,        -- L, R
-    height_inches INTEGER,
-    weight_pounds INTEGER,
-    birth_date TEXT,
-    birth_city TEXT,
-    birth_country TEXT,
-    created_at INTEGER NOT NULL
-);
-
--- Teams (master data)
-CREATE TABLE teams (
-    team_abbrev TEXT PRIMARY KEY,  -- e.g., "TOR", "MTL"
-    city TEXT NOT NULL,
-    team_name TEXT NOT NULL,
-    full_name TEXT NOT NULL,
-    conference TEXT,
-    division TEXT,
-    created_at INTEGER NOT NULL
-);
-
--- Team rosters (temporal tracking)
-CREATE TABLE team_rosters (
-    id INTEGER PRIMARY KEY,
-    player_id INTEGER NOT NULL,
-    team_abbrev TEXT NOT NULL,
-    roster_status TEXT NOT NULL,   -- Y (active), I (injured), etc.
-    added_at INTEGER NOT NULL,     -- When player joined team
-    removed_at INTEGER,            -- When player left (NULL if current)
-    UNIQUE(player_id, team_abbrev, added_at)
-);
-```
+**Device Management:**
+- `devices` - Registered scoreboard devices
+- `heartbeats` - Device status updates
+- `received_events` - Events uploaded from devices
+- `schedule_versions` - Version tracking for schedule sync
 
 ## State Management Details
 
@@ -251,11 +206,16 @@ state = {
     "home_score": 0,
     "away_score": 0,
     "goals": [],            # Goal history (see structure below)
-    "home_shots": 0,        # Shot count
+    "home_shots": 0,
     "away_shots": 0,
     "home_roster": [],      # Active player IDs
     "away_roster": [],
-    "roster_details": {}    # player_id -> player info dict
+    "roster_details": {},   # player_id -> player info dict
+    "period": 1,            # Current period number
+    "penalties": [],        # List of active penalties
+    "home_goalie_id": None, # Current home goalie
+    "away_goalie_id": None, # Current away goalie
+    "faceoffs": {"home": 0, "away": 0},
 }
 
 # Goal structure includes attribution:
@@ -271,6 +231,27 @@ goal = {
 ```
 
 Events are replayed chronologically to compute current state. When clock is running, elapsed time is calculated from `last_update` to current time.
+
+### Supported Event Types
+
+**Clock/Game Flow:**
+- `CLOCK_SET` - Set clock time
+- `CLOCK_START`, `CLOCK_STOP` - Start/stop clock
+- `GAME_STARTED`, `GAME_PAUSED`, `GAME_END` - Game state changes
+- `PERIOD_START`, `PERIOD_END` - Period transitions
+
+**Scoring:**
+- `GOAL_HOME`, `GOAL_AWAY` - Goals with value (+1 for goal, -1 for cancellation)
+- `SHOT_HOME`, `SHOT_AWAY` - Shot tracking
+
+**Penalties:**
+- `PENALTY` - Penalty assessed
+- `PENALTY_START`, `PENALTY_END` - Penalty clock management
+
+**Other:**
+- `GOALIE_IN`, `GOALIE_OUT` - Goalie changes
+- `FACEOFF` - Faceoff wins
+- `ROSTER_INITIALIZED`, `ROSTER_PLAYER_SCRATCHED`, `ROSTER_PLAYER_ACTIVATED` - Roster management
 
 ## Cloud API Endpoints
 
@@ -309,6 +290,14 @@ See `CLOUD_API.md` and `DEVICE_MANAGEMENT.md` for detailed API documentation.
 4. Spawn separate process if needed
 5. Add status tracking to game loop
 
+### Working with the Schema
+
+The cloud database schema is centralized in `src/score/schema.py`:
+- All table DDL is in the `TABLES` constant
+- Indexes are in the `INDEXES` constant
+- Default rule sets and infractions are seeded automatically
+- Use `init_schema(db_path, fresh_start=True)` to reset the database
+
 ### Working with Tests
 
 - Tests use temporary databases (cleaned up automatically)
@@ -343,3 +332,56 @@ Game state is broadcast to all connected WebSocket clients every 1 second. Keep 
 3. **Inspect cloud state**: Visit `http://localhost:8001/admin/games/state` to see reconstructed game state
 4. **Test event replay**: Unit tests in `tests/test_state.py` verify replay logic
 5. **Monitor logs**: Rich console output shows PID/TID for multi-process coordination
+
+## Schedule Generation
+
+The `src/score/scheduler.py` module uses Google OR-Tools CP-SAT solver to generate fair hockey schedules.
+
+### Configuration (YAML)
+
+```yaml
+league_id: "baal"
+season_id: "2025-2026"
+rink_id: "sharks-ice"
+
+sheets:
+  - sheet_id: "sharks-ice-a"
+    name: "Sheet A"
+
+divisions:
+  - division_id: "div-a"
+    games_per_team: 12
+    teams:
+      - registration_id: "reg-dogs-2025"
+        name: "Ice Dogs"
+        abbreviation: "DOG"
+
+schedule:
+  days_of_week: ["sunday"]
+  start_date: "2025-01-05"
+  end_date: "2025-04-27"
+  blackout_dates: ["2025-02-16"]
+  time_slots: ["18:00", "19:30", "21:00"]
+
+game_settings:
+  period_length_min: 15
+  num_periods: 3
+  game_type: "regular"
+
+solver:
+  timeout_seconds: 60
+  weight_time_slot: 10    # Balance games across time slots
+  weight_sheet: 10        # Balance games across sheets
+  weight_home_away: 20    # Balance home/away games
+  weight_opponent: 5      # Spread games across opponents
+```
+
+### Fairness Constraints
+
+The solver optimizes for:
+- **Time slot balance**: Each team plays roughly equal games at each time
+- **Sheet balance**: Each team plays roughly equal games on each sheet
+- **Home/away balance**: Each team has roughly equal home and away games
+- **Opponent variety**: Games spread across opponents evenly
+- **No consecutive opponents**: Penalizes playing same opponent in back-to-back weeks
+- **Max consecutive byes**: Hard constraint on weeks without games

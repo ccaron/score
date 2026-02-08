@@ -65,19 +65,6 @@ CREATE TABLE IF NOT EXISTS tournaments (
     created_at INTEGER NOT NULL
 );
 
--- Team organizations
-CREATE TABLE IF NOT EXISTS teams (
-    team_id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    city TEXT,
-    abbreviation TEXT,               -- "TOR", "MTL"
-    team_type TEXT,                  -- "franchise", "club", "pickup"
-    logo_url TEXT,
-    primary_color TEXT,
-    secondary_color TEXT,
-    created_at INTEGER NOT NULL
-);
-
 -- Individual athletes
 CREATE TABLE IF NOT EXISTS players (
     player_id INTEGER PRIMARY KEY,
@@ -243,7 +230,18 @@ CREATE TABLE IF NOT EXISTS tournament_divisions (
 -- Team competing in a context = THE ROSTER
 CREATE TABLE IF NOT EXISTS team_registrations (
     registration_id TEXT PRIMARY KEY,
-    team_id TEXT NOT NULL,
+
+    -- Team metadata (inline - no separate teams table)
+    team_name TEXT NOT NULL,
+    abbreviation TEXT NOT NULL,
+    logo_url TEXT,
+    primary_color TEXT,
+    secondary_color TEXT,
+
+    -- Organizer/contact info
+    organizer_name TEXT,
+    organizer_email TEXT,
+    organizer_phone TEXT,
 
     -- Context: League+Season OR Tournament (mutually exclusive)
     league_id TEXT,
@@ -261,7 +259,6 @@ CREATE TABLE IF NOT EXISTS team_registrations (
         OR (league_id IS NULL AND season_id IS NULL AND tournament_id IS NOT NULL)
     ),
 
-    FOREIGN KEY (team_id) REFERENCES teams(team_id),
     FOREIGN KEY (division_id) REFERENCES divisions(division_id)
 );
 

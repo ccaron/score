@@ -345,7 +345,16 @@ class Infraction(BaseModel):
 class TeamRegistration(BaseModel):
     """Team competing in a context (league+season or tournament)."""
     registration_id: str
-    team_id: str
+    # Team metadata (inline - no separate teams table)
+    team_name: str
+    abbreviation: str
+    logo_url: Optional[str] = None
+    primary_color: Optional[str] = None
+    secondary_color: Optional[str] = None
+    # Organizer/contact info
+    organizer_name: Optional[str] = None
+    organizer_email: Optional[str] = None
+    organizer_phone: Optional[str] = None
     # Context: League+Season OR Tournament (mutually exclusive)
     league_id: Optional[str] = None
     season_id: Optional[str] = None

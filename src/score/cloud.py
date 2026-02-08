@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Path as FastAPIPath, Query, WebSocket
+from fastapi import Body, FastAPI, HTTPException, Path as FastAPIPath, Query, WebSocket
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -56,22 +56,11 @@ def get_db():
 
 # ---------- Admin Navigation Helper ----------
 ADMIN_NAV_ITEMS = [
-    ("devices", "/admin/devices", "Devices"),
-    ("games", "/admin/games/state", "Games"),
-    ("events", "/admin/events", "Events"),
-    ("stats", "/admin/stats", "Stats"),
-    ("leagues", "/admin/leagues", "Leagues"),
-    ("seasons", "/admin/seasons", "Seasons"),
-    ("divisions", "/admin/divisions", "Divisions"),
-    ("teams", "/admin/teams", "Teams"),
+    ("leagues", "/admin/organization", "Leagues"),
     ("players", "/admin/players", "Players"),
-    ("rosters", "/admin/rosters", "Rosters"),
-    ("rinks", "/admin/rinks-admin", "Rinks"),
-    ("rules", "/admin/rule-sets-admin", "Rules"),
-    ("officials", "/admin/officials-admin", "Officials"),
-    ("tournaments", "/admin/tournaments-admin", "Tournaments"),
-    ("registrations", "/admin/registrations-admin", "Registrations"),
-    ("seed", "/admin/seed", "Seed"),
+    ("venues", "/admin/rinks-admin", "Venues"),
+    ("stats", "/admin/stats", "Stats"),
+    ("events", "/admin/events", "Events"),
 ]
 
 
@@ -81,7 +70,16 @@ def admin_nav(active_page: str) -> str:
     for page_id, href, label in ADMIN_NAV_ITEMS:
         css_class = ' class="active"' if page_id == active_page else ""
         links.append(f'<a href="{href}"{css_class}>{label}</a>')
+
     return '<div class="nav">\n            ' + '\n            '.join(links) + '\n        </div>'
+
+
+def slugify(name: str) -> str:
+    """Convert 'Sharks Ice at San Jose' to 'sharks-ice-at-san-jose'."""
+    import re
+    slug = name.lower().strip()
+    slug = re.sub(r'[^a-z0-9]+', '-', slug)
+    return slug.strip('-')
 
 
 def init_db():
@@ -457,15 +455,25 @@ async def post_heartbeat(request: HeartbeatRequest):
 # ---------- Admin/Debug Endpoints ----------
 
 @app.post("/admin/rinks")
-async def create_rink(request: CreateRinkRequest):
+async def create_rink(
+    name: str = Body(...),
+    address: Optional[str] = Body(None),
+    city: Optional[str] = Body(None),
+    province_state: Optional[str] = Body(None),
+    postal_code: Optional[str] = Body(None),
+    country: Optional[str] = Body(None),
+    phone: Optional[str] = Body(None),
+    website: Optional[str] = Body(None)
+):
     """
-    Create a new rink.
+    Create a new venue (rink).
 
-    Args:
-        rink_id: Unique identifier for the rink (e.g., "rink-alpha")
-        name: Human-readable name (e.g., "Alpha Ice Arena")
+    Auto-generates rink_id from name using slugify.
     """
-    logger.info(f"Creating rink {request.rink_id}")
+    # Auto-generate rink_id from name
+    rink_id = slugify(name)
+
+    logger.info(f"Creating rink {rink_id} from name '{name}'")
 
     db = get_db()
     current_time = int(time.time())
@@ -473,33 +481,40 @@ async def create_rink(request: CreateRinkRequest):
     # Check if rink already exists
     existing = db.execute(
         "SELECT rink_id FROM rinks WHERE rink_id = ?",
-        (request.rink_id,)
+        (rink_id,)
     ).fetchone()
 
     if existing:
         db.close()
         raise HTTPException(
             status_code=409,
-            detail=f"Rink {request.rink_id} already exists"
+            detail=f"Rink {rink_id} already exists"
         )
 
     # Insert rink
     db.execute("""
-        INSERT INTO rinks (rink_id, name, created_at)
-        VALUES (?, ?, ?)
-    """, (request.rink_id, request.name, current_time))
+        INSERT INTO rinks (rink_id, name, address, city, province_state, postal_code, country, phone, website, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (rink_id, name, address, city, province_state, postal_code, country, phone, website, current_time))
 
     db.commit()
     db.close()
 
-    logger.info(f"Successfully created rink {request.rink_id}")
+    logger.info(f"Successfully created rink {rink_id}")
 
     return {
         "status": "ok",
-        "message": f"Rink {request.rink_id} created",
+        "message": f"Rink {rink_id} created",
         "rink": {
-            "rink_id": request.rink_id,
-            "name": request.name
+            "rink_id": rink_id,
+            "name": name,
+            "address": address,
+            "city": city,
+            "province_state": province_state,
+            "postal_code": postal_code,
+            "country": country,
+            "phone": phone,
+            "website": website
         }
     }
 
@@ -597,264 +612,140 @@ async def delete_rink(rink_id: str):
     }
 
 
-@app.get("/admin/devices")
-async def list_devices(format: Optional[str] = Query(None, description="Response format: 'json' or 'html'")):
-    """
-    List all registered devices and their assignments.
+# ---------- Rink Sheets Admin Endpoints ----------
 
-    Returns HTML admin UI by default, or JSON if format=json is specified.
+@app.post("/admin/rink-sheets")
+async def create_rink_sheet(
+    rink_id: str = Body(...),
+    name: str = Body(...),
+    surface_type: Optional[str] = Body(None),
+    capacity: Optional[int] = Body(None)
+):
     """
+    Create a new sheet within a rink.
+
+    Auto-generates sheet_id from rink_id + slugified name.
+    """
+    logger.info(f"Creating sheet {name} for rink {rink_id}")
+
     db = get_db()
 
-    devices = db.execute("""
-        SELECT device_id, rink_id, sheet_name, device_name, is_assigned,
-               first_seen_at, last_seen_at, notes
-        FROM devices
-        ORDER BY last_seen_at DESC
-    """).fetchall()
+    # Verify rink exists
+    rink = db.execute("SELECT rink_id FROM rinks WHERE rink_id = ?", (rink_id,)).fetchone()
+    if not rink:
+        db.close()
+        raise HTTPException(status_code=404, detail=f"Rink {rink_id} not found")
 
-    # Get available rinks for dropdown
-    rinks = db.execute("SELECT rink_id, name FROM rinks ORDER BY name").fetchall()
+    # Auto-generate sheet_id
+    sheet_id = f"{rink_id}-{slugify(name)}"
+
+    # Check if sheet already exists
+    existing = db.execute(
+        "SELECT sheet_id FROM rink_sheets WHERE sheet_id = ?",
+        (sheet_id,)
+    ).fetchone()
+
+    if existing:
+        db.close()
+        raise HTTPException(
+            status_code=409,
+            detail=f"Sheet {sheet_id} already exists"
+        )
+
+    current_time = int(time.time())
+
+    # Insert sheet
+    db.execute("""
+        INSERT INTO rink_sheets (sheet_id, rink_id, name, surface_type, capacity, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (sheet_id, rink_id, name, surface_type, capacity, current_time))
+
+    db.commit()
+    db.close()
+
+    logger.info(f"Successfully created sheet {sheet_id}")
+
+    return {
+        "status": "ok",
+        "message": f"Sheet {sheet_id} created",
+        "sheet": {
+            "sheet_id": sheet_id,
+            "rink_id": rink_id,
+            "name": name,
+            "surface_type": surface_type,
+            "capacity": capacity
+        }
+    }
+
+
+@app.get("/admin/rink-sheets/{rink_id}")
+async def get_rink_sheets(rink_id: str):
+    """Get all sheets for a specific rink."""
+    db = get_db()
+
+    sheets = db.execute("""
+        SELECT sheet_id, rink_id, name, surface_type, capacity, created_at
+        FROM rink_sheets
+        WHERE rink_id = ?
+        ORDER BY name
+    """, (rink_id,)).fetchall()
 
     db.close()
 
-    device_list = [
-        {
-            "device_id": d["device_id"],
-            "rink_id": d["rink_id"],
-            "sheet_name": d["sheet_name"],
-            "device_name": d["device_name"],
-            "is_assigned": bool(d["is_assigned"]),
-            "first_seen_at": d["first_seen_at"],
-            "last_seen_at": d["last_seen_at"],
-            "notes": d["notes"]
-        }
-        for d in devices
-    ]
+    return {
+        "sheets": [dict(s) for s in sheets]
+    }
 
-    # Return JSON if requested
-    if format == "json":
-        return DeviceListResponse(devices=[DeviceInfo(**d) for d in device_list])
 
-    # Return HTML admin UI
-    from fastapi.responses import HTMLResponse
-    import datetime
-
-    def format_timestamp(ts):
-        if ts:
-            return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
-        return "Never"
-
-    rink_options = "".join([f'<option value="{r["rink_id"]}">{r["name"]} ({r["rink_id"]})</option>' for r in rinks])
-
-    devices_html = ""
-    for d in device_list:
-        status_badge = '<span class="badge assigned">Assigned</span>' if d["is_assigned"] else '<span class="badge unassigned">Not Assigned</span>'
-
-        devices_html += f"""
-        <tr data-device-id="{d['device_id']}">
-            <td class="device-id">{d['device_id']}</td>
-            <td>
-                <select class="rink-select" data-device-id="{d['device_id']}">
-                    <option value="">-- Select Rink --</option>
-                    {rink_options}
-                </select>
-                <script>
-                document.querySelector('select.rink-select[data-device-id="{d["device_id"]}"]').value = "{d["rink_id"] or ""}";
-                </script>
-            </td>
-            <td><input type="text" class="sheet-input" data-device-id="{d['device_id']}" value="{d['sheet_name'] or ''}" placeholder="Sheet 1"></td>
-            <td><input type="text" class="name-input" data-device-id="{d['device_id']}" value="{d['device_name'] or ''}" placeholder="Display name"></td>
-            <td>{status_badge}</td>
-            <td class="timestamp">{format_timestamp(d['last_seen_at'])}</td>
-            <td class="actions">
-                <button class="btn-save" onclick="saveDevice('{d['device_id']}')">Save</button>
-                <button class="btn-unassign" onclick="unassignDevice('{d['device_id']}')">Unassign</button>
-                <button class="btn-delete" onclick="deleteDevice('{d['device_id']}')">Delete</button>
-            </td>
-        </tr>
-        """
-
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>score-cloud | Devices</title>
-        <link rel="stylesheet" href="/static/admin.css">
-    </head>
-    <body>
-        {admin_nav("devices")}
-        <div class="container">
-            <h1>Devices</h1>
-            <div class="content">
-                <div id="message" class="message"></div>
-
-                <div class="hint">
-                    Devices automatically register when they connect. Assign them to rinks and sheets below.
-                </div>
-
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Device ID</th>
-                            <th>Rink</th>
-                            <th>Sheet Name</th>
-                            <th>Device Name</th>
-                            <th>Status</th>
-                            <th>Last Seen</th>
-                            <th>Actions</th>
-                        </tr>
-                        <tr class="filter-row">
-                            <td><input type="text" id="filterDeviceId" placeholder="Filter..." onkeyup="filterDeviceTable()"></td>
-                            <td><input type="text" id="filterRink" placeholder="Filter..." onkeyup="filterDeviceTable()"></td>
-                            <td><input type="text" id="filterSheet" placeholder="Filter..." onkeyup="filterDeviceTable()"></td>
-                            <td><input type="text" id="filterDeviceName" placeholder="Filter..." onkeyup="filterDeviceTable()"></td>
-                            <td><input type="text" id="filterStatus" placeholder="Filter..." onkeyup="filterDeviceTable()"></td>
-                            <td><input type="text" id="filterLastSeen" placeholder="Filter..." onkeyup="filterDeviceTable()"></td>
-                            <td></td>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {devices_html}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <script>
-        function filterDeviceTable() {{
-            const filters = {{
-                deviceId: document.getElementById('filterDeviceId').value.toLowerCase(),
-                rink: document.getElementById('filterRink').value.toLowerCase(),
-                sheet: document.getElementById('filterSheet').value.toLowerCase(),
-                deviceName: document.getElementById('filterDeviceName').value.toLowerCase(),
-                status: document.getElementById('filterStatus').value.toLowerCase(),
-                lastSeen: document.getElementById('filterLastSeen').value.toLowerCase()
-            }};
-
-            const tbody = document.querySelector('table tbody');
-            const rows = tbody.getElementsByTagName('tr');
-
-            for (let i = 0; i < rows.length; i++) {{
-                const cells = rows[i].getElementsByTagName('td');
-                if (cells.length < 7) continue;
-
-                const deviceId = cells[0].textContent.toLowerCase();
-                const rink = cells[1].querySelector('select')?.value.toLowerCase() || '';
-                const sheet = cells[2].querySelector('input')?.value.toLowerCase() || '';
-                const deviceName = cells[3].querySelector('input')?.value.toLowerCase() || '';
-                const status = cells[4].textContent.toLowerCase();
-                const lastSeen = cells[5].textContent.toLowerCase();
-
-                const match =
-                    deviceId.includes(filters.deviceId) &&
-                    rink.includes(filters.rink) &&
-                    sheet.includes(filters.sheet) &&
-                    deviceName.includes(filters.deviceName) &&
-                    status.includes(filters.status) &&
-                    lastSeen.includes(filters.lastSeen);
-
-                rows[i].style.display = match ? '' : 'none';
-            }}
-        }}
-
-        function showMessage(text, type) {{
-            const msg = document.getElementById('message');
-            msg.textContent = text;
-            msg.className = `message ${{type}}`;
-            msg.style.display = 'block';
-            setTimeout(() => {{
-                msg.style.display = 'none';
-            }}, 5000);
-        }}
-
-        async function saveDevice(deviceId) {{
-            const row = document.querySelector(`tr[data-device-id="${{deviceId}}"]`);
-            const rinkId = row.querySelector('.rink-select').value;
-            const sheetName = row.querySelector('.sheet-input').value;
-            const deviceName = row.querySelector('.name-input').value;
-
-            if (!rinkId || !sheetName) {{
-                showMessage('Please select a rink and enter a sheet name', 'error');
-                return;
-            }}
-
-            try {{
-                const response = await fetch(`/admin/devices/${{deviceId}}`, {{
-                    method: 'PUT',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{
-                        rink_id: rinkId,
-                        sheet_name: sheetName,
-                        device_name: deviceName || null
-                    }})
-                }});
-
-                const result = await response.json();
-
-                if (response.ok) {{
-                    showMessage(`Device ${{deviceId}} saved successfully`, 'success');
-                    setTimeout(() => location.reload(), 1500);
-                }} else {{
-                    showMessage(`Error: ${{result.detail || 'Failed to save'}}`, 'error');
-                }}
-            }} catch (error) {{
-                showMessage(`Error: ${{error.message}}`, 'error');
-            }}
-        }}
-
-        async function unassignDevice(deviceId) {{
-            if (!confirm(`Unassign device ${{deviceId}}?`)) {{
-                return;
-            }}
-
-            try {{
-                const response = await fetch(`/admin/devices/${{deviceId}}/assignment`, {{
-                    method: 'DELETE'
-                }});
-
-                const result = await response.json();
-
-                if (response.ok) {{
-                    showMessage(`Device ${{deviceId}} unassigned`, 'success');
-                    setTimeout(() => location.reload(), 1500);
-                }} else {{
-                    showMessage(`Error: ${{result.detail || 'Failed to unassign'}}`, 'error');
-                }}
-            }} catch (error) {{
-                showMessage(`Error: ${{error.message}}`, 'error');
-            }}
-        }}
-
-        async function deleteDevice(deviceId) {{
-            if (!confirm(`Delete device ${{deviceId}}? This will permanently remove it from the database.`)) {{
-                return;
-            }}
-
-            try {{
-                const response = await fetch(`/admin/devices/${{deviceId}}`, {{
-                    method: 'DELETE'
-                }});
-
-                const result = await response.json();
-
-                if (response.ok) {{
-                    showMessage(`Device ${{deviceId}} deleted`, 'success');
-                    setTimeout(() => location.reload(), 1500);
-                }} else {{
-                    showMessage(`Error: ${{result.detail || 'Failed to delete'}}`, 'error');
-                }}
-            }} catch (error) {{
-                showMessage(`Error: ${{error.message}}`, 'error');
-            }}
-        }}
-        </script>
-    </body>
-    </html>
+@app.delete("/admin/rink-sheets/{sheet_id}")
+async def delete_rink_sheet(sheet_id: str):
     """
+    Delete a sheet.
 
-    return HTMLResponse(content=html)
+    This will fail if there are devices assigned to this sheet.
+    """
+    logger.info(f"Deleting sheet {sheet_id}")
+
+    db = get_db()
+
+    # Check if sheet exists
+    sheet = db.execute(
+        "SELECT sheet_id, rink_id, name FROM rink_sheets WHERE sheet_id = ?",
+        (sheet_id,)
+    ).fetchone()
+
+    if not sheet:
+        db.close()
+        raise HTTPException(status_code=404, detail=f"Sheet {sheet_id} not found")
+
+    # Check if any devices are assigned to this sheet
+    # Devices reference sheets by rink_id + sheet_name (not sheet_id FK)
+    devices = db.execute(
+        "SELECT COUNT(*) as count FROM devices WHERE rink_id = ? AND sheet_name = ? AND is_assigned = 1",
+        (sheet["rink_id"], sheet["name"])
+    ).fetchone()
+
+    if devices["count"] > 0:
+        db.close()
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot delete sheet {sheet_id}: {devices['count']} device(s) are assigned to it. Unassign devices first."
+        )
+
+    # Delete the sheet
+    db.execute("DELETE FROM rink_sheets WHERE sheet_id = ?", (sheet_id,))
+
+    db.commit()
+    db.close()
+
+    logger.info(f"Successfully deleted sheet {sheet_id}")
+
+    return {
+        "status": "ok",
+        "message": f"Sheet {sheet_id} deleted"
+    }
+
+
 
 
 @app.post("/admin/devices")
@@ -1415,298 +1306,1973 @@ def reconstruct_game_state(game_id: str):
 @app.get("/admin/games/state")
 async def get_all_game_states(format: Optional[str] = Query(None, description="Response format: 'json' or 'html'")):
     """
-    Get current state of all games based on received events.
+    Legacy Schedule page - redirects to unified Leagues page.
 
-    This endpoint reconstructs game state by replaying all events for each game.
-    Returns HTML for browser viewing or JSON if format=json parameter is provided.
+    For JSON format, returns flattened game states for backwards compatibility.
+    """
+    from fastapi.responses import RedirectResponse
+
+    # Support JSON API for backwards compatibility
+    if format == "json":
+        db = get_db()
+
+        # Flatten all games with their states
+        all_games = []
+        games = db.execute("SELECT game_id FROM games").fetchall()
+        for game in games:
+            state = reconstruct_game_state(game["game_id"])
+            if state:
+                all_games.append(state)
+
+        db.close()
+
+        return {
+            "game_count": len(all_games),
+            "games": all_games
+        }
+
+    # HTML requests redirect to Leagues page
+    return RedirectResponse(url="/admin/organization")
+
+
+@app.get("/admin/organization")
+async def get_organization_admin():
+    """
+    Admin page showing organizational hierarchy: Leagues → Seasons → Divisions → Teams → Rosters.
+
+    Provides tree view with expandable sections and forms to create entities at each level.
     """
     from fastapi.responses import HTMLResponse
 
     db = get_db()
 
-    # Get all games
-    games = db.execute("SELECT game_id FROM games ORDER BY start_time").fetchall()
+    # Fetch all leagues
+    leagues = db.execute("SELECT league_id, name, league_type, description FROM leagues ORDER BY name").fetchall()
+
+    # Build nested data structure
+    org_data = []
+
+    for league in leagues:
+        league_dict = dict(league)
+
+        # Fetch seasons for this league
+        seasons = db.execute("""
+            SELECT s.season_id, s.name, s.start_date, s.end_date
+            FROM seasons s
+            JOIN league_seasons ls ON s.season_id = ls.season_id
+            WHERE ls.league_id = ?
+            ORDER BY s.start_date DESC
+        """, (league["league_id"],)).fetchall()
+
+        league_dict["seasons"] = []
+
+        for season in seasons:
+            season_dict = dict(season)
+
+            # Fetch divisions for this league+season (via league_season_divisions)
+            divisions = db.execute("""
+                SELECT d.division_id, d.name
+                FROM divisions d
+                JOIN league_season_divisions lsd ON d.division_id = lsd.division_id
+                WHERE lsd.league_id = ? AND lsd.season_id = ?
+                ORDER BY lsd.display_order, d.name
+            """, (league["league_id"], season["season_id"])).fetchall()
+
+            season_dict["divisions"] = []
+
+            for division in divisions:
+                division_dict = dict(division)
+
+                # Fetch team registrations for this division
+                registrations = db.execute("""
+                    SELECT registration_id, team_name, abbreviation,
+                           (SELECT COUNT(*) FROM roster_entries re
+                            WHERE re.registration_id = tr.registration_id AND re.removed_at IS NULL) as roster_count
+                    FROM team_registrations tr
+                    WHERE league_id = ? AND season_id = ? AND division_id = ?
+                    ORDER BY team_name
+                """, (league["league_id"], season["season_id"], division["division_id"])).fetchall()
+
+                division_dict["registrations"] = []
+
+                for registration in registrations:
+                    reg_dict = dict(registration)
+
+                    # Fetch roster entries for this registration
+                    roster = db.execute("""
+                        SELECT re.id, re.player_id, p.full_name, re.jersey_number, re.position,
+                               re.roster_status, re.is_captain, re.is_alternate
+                        FROM roster_entries re
+                        JOIN players p ON re.player_id = p.player_id
+                        WHERE re.registration_id = ? AND re.removed_at IS NULL
+                        ORDER BY re.jersey_number, p.last_name
+                    """, (registration["registration_id"],)).fetchall()
+
+                    reg_dict["roster"] = [dict(r) for r in roster]
+                    division_dict["registrations"].append(reg_dict)
+
+                # Fetch games for this division
+                games = db.execute("""
+                    SELECT DISTINCT g.game_id, g.home_team, g.away_team, g.home_abbrev, g.away_abbrev,
+                           g.start_time, g.rink_id, g.sheet_id,
+                           r.name as venue_name,
+                           rs.name as sheet_name,
+                           g.home_registration_id, g.away_registration_id
+                    FROM games g
+                    LEFT JOIN team_registrations tr_home ON g.home_registration_id = tr_home.registration_id
+                    LEFT JOIN team_registrations tr_away ON g.away_registration_id = tr_away.registration_id
+                    LEFT JOIN rinks r ON g.rink_id = r.rink_id
+                    LEFT JOIN rink_sheets rs ON g.sheet_id = rs.sheet_id
+                    WHERE (tr_home.league_id = ? AND tr_home.season_id = ? AND tr_home.division_id = ?)
+                       OR (tr_away.league_id = ? AND tr_away.season_id = ? AND tr_away.division_id = ?)
+                    ORDER BY g.start_time
+                """, (league["league_id"], season["season_id"], division["division_id"],
+                      league["league_id"], season["season_id"], division["division_id"])).fetchall()
+
+                # Reconstruct game states
+                games_with_state = []
+                for game in games:
+                    game_dict = dict(game)
+                    state = reconstruct_game_state(game["game_id"])
+                    if state:
+                        game_dict["state"] = state
+                    games_with_state.append(game_dict)
+
+                division_dict["games"] = games_with_state
+
+                season_dict["divisions"].append(division_dict)
+
+            league_dict["seasons"].append(season_dict)
+
+        org_data.append(league_dict)
+
+    # Fetch all players for dropdown
+    all_players = db.execute("SELECT player_id, full_name, first_name, last_name FROM players ORDER BY last_name, first_name").fetchall()
+
+    # Fetch all unique teams for team re-registration dropdown (includes withdrawn teams)
+    all_teams = db.execute("""
+        SELECT DISTINCT team_name, abbreviation, organizer_name, organizer_email, organizer_phone
+        FROM team_registrations
+        ORDER BY team_name
+    """).fetchall()
+
+    # Fetch active registrations per division (to exclude from dropdown when adding to that division)
+    active_registrations = db.execute("""
+        SELECT league_id, season_id, division_id, team_name, abbreviation
+        FROM team_registrations
+        WHERE withdrawn_at IS NULL
+    """).fetchall()
+
+    # Build a map: "league_id|season_id|division_id" -> ["TeamName|ABBR", ...]
+    active_teams_by_division = {}
+    for reg in active_registrations:
+        div_key = f"{reg['league_id']}|{reg['season_id']}|{reg['division_id']}"
+        team_key = f"{reg['team_name']}|{reg['abbreviation']}"
+        if div_key not in active_teams_by_division:
+            active_teams_by_division[div_key] = []
+        active_teams_by_division[div_key].append(team_key)
+
+    # Fetch all rinks and sheets for schedule modal
+    all_rinks = db.execute("SELECT rink_id, name FROM rinks ORDER BY name").fetchall()
+    all_sheets = db.execute("SELECT sheet_id, rink_id, name FROM rink_sheets ORDER BY rink_id, name").fetchall()
 
     db.close()
 
-    game_states = []
-    for game_row in games:
-        game_id = game_row["game_id"]
-        state = reconstruct_game_state(game_id)
-        if state:
-            game_states.append(state)
+    # Generate HTML tree
+    def generate_tree_html(data):
+        import html
+        from datetime import datetime as dt
 
-    # Return JSON if requested
-    if format == "json":
-        return {
-            "game_count": len(game_states),
-            "games": game_states
+        if not data:
+            return '<div class="empty-state">No leagues found. <button class="btn-add" onclick="openModal(\'league\')">+ Add League</button></div>'
+
+        html_parts = []
+        for league in data:
+            # Calculate league totals
+            league_team_count = sum(len(d["registrations"]) for s in league["seasons"] for d in s["divisions"])
+            league_player_count = sum(r["roster_count"] for s in league["seasons"] for d in s["divisions"] for r in d["registrations"])
+            league_game_count = sum(len(d.get("games", [])) for s in league["seasons"] for d in s["divisions"])
+
+            league_badge = f'<span class="node-badge league-{league["league_type"] or "unknown"}">{league["league_type"] or "N/A"}</span>'
+            html_parts.append(f'''
+            <div class="tree-node level-1" data-id="{league["league_id"]}" data-type="league">
+                <div class="node-header" onclick="toggleNode(this)">
+                    <span class="toggle-icon">▶</span>
+                    <span class="node-name">{league["name"]}</span>
+                    {league_badge}
+                    <span class="node-meta">({league_team_count} teams, {league_player_count} players, {league_game_count} games)</span>
+                    <button class="btn-add" onclick="event.stopPropagation(); openModal('season', '{league["league_id"]}')">+ Season</button>
+                </div>
+                <div class="node-children" style="display: none;">
+            ''')
+
+            for season in league["seasons"]:
+                # Calculate season totals
+                season_team_count = sum(len(d["registrations"]) for d in season["divisions"])
+                season_player_count = sum(r["roster_count"] for d in season["divisions"] for r in d["registrations"])
+                season_game_count = sum(len(d.get("games", [])) for d in season["divisions"])
+
+                date_range = f'{season["start_date"]} to {season["end_date"] or "ongoing"}'
+
+                # Prepare divisions data for multi-division scheduling
+                divisions_json = json.dumps([{
+                    "division_id": d["division_id"],
+                    "name": d["name"],
+                    "team_count": len(d["registrations"])
+                } for d in season["divisions"]])
+                # HTML-escape the JSON for safe embedding in onclick attribute
+                divisions_json_escaped = html.escape(divisions_json)
+
+                html_parts.append(f'''
+                <div class="tree-node level-2" data-id="{season["season_id"]}" data-type="season">
+                    <div class="node-header" onclick="toggleNode(this)">
+                        <span class="toggle-icon">▶</span>
+                        <span class="node-name">{season["name"]}</span>
+                        <span class="node-meta">{date_range} • {season_team_count} teams, {season_game_count} games</span>
+                        <button class="btn-schedule" onclick="event.stopPropagation(); openMultiDivisionScheduleModal('{league["league_id"]}', '{season["season_id"]}', '{season["name"]}', JSON.parse('{divisions_json_escaped}'))">Schedule Games</button>
+                        <button class="btn-add" onclick="event.stopPropagation(); openModal('division', '{league["league_id"]}', '{season["season_id"]}')">+ Division</button>
+                    </div>
+                    <div class="node-children" style="display: none;">
+                ''')
+
+                for division in season["divisions"]:
+                    # Calculate division totals
+                    division_team_count = len(division["registrations"])
+                    division_player_count = sum(r["roster_count"] for r in division["registrations"])
+                    division_game_count = len(division.get("games", []))
+                    div_id_safe = division["division_id"].replace("-", "_")
+
+                    html_parts.append(f'''
+                    <div class="tree-node level-3" data-id="{division["division_id"]}" data-type="division">
+                        <div class="node-header" onclick="toggleNode(this)">
+                            <span class="toggle-icon">▶</span>
+                            <span class="node-name">{division["name"]}</span>
+                            <span class="node-meta">({division_team_count} teams, {division_player_count} players, {division_game_count} games)</span>
+                        </div>
+                        <div class="node-children" style="display: none;">
+                    ''')
+
+                    # Teams subsection
+                    html_parts.append(f'''
+                        <div class="tree-node level-4" data-id="{division["division_id"]}-teams" data-type="teams-section">
+                            <div class="node-header" onclick="toggleNode(this)">
+                                <span class="toggle-icon">▶</span>
+                                <span class="node-name">Teams</span>
+                                <span class="node-meta">({division_team_count} teams)</span>
+                                <button class="btn-add" onclick="event.stopPropagation(); openModal('registration', '{league["league_id"]}', '{season["season_id"]}', '{division["division_id"]}')">+ Team</button>
+                            </div>
+                            <div class="node-children" style="display: none;">
+                    ''')
+
+                    for reg in division["registrations"]:
+                        roster_count = f'({reg["roster_count"]} players)'
+                        html_parts.append(f'''
+                            <div class="tree-node level-5" data-id="{reg["registration_id"]}" data-type="registration">
+                                <div class="node-header" onclick="toggleNode(this)">
+                                    <span class="toggle-icon">▶</span>
+                                    <span class="node-name">{reg["team_name"]} ({reg["abbreviation"]})</span>
+                                    <span class="node-meta">{roster_count}</span>
+                                    <button class="btn-add" onclick="event.stopPropagation(); openModal('player', '{reg["registration_id"]}', '{reg["team_name"]}')">+ Player</button>
+                                    <button class="btn-remove-team" onclick="event.stopPropagation(); removeTeam('{reg["registration_id"]}', '{reg["team_name"]}')" title="Remove team from division">&times;</button>
+                                </div>
+                                <div class="node-children" style="display: none;">
+                        ''')
+
+                        for player in reg["roster"]:
+                            jersey = f'#{player["jersey_number"]}' if player["jersey_number"] else ''
+                            position = player["position"] or ''
+                            captain_badge = '<span class="role-badge captain">C</span>' if player["is_captain"] else ''
+                            alternate_badge = '<span class="role-badge alternate">A</span>' if player["is_alternate"] else ''
+
+                            html_parts.append(f'''
+                                <div class="tree-node level-6 leaf" data-id="{player["player_id"]}" data-type="player">
+                                    <div class="node-header">
+                                        <span class="node-name">{jersey} {player["full_name"]} {position} {captain_badge}{alternate_badge}</span>
+                                        <button class="btn-remove-player" onclick="removePlayer({player["id"]}, '{player["full_name"]}')" title="Remove from roster">&times;</button>
+                                    </div>
+                                </div>
+                            ''')
+
+                        if not reg["roster"]:
+                            html_parts.append('<div class="empty-state-inline">No players on roster</div>')
+
+                        html_parts.append('</div></div>')  # Close registration
+
+                    if not division["registrations"]:
+                        html_parts.append('<div class="empty-state-inline">No teams registered</div>')
+
+                    html_parts.append('</div></div>')  # Close Teams subsection
+
+                    # Schedule subsection
+                    games = division.get("games", [])
+
+                    # Generate team filter options
+                    team_filter_options = '<option value="">All Teams</option>'
+                    for team in division["registrations"]:
+                        team_filter_options += f'<option value="{team["registration_id"]}">{team["team_name"]}</option>'
+
+                    html_parts.append(f'''
+                        <div class="tree-node level-4" data-id="{division["division_id"]}-schedule" data-type="schedule-section">
+                            <div class="node-header" onclick="toggleNode(this)">
+                                <span class="toggle-icon">▶</span>
+                                <span class="node-name">Schedule</span>
+                                <span class="node-meta">({division_game_count} games)</span>
+                            </div>
+                            <div class="node-children" style="display: none;">
+                    ''')
+
+                    if games:
+                        html_parts.append(f'''
+                            <div style="margin: 6px 0; display: flex; align-items: center; gap: 8px;">
+                                <label style="font-size: 12px; color: #666;">Filter:</label>
+                                <select onchange="filterDivisionGames('{div_id_safe}', this.value)" style="padding: 3px 6px; font-size: 12px;">
+                                    {team_filter_options}
+                                </select>
+                            </div>
+                            <table class="schedule-games-table" id="games_{div_id_safe}">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 60px;">Date</th>
+                                        <th style="width: 60px;">Time</th>
+                                        <th style="width: 80px;">Venue</th>
+                                        <th style="width: 80px; text-align: right;">Home</th>
+                                        <th style="width: 20px; text-align: center;"></th>
+                                        <th style="width: 80px;">Away</th>
+                                        <th style="width: 50px; text-align: center;">Score</th>
+                                        <th style="width: 60px;">Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                        ''')
+
+                        for game in games:
+                            # Parse start time
+                            game_dt = dt.fromisoformat(game["start_time"])
+                            game_date = game_dt.strftime("%b %d")
+                            game_time = game_dt.strftime("%I:%M%p").lstrip("0").lower()
+                            venue_str = game["sheet_name"] or game["venue_name"] or "-"
+
+                            # Get state info
+                            home_score = game.get("state", {}).get("home_score", 0)
+                            away_score = game.get("state", {}).get("away_score", 0)
+                            score_str = f"{home_score} - {away_score}"
+
+                            # Determine status
+                            clock_running = game.get("state", {}).get("clock_running", False)
+                            if clock_running:
+                                status_class = "running"
+                                status_text = "Live"
+                            elif home_score > 0 or away_score > 0:
+                                status_class = "final"
+                                status_text = "Final"
+                            else:
+                                status_class = "scheduled"
+                                status_text = "Scheduled"
+
+                            home_reg_id = game["home_registration_id"] or ""
+                            away_reg_id = game["away_registration_id"] or ""
+
+                            html_parts.append(f'''
+                                <tr data-home-reg="{home_reg_id}" data-away-reg="{away_reg_id}">
+                                    <td>{game_date}</td>
+                                    <td>{game_time}</td>
+                                    <td>{venue_str}</td>
+                                    <td style="text-align: right;">{game["home_abbrev"] or game["home_team"]}</td>
+                                    <td style="text-align: center;">vs</td>
+                                    <td>{game["away_abbrev"] or game["away_team"]}</td>
+                                    <td style="text-align: center; font-weight: bold;">{score_str}</td>
+                                    <td><span class="status {status_class}">{status_text}</span></td>
+                                </tr>
+                            ''')
+
+                        html_parts.append('</tbody></table>')
+                    else:
+                        html_parts.append('<div class="empty-state-inline">No games scheduled</div>')
+
+                    html_parts.append('</div></div>')  # Close Schedule subsection
+
+                    html_parts.append('</div></div>')  # Close division
+
+                if not season["divisions"]:
+                    html_parts.append('<div class="empty-state-inline">No divisions</div>')
+
+                html_parts.append('</div></div>')  # Close season
+
+            if not league["seasons"]:
+                html_parts.append('<div class="empty-state-inline">No seasons</div>')
+
+            html_parts.append('</div></div>')  # Close league
+
+        return ''.join(html_parts)
+
+    tree_html = generate_tree_html(org_data)
+
+    # Generate player options for dropdown
+    player_options = ''.join([f'<option value="{p["player_id"]}">{p["last_name"]}, {p["first_name"]}</option>' for p in all_players])
+
+    # Generate team options for dropdown (including JSON data for auto-fill)
+    import html as html_module
+    team_options_html = '<option value="">-- Select Existing Team or Enter Manually --</option>'
+    team_data_json = {}
+    for team in all_teams:
+        team_key = f"{team['team_name']}|{team['abbreviation']}"
+        team_options_html += f'<option value="{html_module.escape(team_key)}">{team["team_name"]} ({team["abbreviation"]})</option>'
+        team_data_json[team_key] = {
+            "team_name": team["team_name"],
+            "abbreviation": team["abbreviation"],
+            "organizer_name": team["organizer_name"] or "",
+            "organizer_email": team["organizer_email"] or "",
+            "organizer_phone": team["organizer_phone"] or ""
         }
+    team_data_json_str = json.dumps(team_data_json)
+    active_teams_by_division_str = json.dumps(active_teams_by_division)
 
-    # Generate HTML view with JavaScript auto-update
-    html = f"""
+    # Generate sheets checkboxes for schedule modal, grouped by rink
+    sheets_by_rink = {}
+    for sheet in all_sheets:
+        rink_id = sheet["rink_id"]
+        if rink_id not in sheets_by_rink:
+            sheets_by_rink[rink_id] = []
+        sheets_by_rink[rink_id].append(sheet)
+
+    sheets_html_parts = []
+    for rink in all_rinks:
+        rink_sheets = sheets_by_rink.get(rink["rink_id"], [])
+        if rink_sheets:
+            sheets_html_parts.append(f'<div style="margin-bottom: 8px;"><strong>{rink["name"]}</strong></div>')
+            for sheet in rink_sheets:
+                sheets_html_parts.append(f'<label style="display: block; margin-left: 16px;"><input type="checkbox" name="sheet" value="{sheet["sheet_id"]}"> {sheet["name"]}</label>')
+    sheets_checkboxes_html = ''.join(sheets_html_parts) if sheets_html_parts else '<p style="color: #999;">No venues/sheets configured. Add them in Venues first.</p>'
+
+    html = f'''
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="UTF-8">
-        <title>score-cloud | Games</title>
+        <title>score-cloud | Leagues</title>
         <link rel="stylesheet" href="/static/admin.css">
-    </head>
-    <body>
-        {admin_nav("games")}
-        <div class="container">
-            <h1>Games</h1>
-            <div class="content">
-                <table id="gamesTable">
-                    <thead>
-                        <tr>
-                            <th style="width: 12%;">Game ID</th>
-                            <th style="width: 12%;">Game Date</th>
-                            <th style="width: 26%;">Teams</th>
-                            <th style="width: 10%;">Score</th>
-                            <th style="width: 12%;">Clock</th>
-                            <th style="width: 10%;">Status</th>
-                            <th style="width: 13%;">Period Length</th>
-                        </tr>
-                        <tr class="filter-row">
-                            <td><input type="text" id="filterGameId" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td><input type="text" id="filterGameDate" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td><input type="text" id="filterTeams" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td><input type="text" id="filterScore" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td><input type="text" id="filterClock" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td><input type="text" id="filterStatus" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td><input type="text" id="filterPeriod" placeholder="Filter..." onkeyup="filterTable()"></td>
-                        </tr>
-                    </thead>
-                    <tbody id="gamesBody">
-                        <tr>
-                            <td colspan="7" class="no-games">Loading...</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
         <script>
-        function formatClock(seconds) {{
-            const mins = Math.floor(seconds / 60);
-            const secs = seconds % 60;
-            return `${{mins}}:${{secs.toString().padStart(2, '0')}}`;
-        }}
+            // Tree state management
+            const TREE_STATE_KEY = 'org_tree_expanded_nodes';
 
-        function filterTable() {{
-            const filters = {{
-                gameId: document.getElementById('filterGameId').value.toLowerCase(),
-                gameDate: document.getElementById('filterGameDate').value.toLowerCase(),
-                teams: document.getElementById('filterTeams').value.toLowerCase(),
-                score: document.getElementById('filterScore').value.toLowerCase(),
-                clock: document.getElementById('filterClock').value.toLowerCase(),
-                status: document.getElementById('filterStatus').value.toLowerCase(),
-                period: document.getElementById('filterPeriod').value.toLowerCase()
-            }};
-
-            const tbody = document.getElementById('gamesBody');
-            const rows = tbody.getElementsByTagName('tr');
-
-            for (let i = 0; i < rows.length; i++) {{
-                const cells = rows[i].getElementsByTagName('td');
-                if (cells.length < 7) continue; // Skip "no games" row
-
-                const gameId = cells[0].textContent.toLowerCase();
-                const gameDate = cells[1].textContent.toLowerCase();
-                const teams = cells[2].textContent.toLowerCase();
-                const score = cells[3].textContent.toLowerCase();
-                const clock = cells[4].textContent.toLowerCase();
-                const status = cells[5].textContent.toLowerCase();
-                const period = cells[6].textContent.toLowerCase();
-
-                const match =
-                    gameId.includes(filters.gameId) &&
-                    gameDate.includes(filters.gameDate) &&
-                    teams.includes(filters.teams) &&
-                    score.includes(filters.score) &&
-                    clock.includes(filters.clock) &&
-                    status.includes(filters.status) &&
-                    period.includes(filters.period);
-
-                rows[i].style.display = match ? '' : 'none';
+            function getExpandedNodes() {{
+                const stored = localStorage.getItem(TREE_STATE_KEY);
+                return stored ? JSON.parse(stored) : [];
             }}
-        }}
 
-        function updateGameStates() {{
-            fetch('/admin/games/state?format=json')
-                .then(response => response.json())
-                .then(data => {{
-                    const tbody = document.getElementById('gamesBody');
+            function saveExpandedNodes(expandedNodes) {{
+                localStorage.setItem(TREE_STATE_KEY, JSON.stringify(expandedNodes));
+            }}
 
-                    if (data.games.length === 0) {{
-                        tbody.innerHTML = '<tr><td colspan="7" class="no-games">No games found</td></tr>';
+            function getNodeKey(node) {{
+                const type = node.getAttribute('data-type');
+                const id = node.getAttribute('data-id');
+                return `${{type}}:${{id}}`;
+            }}
+
+            // Tree navigation
+            function toggleNode(header) {{
+                const node = header.parentElement;
+                const children = node.querySelector('.node-children');
+                const icon = header.querySelector('.toggle-icon');
+                const nodeKey = getNodeKey(node);
+                let expandedNodes = getExpandedNodes();
+
+                if (children.style.display === 'none') {{
+                    children.style.display = 'block';
+                    icon.textContent = '▼';
+                    // Add to expanded nodes
+                    if (!expandedNodes.includes(nodeKey)) {{
+                        expandedNodes.push(nodeKey);
+                    }}
+                }} else {{
+                    children.style.display = 'none';
+                    icon.textContent = '▶';
+                    // Remove from expanded nodes
+                    expandedNodes = expandedNodes.filter(k => k !== nodeKey);
+                }}
+
+                saveExpandedNodes(expandedNodes);
+            }}
+
+            // Restore tree state on page load
+            function restoreTreeState() {{
+                const expandedNodes = getExpandedNodes();
+                expandedNodes.forEach(nodeKey => {{
+                    const [type, id] = nodeKey.split(':');
+                    const node = document.querySelector(`.tree-node[data-type="${{type}}"][data-id="${{id}}"]`);
+                    if (node) {{
+                        const children = node.querySelector('.node-children');
+                        const icon = node.querySelector('.toggle-icon');
+                        if (children && icon) {{
+                            children.style.display = 'block';
+                            icon.textContent = '▼';
+                        }}
+                    }}
+                }});
+
+                // Restore scroll position
+                const scrollPos = localStorage.getItem('org_tree_scroll_pos');
+                if (scrollPos) {{
+                    window.scrollTo(0, parseInt(scrollPos));
+                    localStorage.removeItem('org_tree_scroll_pos');
+                }}
+            }}
+
+            // Save scroll position before reload
+            function saveScrollPosition() {{
+                localStorage.setItem('org_tree_scroll_pos', window.scrollY);
+            }}
+
+            // Restore state when DOM is ready
+            document.addEventListener('DOMContentLoaded', restoreTreeState);
+
+            // Modal management
+            let currentModalType = null;
+            let currentContext = {{}};
+
+            function openModal(type, ...context) {{
+                currentModalType = type;
+                const modal = document.getElementById('entityModal');
+                const title = document.getElementById('modalTitle');
+                const form = document.getElementById('entityForm');
+                const fields = document.getElementById('modalFields');
+
+                // Reset form
+                form.reset();
+
+                // Set title and fields based on type
+                if (type === 'league') {{
+                    title.textContent = 'Add League';
+                    fields.innerHTML = `
+                        <div class="form-group">
+                            <label>League ID <span class="required">*</span></label>
+                            <input type="text" name="league_id" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Name <span class="required">*</span></label>
+                            <input type="text" name="name" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Type</label>
+                            <select name="league_type">
+                                <option value="">--</option>
+                                <option value="professional">Professional</option>
+                                <option value="amateur">Amateur</option>
+                                <option value="rec">Recreational</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Description</label>
+                            <textarea name="description"></textarea>
+                        </div>
+                    `;
+                }} else if (type === 'season') {{
+                    currentContext = {{league_id: context[0]}};
+                    title.textContent = 'Add Season to League';
+                    fields.innerHTML = `
+                        <div class="form-group">
+                            <label>Season ID <span class="required">*</span></label>
+                            <input type="text" name="season_id" required placeholder="e.g., 2025-2026">
+                        </div>
+                        <div class="form-group">
+                            <label>Name <span class="required">*</span></label>
+                            <input type="text" name="name" required placeholder="e.g., 2025-2026 Season">
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Start Date <span class="required">*</span></label>
+                                <input type="date" name="start_date" required>
+                            </div>
+                            <div class="form-group">
+                                <label>End Date</label>
+                                <input type="date" name="end_date">
+                            </div>
+                        </div>
+                    `;
+                }} else if (type === 'division') {{
+                    currentContext = {{league_id: context[0], season_id: context[1]}};
+                    title.textContent = 'Add Division';
+                    fields.innerHTML = `
+                        <div class="form-group">
+                            <label>Division ID <span class="required">*</span></label>
+                            <input type="text" name="division_id" required placeholder="e.g., div-a">
+                        </div>
+                        <div class="form-group">
+                            <label>Name <span class="required">*</span></label>
+                            <input type="text" name="name" required placeholder="e.g., A Division">
+                        </div>
+                        <div class="form-group">
+                            <label>Type</label>
+                            <select name="division_type">
+                                <option value="">--</option>
+                                <option value="division">Division</option>
+                                <option value="conference">Conference</option>
+                                <option value="bracket">Bracket</option>
+                                <option value="pool">Pool</option>
+                            </select>
+                        </div>
+                    `;
+                }} else if (type === 'registration') {{
+                    currentContext = {{league_id: context[0], season_id: context[1], division_id: context[2]}};
+                    title.textContent = 'Register Team';
+                    fields.innerHTML = `
+                        <div class="form-group">
+                            <label>Select Existing Team (optional)</label>
+                            <select id="existingTeamSelect" name="existing_team" onchange="fillTeamData(this.value)">
+                                {team_options_html}
+                            </select>
+                            <small style="display: block; margin-top: 3px; font-size: 11px; color: #666;">
+                                Select a team from a previous season, or enter details manually below
+                            </small>
+                        </div>
+                        <div class="form-group">
+                            <label>Team Name <span class="required">*</span></label>
+                            <input type="text" id="teamNameInput" name="team_name" required placeholder="e.g., Ice Dogs">
+                        </div>
+                        <div class="form-group">
+                            <label>Abbreviation <span class="required">*</span></label>
+                            <input type="text" id="abbreviationInput" name="abbreviation" required placeholder="e.g., DOG" maxlength="5">
+                        </div>
+                        <div class="form-group">
+                            <label>Organizer Name</label>
+                            <input type="text" id="organizerNameInput" name="organizer_name" placeholder="e.g., John Smith">
+                        </div>
+                        <div class="form-group">
+                            <label>Organizer Email</label>
+                            <input type="email" id="organizerEmailInput" name="organizer_email" placeholder="e.g., john@example.com">
+                        </div>
+                        <div class="form-group">
+                            <label>Organizer Phone</label>
+                            <input type="tel" id="organizerPhoneInput" name="organizer_phone" placeholder="e.g., 555-1234">
+                        </div>
+                        <div class="form-group">
+                            <label>Registration ID</label>
+                            <input type="text" name="registration_id" placeholder="Auto-generated if blank">
+                        </div>
+                    `;
+                    // Filter dropdown to exclude teams already in this division (after DOM updates)
+                    setTimeout(() => filterTeamDropdown(context[0], context[1], context[2]), 0);
+                }} else if (type === 'player') {{
+                    currentContext = {{registration_id: context[0], team_name: context[1]}};
+                    title.textContent = `Add Player to ${{context[1]}}`;
+                    fields.innerHTML = `
+                        <div class="form-group">
+                            <label>Player <span class="required">*</span></label>
+                            <select name="player_id" required>
+                                <option value="">-- Select Player --</option>
+                                {player_options}
+                            </select>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Jersey #</label>
+                                <input type="number" name="jersey_number" min="0" max="99">
+                            </div>
+                            <div class="form-group">
+                                <label>Position</label>
+                                <select name="position">
+                                    <option value="">--</option>
+                                    <option value="C">C - Center</option>
+                                    <option value="LW">LW - Left Wing</option>
+                                    <option value="RW">RW - Right Wing</option>
+                                    <option value="D">D - Defense</option>
+                                    <option value="G">G - Goalie</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Status</label>
+                            <select name="roster_status">
+                                <option value="active">Active</option>
+                                <option value="injured">Injured</option>
+                                <option value="scratched">Scratched</option>
+                            </select>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label><input type="checkbox" name="is_captain"> Captain (C)</label>
+                            </div>
+                            <div class="form-group">
+                                <label><input type="checkbox" name="is_alternate"> Alternate (A)</label>
+                            </div>
+                        </div>
+                    `;
+                }}
+
+                modal.style.display = 'flex';
+            }}
+
+            // Team data for auto-filling registration form
+            const teamData = {team_data_json_str};
+
+            // Active teams by division (to exclude from dropdown)
+            const activeTeamsByDivision = {active_teams_by_division_str};
+
+            // Fill team data when selecting from existing team dropdown
+            function fillTeamData(teamKey) {{
+                if (!teamKey) {{
+                    // Clear fields if no team selected
+                    document.getElementById('teamNameInput').value = '';
+                    document.getElementById('abbreviationInput').value = '';
+                    document.getElementById('organizerNameInput').value = '';
+                    document.getElementById('organizerEmailInput').value = '';
+                    document.getElementById('organizerPhoneInput').value = '';
+                    return;
+                }}
+
+                const team = teamData[teamKey];
+                if (team) {{
+                    document.getElementById('teamNameInput').value = team.team_name || '';
+                    document.getElementById('abbreviationInput').value = team.abbreviation || '';
+                    document.getElementById('organizerNameInput').value = team.organizer_name || '';
+                    document.getElementById('organizerEmailInput').value = team.organizer_email || '';
+                    document.getElementById('organizerPhoneInput').value = team.organizer_phone || '';
+                }}
+            }}
+
+            // Filter team dropdown to exclude teams already in the division
+            function filterTeamDropdown(leagueId, seasonId, divisionId) {{
+                const divKey = `${{leagueId}}|${{seasonId}}|${{divisionId}}`;
+                const activeTeams = activeTeamsByDivision[divKey] || [];
+                const select = document.getElementById('existingTeamSelect');
+                if (!select) return;
+
+                // Show/hide options based on whether team is already active
+                const options = select.querySelectorAll('option');
+                options.forEach(option => {{
+                    if (option.value === '') {{
+                        // Keep the placeholder visible
+                        option.style.display = '';
+                    }} else if (activeTeams.includes(option.value)) {{
+                        // Hide teams already in this division
+                        option.style.display = 'none';
+                    }} else {{
+                        option.style.display = '';
+                    }}
+                }});
+
+                // Reset selection
+                select.value = '';
+            }}
+
+            function closeModal() {{
+                document.getElementById('entityModal').style.display = 'none';
+                currentModalType = null;
+                currentContext = {{}};
+            }}
+
+            // Form submission
+            document.addEventListener('DOMContentLoaded', function() {{
+                document.getElementById('entityForm').addEventListener('submit', async function(e) {{
+                    e.preventDefault();
+
+                    const formData = new FormData(e.target);
+                    let endpoint = '';
+                    let body = {{}};
+
+                    if (currentModalType === 'league') {{
+                        endpoint = '/admin/leagues';
+                        body = {{
+                            league_id: formData.get('league_id'),
+                            name: formData.get('name'),
+                            league_type: formData.get('league_type') || null,
+                            description: formData.get('description') || null
+                        }};
+                    }} else if (currentModalType === 'season') {{
+                        endpoint = '/admin/seasons';
+                        body = {{
+                            season_id: formData.get('season_id'),
+                            name: formData.get('name'),
+                            start_date: formData.get('start_date'),
+                            end_date: formData.get('end_date') || null
+                        }};
+
+                        // After creating season, link it to league
+                        try {{
+                            const response1 = await fetch(endpoint, {{
+                                method: 'POST',
+                                headers: {{'Content-Type': 'application/json'}},
+                                body: JSON.stringify(body)
+                            }});
+
+                            if (!response1.ok) {{
+                                const err = await response1.json();
+                                showMessage(err.detail || 'Failed to create season', 'error');
+                                return;
+                            }}
+
+                            // Now link to league
+                            const response2 = await fetch('/admin/league-seasons', {{
+                                method: 'POST',
+                                headers: {{'Content-Type': 'application/json'}},
+                                body: JSON.stringify({{
+                                    league_id: currentContext.league_id,
+                                    season_id: formData.get('season_id')
+                                }})
+                            }});
+
+                            if (response2.ok) {{
+                                showMessage('Season created and linked to league', 'success');
+                                closeModal();
+                                setTimeout(() => location.reload(), 1000);
+                            }} else {{
+                                const err = await response2.json();
+                                showMessage(err.detail || 'Failed to link season to league', 'error');
+                            }}
+                        }} catch (error) {{
+                            showMessage('Network error', 'error');
+                        }}
+                        return;
+                    }} else if (currentModalType === 'division') {{
+                        endpoint = '/admin/divisions';
+                        body = {{
+                            division_id: formData.get('division_id'),
+                            name: formData.get('name'),
+                            division_type: formData.get('division_type') || null
+                        }};
+
+                        // After creating division, link it to league-season
+                        try {{
+                            const response1 = await fetch(endpoint, {{
+                                method: 'POST',
+                                headers: {{'Content-Type': 'application/json'}},
+                                body: JSON.stringify(body)
+                            }});
+
+                            if (!response1.ok) {{
+                                const err = await response1.json();
+                                showMessage(err.detail || 'Failed to create division', 'error');
+                                return;
+                            }}
+
+                            // Now link to league-season
+                            const response2 = await fetch('/admin/league-season-divisions', {{
+                                method: 'POST',
+                                headers: {{'Content-Type': 'application/json'}},
+                                body: JSON.stringify({{
+                                    league_id: currentContext.league_id,
+                                    season_id: currentContext.season_id,
+                                    division_id: formData.get('division_id')
+                                }})
+                            }});
+
+                            if (response2.ok) {{
+                                showMessage('Division created and linked to league-season', 'success');
+                                closeModal();
+                                setTimeout(() => location.reload(), 1000);
+                            }} else {{
+                                const err = await response2.json();
+                                showMessage(err.detail || 'Failed to link division to league-season', 'error');
+                            }}
+                        }} catch (error) {{
+                            showMessage('Network error', 'error');
+                        }}
+                        return;
+                    }} else if (currentModalType === 'registration') {{
+                        endpoint = '/admin/team-registrations';
+                        const regId = formData.get('registration_id') || `reg-${{Date.now()}}`;
+                        body = {{
+                            registration_id: regId,
+                            team_name: formData.get('team_name'),
+                            abbreviation: formData.get('abbreviation'),
+                            organizer_name: formData.get('organizer_name') || null,
+                            organizer_email: formData.get('organizer_email') || null,
+                            organizer_phone: formData.get('organizer_phone') || null,
+                            league_id: currentContext.league_id,
+                            season_id: currentContext.season_id,
+                            division_id: currentContext.division_id
+                        }};
+                    }} else if (currentModalType === 'player') {{
+                        endpoint = '/admin/roster-entries';
+                        body = {{
+                            registration_id: currentContext.registration_id,
+                            player_id: parseInt(formData.get('player_id')),
+                            jersey_number: formData.get('jersey_number') ? parseInt(formData.get('jersey_number')) : null,
+                            position: formData.get('position') || null,
+                            roster_status: formData.get('roster_status') || 'active',
+                            is_captain: formData.get('is_captain') === 'on',
+                            is_alternate: formData.get('is_alternate') === 'on'
+                        }};
+                    }}
+
+                    try {{
+                        const response = await fetch(endpoint, {{
+                            method: 'POST',
+                            headers: {{'Content-Type': 'application/json'}},
+                            body: JSON.stringify(body)
+                        }});
+
+                        if (response.ok) {{
+                            showMessage('Created successfully', 'success');
+                            closeModal();
+                            saveScrollPosition();
+                            setTimeout(() => location.reload(), 1000);
+                        }} else {{
+                            const error = await response.json();
+                            showMessage(error.detail || 'Failed to create', 'error');
+                        }}
+                    }} catch (error) {{
+                        showMessage('Network error', 'error');
+                    }}
+                }});
+            }});
+
+            function showMessage(text, type) {{
+                const msg = document.getElementById('message');
+                msg.textContent = text;
+                msg.className = `message ${{type}}`;
+                msg.style.display = 'block';
+                setTimeout(() => {{ msg.style.display = 'none'; }}, 5000);
+            }}
+
+            // Close modal on outside click
+            document.addEventListener('click', function(e) {{
+                const modal = document.getElementById('entityModal');
+                if (e.target === modal) {{
+                    closeModal();
+                }}
+            }});
+
+            // Seed functions
+            async function seedLeagueData() {{
+                if (!confirm('Seed league data (teams, players, rosters)? Existing data will not be overwritten.')) {{
+                    return;
+                }}
+
+                try {{
+                    const response = await fetch('/admin/seed', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify({{ seed_all: true, player_count: 120, exclude_games: true }})
+                    }});
+
+                    const result = await response.json();
+
+                    if (response.ok) {{
+                        const summary = Object.entries(result.seeded)
+                            .filter(([k, v]) => v > 0)
+                            .map(([k, v]) => `${{k}}: ${{v}}`)
+                            .join(', ');
+                        showMessage(`Seeded: ${{summary}}`, 'success');
+                        setTimeout(() => location.reload(), 1500);
+                    }} else {{
+                        showMessage(result.detail || 'Failed to seed', 'error');
+                    }}
+                }} catch (error) {{
+                    showMessage('Network error', 'error');
+                }}
+            }}
+
+            // Seed games function
+            async function seedGames() {{
+                if (!confirm('Seed sample games? This requires existing league data (teams, registrations).')) {{
+                    return;
+                }}
+
+                try {{
+                    const response = await fetch('/admin/seed/games', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify({{ game_count: 8 }})
+                    }});
+
+                    const result = await response.json();
+
+                    if (response.ok) {{
+                        showMessage(`Seeded ${{result.seeded.games}} games`, 'success');
+                        setTimeout(() => location.reload(), 1500);
+                    }} else {{
+                        showMessage(result.detail || 'Failed to seed games', 'error');
+                    }}
+                }} catch (error) {{
+                    showMessage('Network error', 'error');
+                }}
+            }}
+
+            // Team filter function
+            function filterDivisionGames(divId, regId) {{
+                const table = document.getElementById('games_' + divId);
+                if (!table) return;
+                const rows = table.getElementsByTagName('tbody')[0].getElementsByTagName('tr');
+
+                for (let i = 0; i < rows.length; i++) {{
+                    const row = rows[i];
+                    const homeReg = row.getAttribute('data-home-reg');
+                    const awayReg = row.getAttribute('data-away-reg');
+
+                    if (!regId || homeReg === regId || awayReg === regId) {{
+                        row.style.display = '';
+                    }} else {{
+                        row.style.display = 'none';
+                    }}
+                }}
+            }}
+
+            // Delete games for a specific division
+            async function deleteDivisionGames(leagueId, seasonId, divisionId) {{
+                if (!confirm('Delete all games for this division? This cannot be undone!')) {{
+                    return;
+                }}
+
+                try {{
+                    const response = await fetch(`/admin/games/division/${{leagueId}}/${{seasonId}}/${{divisionId}}`, {{
+                        method: 'DELETE'
+                    }});
+
+                    const result = await response.json();
+
+                    if (response.ok) {{
+                        showMessage(result.message, 'success');
+                        setTimeout(() => location.reload(), 1500);
+                    }} else {{
+                        showMessage(result.detail || 'Failed to delete games', 'error');
+                    }}
+                }} catch (error) {{
+                    showMessage('Network error', 'error');
+                }}
+            }}
+
+            // Delete all games
+            async function deleteAllGames() {{
+                if (!confirm('DELETE ALL GAMES? This cannot be undone!')) {{
+                    return;
+                }}
+
+                try {{
+                    const response = await fetch('/admin/games/all', {{
+                        method: 'DELETE'
+                    }});
+
+                    const result = await response.json();
+
+                    if (response.ok) {{
+                        showMessage(result.message, 'success');
+                        setTimeout(() => location.reload(), 1500);
+                    }} else {{
+                        showMessage(result.detail || 'Failed to delete games', 'error');
+                    }}
+                }} catch (error) {{
+                    showMessage('Network error', 'error');
+                }}
+            }}
+
+            // Remove player from roster
+            async function removePlayer(rosterEntryId, playerName) {{
+                if (!confirm(`Remove ${{playerName}} from roster?`)) {{
+                    return;
+                }}
+
+                try {{
+                    const response = await fetch(`/admin/roster-entries/${{rosterEntryId}}`, {{
+                        method: 'DELETE'
+                    }});
+
+                    const result = await response.json();
+
+                    if (response.ok) {{
+                        showMessage(`${{playerName}} removed from roster`, 'success');
+                        saveScrollPosition();
+                        setTimeout(() => location.reload(), 1000);
+                    }} else {{
+                        showMessage(result.detail || 'Failed to remove player', 'error');
+                    }}
+                }} catch (error) {{
+                    showMessage('Network error', 'error');
+                }}
+            }}
+
+            async function removeTeam(registrationId, teamName) {{
+                if (!confirm(`Remove ${{teamName}} from this division? This will also delete all roster entries for this team.`)) {{
+                    return;
+                }}
+
+                try {{
+                    const response = await fetch(`/admin/registrations/${{registrationId}}`, {{
+                        method: 'DELETE'
+                    }});
+
+                    const result = await response.json();
+
+                    if (response.ok) {{
+                        showMessage(`${{teamName}} removed from division`, 'success');
+                        saveScrollPosition();
+                        setTimeout(() => location.reload(), 1000);
+                    }} else {{
+                        showMessage(result.detail || 'Failed to remove team', 'error');
+                    }}
+                }} catch (error) {{
+                    showMessage('Network error', 'error');
+                }}
+            }}
+
+            // Clear all data (leagues, teams, players, games)
+            async function clearAllData() {{
+                if (!confirm('DELETE ALL DATA? This will delete all leagues, teams, players, and games. This cannot be undone!')) {{
+                    return;
+                }}
+
+                try {{
+                    const response = await fetch('/admin/seed/clear', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify({{ confirm: true }})
+                    }});
+
+                    const result = await response.json();
+
+                    if (response.ok) {{
+                        showMessage('All data cleared', 'success');
+                        setTimeout(() => location.reload(), 1500);
+                    }} else {{
+                        showMessage(result.detail || 'Failed to clear data', 'error');
+                    }}
+                }} catch (error) {{
+                    showMessage('Network error', 'error');
+                }}
+            }}
+
+            // Schedule Modal
+            let scheduleContext = {{}};
+
+            function openScheduleModal(leagueId, seasonId, divisionId, divisionName, teamCount) {{
+                scheduleContext = {{ leagueId, seasonId, divisionId, divisionName, teamCount }};
+                const modal = document.getElementById('scheduleModal');
+                document.getElementById('scheduleModalTitle').textContent = `Schedule Games: ${{divisionName}}`;
+                document.getElementById('scheduleTeamCount').textContent = `${{teamCount}} teams in division`;
+
+                // Set default games per team based on team count
+                const defaultGames = Math.max(8, (teamCount - 1) * 2);
+                document.getElementById('gamesPerTeam').value = defaultGames;
+
+                modal.style.display = 'flex';
+            }}
+
+            function closeScheduleModal() {{
+                document.getElementById('scheduleModal').style.display = 'none';
+                scheduleContext = {{}};
+            }}
+
+            function openMultiDivisionScheduleModal(leagueId, seasonId, seasonName, divisions) {{
+                scheduleContext = {{ leagueId, seasonId, seasonName, divisions }};
+                const modal = document.getElementById('scheduleModal');
+                document.getElementById('scheduleModalTitle').textContent = `Schedule Games: ${{seasonName}}`;
+
+                // Build division selection UI
+                const totalTeams = divisions.reduce((sum, d) => sum + d.team_count, 0);
+                let divisionsHtml = `<p style="font-size: 12px; color: #666; margin-bottom: 12px;">Select divisions to schedule together (total: ${{totalTeams}} teams across ${{divisions.length}} divisions)</p>`;
+                divisionsHtml += '<div style="border: 1px solid #ddd; border-radius: 4px; padding: 12px; background: #fafafa; max-height: 300px; overflow-y: auto;">';
+
+                divisions.forEach(div => {{
+                    const defaultGames = Math.max(8, (div.team_count - 1) * 2);
+                    divisionsHtml += `
+                        <div style="margin-bottom: 12px; padding: 10px; background: white; border-radius: 3px; border: 1px solid #e0e0e0;">
+                            <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                                <input type="checkbox" name="division_select" value="${{div.division_id}}" checked style="width: auto;">
+                                <span style="font-weight: 600; flex: 1;">${{div.name}}</span>
+                                <span style="color: #666; font-size: 11px;">${{div.team_count}} teams</span>
+                            </label>
+                            <div style="margin-left: 28px; display: flex; align-items: center; gap: 8px;">
+                                <label style="font-size: 12px; color: #666;">Games per team:</label>
+                                <input type="number" name="games_per_team_${{div.division_id}}" value="${{defaultGames}}" min="1" max="50" style="width: 80px; padding: 3px 6px;">
+                            </div>
+                        </div>
+                    `;
+                }});
+                divisionsHtml += '</div>';
+
+                document.getElementById('scheduleTeamCount').innerHTML = divisionsHtml;
+
+                modal.style.display = 'flex';
+            }}
+
+            async function submitSchedule(event) {{
+                event.preventDefault();
+
+                const form = event.target;
+                const formData = new FormData(form);
+
+                // Collect days of week
+                const daysOfWeek = [];
+                ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'].forEach(day => {{
+                    if (formData.get('day_' + day)) daysOfWeek.push(day);
+                }});
+
+                if (daysOfWeek.length === 0) {{
+                    showMessage('Please select at least one day of the week', 'error');
+                    return;
+                }}
+
+                // Collect time slots
+                const timeSlotsRaw = formData.get('time_slots') || '';
+                const timeSlots = timeSlotsRaw.split(',').map(t => t.trim()).filter(t => t);
+                if (timeSlots.length === 0) {{
+                    showMessage('Please select at least one time slot', 'error');
+                    return;
+                }}
+
+                // Collect sheet IDs
+                const sheetIds = [];
+                const sheetCheckboxes = document.querySelectorAll('input[name="sheet"]:checked');
+                sheetCheckboxes.forEach(cb => sheetIds.push(cb.value));
+
+                if (sheetIds.length === 0) {{
+                    showMessage('Please select at least one sheet/ice surface', 'error');
+                    return;
+                }}
+
+                // Check if multi-division mode
+                const isMultiDivision = scheduleContext.divisions !== undefined;
+                let request;
+
+                if (isMultiDivision) {{
+                    // Collect selected divisions and their games_per_team
+                    const divisionCheckboxes = document.querySelectorAll('input[name="division_select"]:checked');
+                    if (divisionCheckboxes.length === 0) {{
+                        showMessage('Please select at least one division', 'error');
                         return;
                     }}
 
-                    let html = '';
-                    data.games.forEach(game => {{
-                        const status = game.clock_running ? 'running' : 'paused';
-                        const statusText = game.clock_running ? 'Running' : 'Paused';
-                        const clock = formatClock(game.clock_seconds);
-                        const score = `${{game.home_score}} - ${{game.away_score}}`;
-                        // Convert UTC timestamp to local date (handles timezone offset)
-                        const startTime = new Date(game.start_time);
-                        const gameDate = startTime.toLocaleDateString('en-CA'); // YYYY-MM-DD format
-
-                        html += `
-                            <tr>
-                                <td class="game-id">${{game.game_id}}</td>
-                                <td>${{gameDate}}</td>
-                                <td>${{game.home_team}} vs ${{game.away_team}}</td>
-                                <td><strong>${{score}}</strong></td>
-                                <td class="clock">${{clock}}</td>
-                                <td><span class="status ${{status}}">${{statusText}}</span></td>
-                                <td>${{game.period_length_min}} min</td>
-                            </tr>
-                        `;
+                    const divisions = [];
+                    divisionCheckboxes.forEach(cb => {{
+                        const divisionId = cb.value;
+                        const gamesPerTeam = parseInt(formData.get(`games_per_team_${{divisionId}}`));
+                        divisions.push({{
+                            division_id: divisionId,
+                            games_per_team: gamesPerTeam
+                        }});
                     }});
 
-                    tbody.innerHTML = html;
-                }})
-                .catch(error => {{
-                    console.error('Error fetching game states:', error);
-                }});
-        }}
+                    request = {{
+                        league_id: scheduleContext.leagueId,
+                        season_id: scheduleContext.seasonId,
+                        divisions: divisions,
+                        days_of_week: daysOfWeek,
+                        time_slots: timeSlots,
+                        sheet_ids: sheetIds,
+                        blackout_dates: (formData.get('blackout_dates') || '').split(',').map(d => d.trim()).filter(d => d),
+                        clear_existing: formData.get('clear_existing') === 'on',
+                        // Solver weights
+                        weight_time_slot: parseInt(formData.get('weight_time_slot') || '10'),
+                        weight_sheet: parseInt(formData.get('weight_sheet') || '10'),
+                        weight_home_away: parseInt(formData.get('weight_home_away') || '20'),
+                        weight_opponent: parseInt(formData.get('weight_opponent') || '5'),
+                        weight_packing: parseInt(formData.get('weight_packing') || '1'),
+                        weight_no_consecutive_opponent: parseInt(formData.get('weight_no_consecutive_opponent') || '50'),
+                        max_consecutive_byes: parseInt(formData.get('max_consecutive_byes') || '1'),
+                        timeout_seconds: parseInt(formData.get('timeout_seconds') || '30')
+                    }};
+                }} else {{
+                    // Single division mode (legacy)
+                    request = {{
+                        league_id: scheduleContext.leagueId,
+                        season_id: scheduleContext.seasonId,
+                        division_id: scheduleContext.divisionId,
+                        games_per_team: parseInt(formData.get('games_per_team')),
+                        days_of_week: daysOfWeek,
+                        time_slots: timeSlots,
+                        sheet_ids: sheetIds,
+                        blackout_dates: (formData.get('blackout_dates') || '').split(',').map(d => d.trim()).filter(d => d),
+                        clear_existing: formData.get('clear_existing') === 'on',
+                        // Solver weights
+                        weight_time_slot: parseInt(formData.get('weight_time_slot') || '10'),
+                        weight_sheet: parseInt(formData.get('weight_sheet') || '10'),
+                        weight_home_away: parseInt(formData.get('weight_home_away') || '20'),
+                        weight_opponent: parseInt(formData.get('weight_opponent') || '5'),
+                        weight_packing: parseInt(formData.get('weight_packing') || '1'),
+                        weight_no_consecutive_opponent: parseInt(formData.get('weight_no_consecutive_opponent') || '50'),
+                        max_consecutive_byes: parseInt(formData.get('max_consecutive_byes') || '1'),
+                        timeout_seconds: parseInt(formData.get('timeout_seconds') || '30')
+                    }};
+                }}
 
-        // Load game states on page load
-        updateGameStates();
-        </script>
-    </body>
-    </html>
-    """
+                // Show loading state with progress indicator
+                const submitBtn = form.querySelector('button[type="submit"]');
+                const originalText = submitBtn.textContent;
+                submitBtn.disabled = true;
 
-    return HTMLResponse(content=html)
+                // Show status message
+                const statusDiv = document.getElementById('scheduleStatus');
+                statusDiv.style.display = 'block';
+                statusDiv.innerHTML = `
+                    <div class="spinner"></div>
+                    <p>Generating schedule... This usually takes 10-30 seconds.</p>
+                    <p class="status-detail">Running constraint solver to optimize fairness...</p>
+                `;
 
+                let elapsed = 0;
+                const statusInterval = setInterval(() => {{
+                    elapsed += 1;
+                    const detail = statusDiv.querySelector('.status-detail');
+                    if (elapsed < 15) {{
+                        detail.textContent = `Running constraint solver to optimize fairness... (${{elapsed}}s)`;
+                    }} else if (elapsed < 30) {{
+                        detail.textContent = `Still optimizing... Complex schedules take longer (${{elapsed}}s)`;
+                    }} else {{
+                        detail.textContent = `Almost there... (${{elapsed}}s)`;
+                    }}
+                }}, 1000);
 
-@app.get("/admin/rosters")
-async def get_rosters_admin(format: Optional[str] = Query(None, description="Response format: 'json' or 'html'")):
-    """
-    Admin page to view all team rosters.
+                try {{
+                    const response = await fetch('/admin/schedules/generate', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify(request)
+                    }});
 
-    Returns HTML for browser viewing or JSON if format=json parameter is provided.
-    """
-    from fastapi.responses import HTMLResponse
+                    const result = await response.json();
 
-    db = get_db()
+                    clearInterval(statusInterval);
+                    statusDiv.style.display = 'none';
 
-    # Get all roster entries with player details
-    rosters = db.execute("""
-        SELECT DISTINCT
-            t.abbreviation as team_abbrev,
-            p.player_id,
-            p.full_name,
-            re.jersey_number,
-            re.roster_status,
-            re.added_at,
-            re.removed_at
-        FROM roster_entries re
-        JOIN players p ON re.player_id = p.player_id
-        JOIN team_registrations tr ON re.registration_id = tr.registration_id
-        JOIN teams t ON tr.team_id = t.team_id
-        ORDER BY t.abbreviation, p.full_name
-    """).fetchall()
-
-    db.close()
-
-    # Return JSON if requested
-    if format == "json":
-        return {"rosters": [dict(r) for r in rosters]}
-
-    # Generate HTML view
-    import datetime
-
-    def format_timestamp(ts):
-        if ts:
-            return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
-        return "Active"
-
-    rosters_html = ""
-    if not rosters:
-        rosters_html = '<tr><td colspan="6" style="text-align: center; color: #999; padding: 40px;">No rosters found.</td></tr>'
-    else:
-        for r in rosters:
-            status_class = "active" if r["roster_status"] == "active" else "inactive"
-            removed_display = "Active" if r["removed_at"] is None else format_timestamp(r["removed_at"])
-
-            rosters_html += f'''
-            <tr>
-                <td class="team-abbrev">{r["team_abbrev"]}</td>
-                <td>{r["full_name"]}</td>
-                <td>{r["jersey_number"] or "-"}</td>
-                <td><span class="status-badge {status_class}">{r["roster_status"]}</span></td>
-                <td class="timestamp">{format_timestamp(r["added_at"])}</td>
-                <td class="timestamp">{removed_display}</td>
-            </tr>
-            '''
-
-    html = f'''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>score-cloud | Rosters</title>
-        <link rel="stylesheet" href="/static/admin.css">
-        <script>
-            function filterTable() {{
-                const filters = {{
-                    team: document.getElementById('filterTeam').value.toLowerCase(),
-                    name: document.getElementById('filterName').value.toLowerCase(),
-                    status: document.getElementById('filterStatus').value.toLowerCase()
-                }};
-
-                const rows = document.querySelectorAll('#rostersTable tbody tr');
-
-                rows.forEach(row => {{
-                    if (row.cells.length < 5) return; // Skip empty row
-
-                    const team = row.cells[0].textContent.toLowerCase();
-                    const name = row.cells[1].textContent.toLowerCase();
-                    const status = row.cells[3].textContent.toLowerCase();
-
-                    const match =
-                        team.includes(filters.team) &&
-                        name.includes(filters.name) &&
-                        status.includes(filters.status);
-
-                    row.style.display = match ? '' : 'none';
-                }});
+                    if (response.ok && result.status === 'preview') {{
+                        // Show preview
+                        displaySchedulePreview(result, request);
+                    }} else {{
+                        showMessage(result.detail || 'Failed to generate schedule', 'error');
+                    }}
+                }} catch (error) {{
+                    clearInterval(statusInterval);
+                    statusDiv.style.display = 'none';
+                    showMessage('Network error: ' + error.message, 'error');
+                }} finally {{
+                    submitBtn.textContent = originalText;
+                    submitBtn.disabled = false;
+                }}
             }}
+
+            function displaySchedulePreview(preview, originalRequest) {{
+                // Hide form, show preview
+                document.getElementById('scheduleForm').style.display = 'none';
+
+                const previewDiv = document.getElementById('schedulePreview');
+                previewDiv.style.display = 'block';
+
+                // Store preview data for save
+                window.schedulePreviewData = {{ preview, originalRequest }};
+
+                // Build comprehensive fairness report with each constraint
+                const fairness = preview.fairness;
+                const config = preview.config;
+
+                let fairnessHtml = `
+                    <!-- Summary metrics -->
+                    <div class="fairness-metrics">
+                        <div class="metric">
+                            <span class="metric-label">Games Generated:</span>
+                            <span class="metric-value">${{fairness.games_count}}</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Ice Utilization:</span>
+                            <span class="metric-value">${{fairness.utilization_pct}}%</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Slots Used:</span>
+                            <span class="metric-value">${{fairness.used_slots}} / ${{fairness.total_slots}}</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Unused Slots:</span>
+                            <span class="metric-value">${{fairness.total_slots - fairness.used_slots}}</span>
+                        </div>
+                    </div>
+
+                    <!-- Time Slot Balance -->
+                    <div class="constraint-section">
+                        <h4>Time Slot Balance <span class="weight-badge">weight: ${{config.weight_time_slot}}</span></h4>
+                        <p class="constraint-description">Each team should have roughly equal games at each time slot</p>
+                        <table class="fairness-table">
+                            <thead>
+                                <tr>
+                                    <th>Team</th>
+                `;
+
+                // Get time slots from first team
+                const timeSlotsTeams = Object.keys(fairness.time_slot_distribution);
+                if (timeSlotsTeams.length > 0) {{
+                    const timeSlots = Object.keys(fairness.time_slot_distribution[timeSlotsTeams[0]]);
+                    timeSlots.forEach(slot => {{
+                        fairnessHtml += `<th>${{slot}}</th>`;
+                    }});
+                    fairnessHtml += `</tr></thead><tbody>`;
+
+                    for (const [team, slots] of Object.entries(fairness.time_slot_distribution)) {{
+                        fairnessHtml += `<tr><td>${{team}}</td>`;
+                        timeSlots.forEach(slot => {{
+                            fairnessHtml += `<td>${{slots[slot] || 0}}</td>`;
+                        }});
+                        fairnessHtml += `</tr>`;
+                    }}
+                }} else {{
+                    fairnessHtml += `</tr></thead><tbody><tr><td colspan="100%">No data</td></tr>`;
+                }}
+                fairnessHtml += `</tbody></table></div>`;
+
+                // Sheet Balance
+                fairnessHtml += `
+                    <div class="constraint-section">
+                        <h4>Sheet Balance <span class="weight-badge">weight: ${{config.weight_sheet}}</span></h4>
+                        <p class="constraint-description">Each team should play roughly equal games on each ice sheet</p>
+                        <table class="fairness-table">
+                            <thead>
+                                <tr>
+                                    <th>Team</th>
+                `;
+
+                const sheetsTeams = Object.keys(fairness.sheet_distribution);
+                if (sheetsTeams.length > 0) {{
+                    const sheets = Object.keys(fairness.sheet_distribution[sheetsTeams[0]]);
+                    sheets.forEach(sheet => {{
+                        fairnessHtml += `<th>${{sheet}}</th>`;
+                    }});
+                    fairnessHtml += `</tr></thead><tbody>`;
+
+                    for (const [team, sheetCounts] of Object.entries(fairness.sheet_distribution)) {{
+                        fairnessHtml += `<tr><td>${{team}}</td>`;
+                        sheets.forEach(sheet => {{
+                            fairnessHtml += `<td>${{sheetCounts[sheet] || 0}}</td>`;
+                        }});
+                        fairnessHtml += `</tr>`;
+                    }}
+                }} else {{
+                    fairnessHtml += `</tr></thead><tbody><tr><td colspan="100%">No data</td></tr>`;
+                }}
+                fairnessHtml += `</tbody></table></div>`;
+
+                // Home/Away Balance
+                fairnessHtml += `
+                    <div class="constraint-section">
+                        <h4>Home/Away Balance <span class="weight-badge">weight: ${{config.weight_home_away}}</span></h4>
+                        <p class="constraint-description">Each team should have roughly 50/50 home vs away games</p>
+                        <table class="fairness-table">
+                            <thead>
+                                <tr>
+                                    <th>Team</th>
+                                    <th>Home</th>
+                                    <th>Away</th>
+                                    <th>Difference</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                `;
+
+                for (const [team, balance] of Object.entries(fairness.home_away_balance)) {{
+                    const diff = Math.abs(balance.home - balance.away);
+                    fairnessHtml += `
+                        <tr>
+                            <td>${{team}}</td>
+                            <td>${{balance.home}}</td>
+                            <td>${{balance.away}}</td>
+                            <td>${{diff}}</td>
+                        </tr>
+                    `;
+                }}
+
+                fairnessHtml += `</tbody></table></div>`;
+
+                // Opponent Variety
+                fairnessHtml += `
+                    <div class="constraint-section">
+                        <h4>Opponent Variety <span class="weight-badge">weight: ${{config.weight_opponent}}</span></h4>
+                        <p class="constraint-description">Games spread evenly across opponents</p>
+                        <div class="opponent-grid">
+                `;
+
+                for (const [team, opponents] of Object.entries(fairness.opponent_distribution)) {{
+                    fairnessHtml += `<div class="opponent-item">`;
+                    fairnessHtml += `<strong>${{team}}:</strong> `;
+                    const oppStr = Object.entries(opponents).map(([opp, count]) => `${{opp}} (${{count}})`).join(', ');
+                    fairnessHtml += oppStr;
+                    fairnessHtml += `</div>`;
+                }}
+
+                fairnessHtml += `</div></div>`;
+
+                // Additional Constraints Info
+                fairnessHtml += `
+                    <div class="constraint-section">
+                        <h4>Additional Constraints</h4>
+                        <div class="additional-constraints">
+                            <div class="constraint-item">
+                                <span class="constraint-name">No Consecutive Opponent:</span>
+                                <span class="weight-badge">weight: ${{config.weight_no_consecutive_opponent}}</span>
+                                <p class="constraint-note">Penalizes playing same opponent in back-to-back weeks</p>
+                            </div>
+                            <div class="constraint-item">
+                                <span class="constraint-name">Date Packing:</span>
+                                <span class="weight-badge">weight: ${{config.weight_packing}}</span>
+                                <p class="constraint-note">Prefers earlier dates in season</p>
+                            </div>
+                            <div class="constraint-item">
+                                <span class="constraint-name">Max Consecutive Byes:</span>
+                                <span class="weight-badge">value: ${{config.max_consecutive_byes}}</span>
+                                <p class="constraint-note">Maximum weeks a team can go without a game (hard constraint)</p>
+                            </div>
+                            <div class="constraint-item">
+                                <span class="constraint-name">Optimizer Timeout:</span>
+                                <span class="weight-badge">value: ${{config.timeout_seconds}}s</span>
+                                <p class="constraint-note">Maximum time allowed for constraint solver to find optimal solution</p>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                document.getElementById('fairnessReport').innerHTML = fairnessHtml;
+
+                // Build comprehensive schedule table showing all slots (used and unused)
+                // Group by division if multiple divisions
+                const divisions = config.divisions || [];
+                const isMultiDivision = divisions.length > 1;
+
+                let gamesHtml = '';
+
+                if (isMultiDivision) {{
+                    // Multi-division mode: show each division's schedule separately
+                    divisions.forEach((divSpec, divIdx) => {{
+                        const divisionSlots = preview.slots.filter(slot =>
+                            !slot.used || (slot.game && slot.game.division_id === divSpec.division_id)
+                        );
+
+                        if (divisionSlots.length > 0) {{
+                            const divGames = divisionSlots.filter(s => s.used).length;
+                            gamesHtml += `
+                                <h4 style="margin-top: ${{divIdx > 0 ? '20px' : '0'}}; margin-bottom: 8px; color: #1a1a2e;">
+                                    Division: ${{divSpec.division_id}} (${{divGames}} games)
+                                </h4>
+                                <table class="preview-games-table" style="margin-bottom: 20px;">
+                                    <thead>
+                                        <tr>
+                                            <th>Date</th>
+                                            <th>Time</th>
+                                            <th>Sheet</th>
+                                            <th colspan="3">Game</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                            `;
+
+                            let lastDate = null;
+                            let alternateShade = false;
+
+                            divisionSlots.forEach(slot => {{
+                                const dateObj = new Date(slot.date + 'T00:00:00');
+                                const dateStr = dateObj.toLocaleDateString('en-US', {{ month: 'short', day: 'numeric' }});
+                                const timeParts = slot.time.split(':');
+                                const hour = parseInt(timeParts[0]);
+                                const minute = timeParts[1];
+                                const ampm = hour >= 12 ? 'PM' : 'AM';
+                                const hour12 = hour % 12 || 12;
+                                const timeStr = `${{hour12}}:${{minute}} ${{ampm}}`;
+
+                                if (lastDate !== dateStr) {{
+                                    lastDate = dateStr;
+                                    alternateShade = !alternateShade;
+                                }}
+
+                                const rowStyle = alternateShade ? 'background: #f8f9fa;' : '';
+
+                                if (slot.used && slot.game) {{
+                                    gamesHtml += `
+                                        <tr style="${{rowStyle}}">
+                                            <td>${{dateStr}}</td>
+                                            <td>${{timeStr}}</td>
+                                            <td>${{slot.sheet_name}}</td>
+                                            <td style="text-align: right;">${{slot.game.home_abbrev}}</td>
+                                            <td style="text-align: center;">vs</td>
+                                            <td>${{slot.game.away_abbrev}}</td>
+                                        </tr>
+                                    `;
+                                }} else {{
+                                    gamesHtml += `
+                                        <tr style="${{rowStyle}}; color: #999;">
+                                            <td>${{dateStr}}</td>
+                                            <td>${{timeStr}}</td>
+                                            <td>${{slot.sheet_name}}</td>
+                                            <td colspan="3" style="text-align: center; font-style: italic;">--- UNUSED ---</td>
+                                        </tr>
+                                    `;
+                                }}
+                            }});
+
+                            gamesHtml += `</tbody></table>`;
+                        }}
+                    }});
+                }} else {{
+                    // Single division mode: show all games in one table
+                    gamesHtml = `
+                        <table class="preview-games-table">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Time</th>
+                                    <th>Sheet</th>
+                                    <th colspan="3">Game</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                    `;
+
+                    let lastDate = null;
+                    let alternateShade = false;
+                    const scheduleData = preview.slots || [];
+
+                    scheduleData.forEach(slot => {{
+                        const dateObj = new Date(slot.date + 'T00:00:00');
+                        const dateStr = dateObj.toLocaleDateString('en-US', {{ month: 'short', day: 'numeric' }});
+                        const timeParts = slot.time.split(':');
+                        const hour = parseInt(timeParts[0]);
+                        const minute = timeParts[1];
+                        const ampm = hour >= 12 ? 'PM' : 'AM';
+                        const hour12 = hour % 12 || 12;
+                        const timeStr = `${{hour12}}:${{minute}} ${{ampm}}`;
+
+                        if (lastDate !== dateStr) {{
+                            lastDate = dateStr;
+                            alternateShade = !alternateShade;
+                        }}
+
+                        const rowStyle = alternateShade ? 'background: #f8f9fa;' : '';
+
+                        if (slot.used && slot.game) {{
+                            gamesHtml += `
+                                <tr style="${{rowStyle}}">
+                                    <td>${{dateStr}}</td>
+                                    <td>${{timeStr}}</td>
+                                    <td>${{slot.sheet_name}}</td>
+                                    <td style="text-align: right;">${{slot.game.home_abbrev}}</td>
+                                    <td style="text-align: center;">vs</td>
+                                    <td>${{slot.game.away_abbrev}}</td>
+                                </tr>
+                            `;
+                        }} else {{
+                            gamesHtml += `
+                                <tr style="${{rowStyle}}; color: #999;">
+                                    <td>${{dateStr}}</td>
+                                    <td>${{timeStr}}</td>
+                                    <td>${{slot.sheet_name}}</td>
+                                    <td colspan="3" style="text-align: center; font-style: italic;">--- UNUSED ---</td>
+                                </tr>
+                            `;
+                        }}
+                    }});
+
+                    gamesHtml += `</tbody></table>`;
+                }}
+
+                document.getElementById('gamesPreview').innerHTML = gamesHtml;
+            }}
+
+            async function acceptSchedule() {{
+                const data = window.schedulePreviewData;
+                if (!data) return;
+
+                const btn = document.querySelector('#acceptScheduleBtn');
+                btn.textContent = 'Saving...';
+                btn.disabled = true;
+
+                try {{
+                    const response = await fetch('/admin/schedules/save', {{
+                        method: 'POST',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify({{
+                            league_id: data.preview.config.league_id,
+                            season_id: data.preview.config.season_id,
+                            division_id: data.preview.config.division_id,
+                            games: data.preview.games,
+                            clear_existing: data.preview.config.clear_existing
+                        }})
+                    }});
+
+                    const result = await response.json();
+
+                    if (response.ok) {{
+                        showMessage(`Successfully saved ${{result.games_created}} games`, 'success');
+                        closeScheduleModal();
+                        setTimeout(() => location.reload(), 1500);
+                    }} else {{
+                        showMessage(result.detail || 'Failed to save schedule', 'error');
+                    }}
+                }} catch (error) {{
+                    showMessage('Network error: ' + error.message, 'error');
+                }} finally {{
+                    btn.textContent = 'Accept Schedule';
+                    btn.disabled = false;
+                }}
+            }}
+
+            function regenerateSchedule() {{
+                // Hide preview, show form again
+                document.getElementById('schedulePreview').style.display = 'none';
+                document.getElementById('scheduleForm').style.display = 'block';
+            }}
+
+            // Close schedule modal on outside click
+            document.addEventListener('click', function(e) {{
+                const modal = document.getElementById('scheduleModal');
+                if (e.target === modal) {{
+                    closeScheduleModal();
+                }}
+            }});
         </script>
+        <style>
+            /* Schedule games table styling */
+            .schedule-games-table {{
+                width: 100%;
+                margin-top: 6px;
+                border-collapse: collapse;
+                table-layout: fixed;
+            }}
+
+            .schedule-games-table thead {{
+                background: #f5f5f5;
+                font-size: 11px;
+            }}
+
+            .schedule-games-table th,
+            .schedule-games-table td {{
+                padding: 4px 4px;
+                font-size: 12px;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+            }}
+
+            .schedule-games-table tbody tr:hover {{
+                background: #f9f9f9;
+            }}
+
+            .btn-delete-small {{
+                padding: 3px 6px;
+                font-size: 11px;
+                background: #dc3545;
+                color: white;
+                border: none;
+                border-radius: 3px;
+                cursor: pointer;
+            }}
+
+            .btn-delete-small:hover {{
+                background: #c82333;
+            }}
+
+            .btn-schedule {{
+                padding: 3px 8px;
+                font-size: 11px;
+                background: #28a745;
+                color: white;
+                border: none;
+                border-radius: 3px;
+                cursor: pointer;
+                margin-left: 8px;
+            }}
+
+            .btn-schedule:hover {{
+                background: #218838;
+            }}
+
+            .btn-remove-player {{
+                background: transparent;
+                border: none;
+                color: #999;
+                font-size: 14px;
+                cursor: pointer;
+                padding: 0 4px;
+                line-height: 1;
+                margin-left: auto;
+                opacity: 0;
+                transition: opacity 0.15s;
+            }}
+
+            .btn-remove-player:hover {{
+                color: #dc3545;
+            }}
+
+            .tree-node.level-6 .node-header:hover .btn-remove-player {{
+                opacity: 1;
+            }}
+        </style>
     </head>
     <body>
-        {admin_nav("rosters")}
-        <div class="container">
-            <h1>Team Rosters</h1>
+        {admin_nav("leagues")}
+        <div class="container wide">
+            <h1>Leagues</h1>
+
+            <!-- Message area -->
+            <div id="message" class="message"></div>
+
+            <!-- Seed section -->
+            <div style="margin-bottom: 20px; padding: 12px; background: #f5f5f5; border-radius: 4px; display: flex; align-items: center; gap: 12px;">
+                <span style="color: #666; font-size: 13px; font-weight: 500;">Data:</span>
+                <button onclick="seedLeagueData()" style="padding: 6px 12px; font-size: 13px; background: #1a1a2e; color: white; border: none; border-radius: 3px; cursor: pointer;">Seed League Data</button>
+                <button onclick="seedGames()" style="padding: 6px 12px; font-size: 13px; background: #1a1a2e; color: white; border: none; border-radius: 3px; cursor: pointer;">Seed Games</button>
+                <button onclick="deleteAllGames()" style="padding: 6px 12px; font-size: 13px; background: #dc3545; color: white; border: none; border-radius: 3px; cursor: pointer;">Delete All Games</button>
+                <button onclick="clearAllData()" style="padding: 6px 12px; font-size: 13px; background: #dc3545; color: white; border: none; border-radius: 3px; cursor: pointer;">Clear All Data</button>
+            </div>
+
+            <!-- Action buttons -->
+            <div style="margin-bottom: 20px;">
+                <button class="btn-add" onclick="openModal('league')">+ Add League</button>
+            </div>
+
+            <!-- Tree view -->
             <div class="content">
-                <table id="rostersTable">
-                    <thead>
-                        <tr>
-                            <th>Team</th>
-                            <th>Player Name</th>
-                            <th>#</th>
-                            <th>Status</th>
-                            <th>Added</th>
-                            <th>Removed</th>
-                        </tr>
-                        <tr class="filter-row">
-                            <td><input type="text" id="filterTeam" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td><input type="text" id="filterName" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td></td>
-                            <td><input type="text" id="filterStatus" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td></td>
-                            <td></td>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {rosters_html}
-                    </tbody>
-                </table>
+                <div class="tree-container">
+                    {tree_html}
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal -->
+        <div id="entityModal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 id="modalTitle">Add Entity</h2>
+                    <span class="modal-close" onclick="closeModal()">&times;</span>
+                </div>
+                <form id="entityForm">
+                    <div id="modalFields"></div>
+                    <div class="form-actions">
+                        <button type="button" onclick="closeModal()">Cancel</button>
+                        <button type="submit" class="btn-save">Create</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Schedule Modal -->
+        <div id="scheduleModal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 id="scheduleModalTitle">Schedule Games</h2>
+                    <span class="modal-close" onclick="closeScheduleModal()">&times;</span>
+                </div>
+                <form id="scheduleForm" onsubmit="submitSchedule(event)">
+                    <p id="scheduleTeamCount" class="schedule-team-count"></p>
+
+                    <!-- Status indicator -->
+                    <div id="scheduleStatus" class="schedule-status" style="display: none;"></div>
+
+                    <div class="form-group">
+                        <label>Games per Team <span class="required">*</span></label>
+                        <input type="number" id="gamesPerTeam" name="games_per_team" min="1" max="50" value="12" required>
+                        <small>Each team will play this many games total</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Days of Week <span class="required">*</span></label>
+                        <div class="days-of-week-container">
+                            <label><input type="checkbox" name="day_sunday" checked> Sun</label>
+                            <label><input type="checkbox" name="day_monday"> Mon</label>
+                            <label><input type="checkbox" name="day_tuesday"> Tue</label>
+                            <label><input type="checkbox" name="day_wednesday"> Wed</label>
+                            <label><input type="checkbox" name="day_thursday"> Thu</label>
+                            <label><input type="checkbox" name="day_friday"> Fri</label>
+                            <label><input type="checkbox" name="day_saturday"> Sat</label>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Time Slots <span class="required">*</span></label>
+                        <input type="text" name="time_slots" value="18:00, 19:30, 21:00" required>
+                        <small>Comma-separated times (24hr format)</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Ice Sheets <span class="required">*</span></label>
+                        <div class="sheets-container">
+                            {sheets_checkboxes_html}
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Blackout Dates</label>
+                        <input type="text" name="blackout_dates" placeholder="2026-02-16, 2026-03-15">
+                        <small>Comma-separated dates to skip (YYYY-MM-DD)</small>
+                    </div>
+
+                    <!-- Solver Weights Section -->
+                    <div class="form-group">
+                        <label style="font-weight: 600; margin-bottom: 8px; display: block;">Fairness Weights</label>
+                        <small style="display: block; margin-bottom: 12px; color: #666;">Higher weight = more important. Set to 0 to disable.</small>
+
+                        <div class="weight-grid">
+                            <div class="weight-item">
+                                <label>Time Slot Balance</label>
+                                <input type="number" name="weight_time_slot" value="10" min="0" max="100">
+                                <small>Balance games across time slots</small>
+                            </div>
+
+                            <div class="weight-item">
+                                <label>Sheet Balance</label>
+                                <input type="number" name="weight_sheet" value="10" min="0" max="100">
+                                <small>Balance games across ice sheets</small>
+                            </div>
+
+                            <div class="weight-item">
+                                <label>Home/Away Balance</label>
+                                <input type="number" name="weight_home_away" value="20" min="0" max="100">
+                                <small>Balance home vs away games</small>
+                            </div>
+
+                            <div class="weight-item">
+                                <label>Opponent Variety</label>
+                                <input type="number" name="weight_opponent" value="5" min="0" max="100">
+                                <small>Spread games across opponents</small>
+                            </div>
+
+                            <div class="weight-item">
+                                <label>Date Packing</label>
+                                <input type="number" name="weight_packing" value="1" min="0" max="100">
+                                <small>Prefer earlier dates</small>
+                            </div>
+
+                            <div class="weight-item">
+                                <label>No Consecutive Opponent</label>
+                                <input type="number" name="weight_no_consecutive_opponent" value="50" min="0" max="100">
+                                <small>Avoid same opponent back-to-back</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Max Consecutive Byes</label>
+                        <input type="number" name="max_consecutive_byes" value="1" min="0" max="5">
+                        <small>Max weeks without a game (0 = disabled)</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Optimizer Timeout (seconds)</label>
+                        <input type="number" name="timeout_seconds" value="30" min="5" max="300" step="5">
+                        <small>How long to search for better solutions (higher = better but slower)</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label><input type="checkbox" name="clear_existing" checked> Clear existing games for this division first</label>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="button" onclick="closeScheduleModal()">Cancel</button>
+                        <button type="submit" class="btn-save">Generate Schedule</button>
+                    </div>
+                </form>
+
+                <!-- Schedule Preview -->
+                <div id="schedulePreview" style="display: none;">
+                    <div class="preview-section">
+                        <h3>Schedule Preview</h3>
+                        <div id="fairnessReport" class="fairness-report"></div>
+                    </div>
+
+                    <div class="preview-section">
+                        <h3>Complete Schedule (All Slots)</h3>
+                        <p style="font-size: 12px; color: #666; margin-top: 4px;">Shows all available time slots. Unused slots are marked in gray.</p>
+                        <div id="gamesPreview" class="games-preview" style="max-height: 400px; overflow-y: auto;"></div>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="button" onclick="regenerateSchedule()" class="btn-regenerate">← Adjust Parameters</button>
+                        <button type="button" id="acceptScheduleBtn" onclick="acceptSchedule()" class="btn-save">Accept Schedule</button>
+                    </div>
+                </div>
             </div>
         </div>
     </body>
@@ -1716,118 +3282,6 @@ async def get_rosters_admin(format: Optional[str] = Query(None, description="Res
     return HTMLResponse(content=html)
 
 
-
-
-@app.get("/admin/teams")
-async def get_teams_admin(format: Optional[str] = Query(None, description="Response format: 'json' or 'html'")):
-    """
-    Admin page to view all teams.
-
-    Returns HTML for browser viewing or JSON if format=json parameter is provided.
-    """
-    from fastapi.responses import HTMLResponse
-
-    db = get_db()
-
-    teams = db.execute("""
-        SELECT team_id, name, abbreviation, created_at
-        FROM teams
-        ORDER BY name
-    """).fetchall()
-
-    db.close()
-
-    # Return JSON if requested
-    if format == "json":
-        return {"teams": [dict(t) for t in teams]}
-
-    # Generate HTML view
-    import datetime
-
-    def format_timestamp(ts):
-        if ts:
-            return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
-        return "Never"
-
-    teams_html = ""
-    if not teams:
-        teams_html = '<tr><td colspan="4" style="text-align: center; color: #999; padding: 40px;">No teams found.</td></tr>'
-    else:
-        for t in teams:
-            teams_html += f'''
-            <tr>
-                <td class="team-abbrev">{t["team_id"]}</td>
-                <td>{t["name"] or "-"}</td>
-                <td>{t["abbreviation"] or "-"}</td>
-                <td class="timestamp">{format_timestamp(t["created_at"])}</td>
-            </tr>
-            '''
-
-    html = f'''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>score-cloud | Teams</title>
-        <link rel="stylesheet" href="/static/admin.css">
-        <script>
-            function filterTable() {{
-                const filters = {{
-                    teamId: document.getElementById('filterTeamId').value.toLowerCase(),
-                    name: document.getElementById('filterName').value.toLowerCase(),
-                    abbrev: document.getElementById('filterAbbrev').value.toLowerCase()
-                }};
-
-                const rows = document.querySelectorAll('#teamsTable tbody tr');
-
-                rows.forEach(row => {{
-                    if (row.cells.length < 4) return; // Skip empty row
-
-                    const teamId = row.cells[0].textContent.toLowerCase();
-                    const name = row.cells[1].textContent.toLowerCase();
-                    const abbrev = row.cells[2].textContent.toLowerCase();
-
-                    const match =
-                        teamId.includes(filters.teamId) &&
-                        name.includes(filters.name) &&
-                        abbrev.includes(filters.abbrev);
-
-                    row.style.display = match ? '' : 'none';
-                }});
-            }}
-        </script>
-    </head>
-    <body>
-        {admin_nav("teams")}
-        <div class="container">
-            <h1>Teams</h1>
-            <div class="content">
-                <table id="teamsTable">
-                    <thead>
-                        <tr>
-                            <th>Team ID</th>
-                            <th>Name</th>
-                            <th>Abbrev</th>
-                            <th>Created</th>
-                        </tr>
-                        <tr class="filter-row">
-                            <td><input type="text" id="filterTeamId" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td><input type="text" id="filterName" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td><input type="text" id="filterAbbrev" placeholder="Filter..." onkeyup="filterTable()"></td>
-                            <td></td>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {teams_html}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </body>
-    </html>
-    '''
-
-    return HTMLResponse(content=html)
 
 
 @app.get("/admin/players")
@@ -1970,80 +3424,11 @@ async def websocket_game_states(websocket: WebSocket):
 
 from score.models import (
     League, Season, Division, Tournament,
-    Team, Player, Rink, RinkSheet, Official,
+    Player, Rink, RinkSheet, Official,
     RuleSet, Infraction,
     TeamRegistration, RosterEntry,
 )
 
-
-@app.get("/admin/leagues")
-async def list_leagues(format: Optional[str] = Query(None)):
-    """List all leagues with HTML admin UI."""
-    from fastapi.responses import HTMLResponse
-
-    db = get_db()
-    rows = db.execute("SELECT * FROM leagues ORDER BY name").fetchall()
-    db.close()
-
-    leagues = [dict(r) for r in rows]
-
-    if format == "json":
-        return {"leagues": leagues}
-
-    # Generate HTML
-    import datetime
-    def format_timestamp(ts):
-        if ts:
-            return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
-        return "-"
-
-    rows_html = ""
-    if not leagues:
-        rows_html = '<tr><td colspan="6" style="text-align: center; color: #666; padding: 40px;">No leagues found.</td></tr>'
-    else:
-        for r in leagues:
-            rows_html += f'''
-            <tr>
-                <td class="device-id">{r["league_id"]}</td>
-                <td>{r["name"]}</td>
-                <td>{r["league_type"] or "-"}</td>
-                <td>{r["description"] or "-"}</td>
-                <td>{r["website"] or "-"}</td>
-                <td class="timestamp">{format_timestamp(r.get("created_at"))}</td>
-            </tr>'''
-
-    html = f'''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>score-cloud | Leagues</title>
-        <link rel="stylesheet" href="/static/admin.css">
-    </head>
-    <body>
-        {admin_nav("leagues")}
-        <div class="container">
-            <h1>Leagues</h1>
-            <div class="content">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>League ID</th>
-                            <th>Name</th>
-                            <th>Type</th>
-                            <th>Description</th>
-                            <th>Website</th>
-                            <th>Created</th>
-                        </tr>
-                    </thead>
-                    <tbody>{rows_html}</tbody>
-                </table>
-            </div>
-        </div>
-    </body>
-    </html>
-    '''
-    return HTMLResponse(content=html)
 
 
 @app.post("/admin/leagues")
@@ -2065,66 +3450,6 @@ async def create_league(league: League):
     return {"status": "ok", "message": f"League {league.league_id} created"}
 
 
-@app.get("/admin/seasons")
-async def list_seasons(format: Optional[str] = Query(None)):
-    """List all seasons with HTML admin UI."""
-    from fastapi.responses import HTMLResponse
-
-    db = get_db()
-    rows = db.execute("SELECT * FROM seasons ORDER BY start_date DESC").fetchall()
-    db.close()
-
-    seasons = [dict(r) for r in rows]
-
-    if format == "json":
-        return {"seasons": seasons}
-
-    # Generate HTML
-    rows_html = ""
-    if not seasons:
-        rows_html = '<tr><td colspan="4" style="text-align: center; color: #666; padding: 40px;">No seasons found.</td></tr>'
-    else:
-        for r in seasons:
-            rows_html += f'''
-            <tr>
-                <td class="device-id">{r["season_id"]}</td>
-                <td>{r["name"]}</td>
-                <td>{r["start_date"] or "-"}</td>
-                <td>{r["end_date"] or "-"}</td>
-            </tr>'''
-
-    html = f'''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>score-cloud | Seasons</title>
-        <link rel="stylesheet" href="/static/admin.css">
-    </head>
-    <body>
-        {admin_nav("seasons")}
-        <div class="container">
-            <h1>Seasons</h1>
-            <div class="content">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Season ID</th>
-                            <th>Name</th>
-                            <th>Start Date</th>
-                            <th>End Date</th>
-                        </tr>
-                    </thead>
-                    <tbody>{rows_html}</tbody>
-                </table>
-            </div>
-        </div>
-    </body>
-    </html>
-    '''
-    return HTMLResponse(content=html)
-
-
 @app.post("/admin/seasons")
 async def create_season(season: Season):
     """Create a new season."""
@@ -2143,66 +3468,26 @@ async def create_season(season: Season):
     return {"status": "ok", "message": f"Season {season.season_id} created"}
 
 
-@app.get("/admin/divisions")
-async def list_divisions(format: Optional[str] = Query(None)):
-    """List all divisions with HTML admin UI."""
-    from fastapi.responses import HTMLResponse
-
+@app.post("/admin/league-seasons")
+async def create_league_season(
+    league_id: str = Body(...),
+    season_id: str = Body(...),
+    rule_set_id: Optional[str] = Body(None)
+):
+    """Link a season to a league."""
     db = get_db()
-    rows = db.execute("SELECT * FROM divisions ORDER BY name").fetchall()
+    current_time = int(time.time())
+    try:
+        db.execute("""
+            INSERT INTO league_seasons (league_id, season_id, rule_set_id, is_active, created_at)
+            VALUES (?, ?, ?, 1, ?)
+        """, (league_id, season_id, rule_set_id, current_time))
+        db.commit()
+    except sqlite3.IntegrityError:
+        db.close()
+        raise HTTPException(status_code=409, detail=f"League {league_id} already linked to season {season_id}")
     db.close()
-
-    divisions = [dict(r) for r in rows]
-
-    if format == "json":
-        return {"divisions": divisions}
-
-    # Generate HTML
-    rows_html = ""
-    if not divisions:
-        rows_html = '<tr><td colspan="5" style="text-align: center; color: #666; padding: 40px;">No divisions found.</td></tr>'
-    else:
-        for r in divisions:
-            rows_html += f'''
-            <tr>
-                <td class="device-id">{r["division_id"]}</td>
-                <td>{r["name"]}</td>
-                <td>{r["division_type"] or "-"}</td>
-                <td>{r["parent_division_id"] or "-"}</td>
-                <td>{r["description"] or "-"}</td>
-            </tr>'''
-
-    html = f'''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>score-cloud | Divisions</title>
-        <link rel="stylesheet" href="/static/admin.css">
-    </head>
-    <body>
-        {admin_nav("divisions")}
-        <div class="container">
-            <h1>Divisions</h1>
-            <div class="content">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Division ID</th>
-                            <th>Name</th>
-                            <th>Type</th>
-                            <th>Parent</th>
-                            <th>Description</th>
-                        </tr>
-                    </thead>
-                    <tbody>{rows_html}</tbody>
-                </table>
-            </div>
-        </div>
-    </body>
-    </html>
-    '''
-    return HTMLResponse(content=html)
+    return {"status": "ok", "message": f"Season {season_id} linked to league {league_id}"}
 
 
 @app.post("/admin/divisions")
@@ -2222,6 +3507,29 @@ async def create_division(division: Division):
         raise HTTPException(status_code=409, detail=f"Division {division.division_id} already exists")
     db.close()
     return {"status": "ok", "message": f"Division {division.division_id} created"}
+
+
+@app.post("/admin/league-season-divisions")
+async def link_division_to_league_season(
+    league_id: str = Body(...),
+    season_id: str = Body(...),
+    division_id: str = Body(...),
+    display_order: Optional[int] = Body(None)
+):
+    """Link a division to a league-season."""
+    db = get_db()
+    current_time = int(time.time())
+    try:
+        db.execute("""
+            INSERT INTO league_season_divisions (league_id, season_id, division_id, display_order, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (league_id, season_id, division_id, display_order, current_time))
+        db.commit()
+    except sqlite3.IntegrityError:
+        db.close()
+        raise HTTPException(status_code=409, detail=f"Division {division_id} already linked to league {league_id} season {season_id}")
+    db.close()
+    return {"status": "ok", "message": f"Division {division_id} linked to league-season"}
 
 
 @app.get("/admin/rule-sets", response_model=list[RuleSet])
@@ -2308,44 +3616,6 @@ async def list_infractions(rule_set_id: str):
     ) for r in rows]
 
 
-@app.post("/admin/teams-v2")
-async def create_team_v2(team: Team):
-    """Create a new team (v2 data model)."""
-    db = get_db()
-    current_time = int(time.time())
-    try:
-        db.execute("""
-            INSERT INTO teams (team_id, name, city, abbreviation, team_type,
-                               logo_url, primary_color, secondary_color, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (team.team_id, team.name, team.city, team.abbreviation, team.team_type,
-              team.logo_url, team.primary_color, team.secondary_color, current_time))
-        db.commit()
-    except sqlite3.IntegrityError:
-        db.close()
-        raise HTTPException(status_code=409, detail=f"Team {team.team_id} already exists")
-    db.close()
-    return {"status": "ok", "message": f"Team {team.team_id} created"}
-
-
-@app.get("/admin/teams-v2", response_model=list[Team])
-async def list_teams_v2():
-    """List all teams (v2 data model)."""
-    db = get_db()
-    rows = db.execute("SELECT * FROM teams ORDER BY name").fetchall()
-    db.close()
-    return [Team(
-        team_id=r["team_id"],
-        name=r["name"],
-        city=r["city"],
-        abbreviation=r["abbreviation"],
-        team_type=r["team_type"],
-        logo_url=r["logo_url"],
-        primary_color=r["primary_color"],
-        secondary_color=r["secondary_color"],
-    ) for r in rows]
-
-
 @app.post("/admin/team-registrations")
 async def create_team_registration(reg: TeamRegistration):
     """Register a team in a league+season or tournament."""
@@ -2366,19 +3636,53 @@ async def create_team_registration(reg: TeamRegistration):
             detail="Must specify either (league_id + season_id) or tournament_id, not both"
         )
 
+    # Check for duplicate active registration (same team in same division)
+    if reg.league_id and reg.season_id:
+        existing = db.execute("""
+            SELECT registration_id FROM team_registrations
+            WHERE league_id = ? AND season_id = ? AND division_id = ?
+              AND (team_name = ? OR abbreviation = ?)
+              AND withdrawn_at IS NULL
+        """, (reg.league_id, reg.season_id, reg.division_id, reg.team_name, reg.abbreviation)).fetchone()
+
+        if existing:
+            db.close()
+            raise HTTPException(
+                status_code=409,
+                detail=f"Team '{reg.team_name}' (or abbreviation '{reg.abbreviation}') is already registered in this division"
+            )
+    elif reg.tournament_id:
+        existing = db.execute("""
+            SELECT registration_id FROM team_registrations
+            WHERE tournament_id = ? AND division_id = ?
+              AND (team_name = ? OR abbreviation = ?)
+              AND withdrawn_at IS NULL
+        """, (reg.tournament_id, reg.division_id, reg.team_name, reg.abbreviation)).fetchone()
+
+        if existing:
+            db.close()
+            raise HTTPException(
+                status_code=409,
+                detail=f"Team '{reg.team_name}' (or abbreviation '{reg.abbreviation}') is already registered in this division"
+            )
+
     try:
         db.execute("""
             INSERT INTO team_registrations
-                (registration_id, team_id, league_id, season_id, tournament_id, division_id, registered_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (reg.registration_id, reg.team_id, reg.league_id, reg.season_id,
-              reg.tournament_id, reg.division_id, current_time))
+                (registration_id, team_name, abbreviation, logo_url, primary_color, secondary_color,
+                 organizer_name, organizer_email, organizer_phone,
+                 league_id, season_id, tournament_id, division_id, registered_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (reg.registration_id, reg.team_name, reg.abbreviation, reg.logo_url,
+              reg.primary_color, reg.secondary_color, reg.organizer_name, reg.organizer_email,
+              reg.organizer_phone, reg.league_id, reg.season_id, reg.tournament_id,
+              reg.division_id, current_time))
         db.commit()
     except sqlite3.IntegrityError as e:
         db.close()
         raise HTTPException(status_code=409, detail=str(e))
     db.close()
-    return {"status": "ok", "message": f"Team {reg.team_id} registered as {reg.registration_id}"}
+    return {"status": "ok", "message": f"Team {reg.team_name} registered as {reg.registration_id}"}
 
 
 @app.get("/admin/team-registrations")
@@ -2445,358 +3749,555 @@ async def get_roster_entries(registration_id: str):
     return [dict(r) for r in rows]
 
 
+@app.delete("/admin/roster-entries/{roster_entry_id}")
+async def remove_roster_entry(roster_entry_id: int):
+    """Remove a player from a team roster (soft delete via removed_at timestamp)."""
+    db = get_db()
+    current_time = int(time.time())
+
+    # Check if entry exists
+    entry = db.execute(
+        "SELECT id, registration_id, player_id FROM roster_entries WHERE id = ?",
+        (roster_entry_id,)
+    ).fetchone()
+
+    if not entry:
+        db.close()
+        raise HTTPException(status_code=404, detail=f"Roster entry {roster_entry_id} not found")
+
+    # Soft delete by setting removed_at
+    db.execute(
+        "UPDATE roster_entries SET removed_at = ? WHERE id = ?",
+        (current_time, roster_entry_id)
+    )
+    db.commit()
+    db.close()
+
+    logger.info(f"Removed roster entry {roster_entry_id} (player {entry['player_id']} from {entry['registration_id']})")
+
+    return {"status": "ok", "message": f"Player removed from roster"}
+
+
+@app.delete("/admin/registrations/{registration_id}")
+async def remove_team_registration(registration_id: str):
+    """Remove a team registration from a league/season/division (soft delete via withdrawn_at)."""
+    db = get_db()
+    current_time = int(time.time())
+
+    # Check if registration exists
+    reg = db.execute(
+        "SELECT registration_id, team_name, league_id, season_id, division_id FROM team_registrations WHERE registration_id = ?",
+        (registration_id,)
+    ).fetchone()
+
+    if not reg:
+        db.close()
+        raise HTTPException(status_code=404, detail=f"Registration {registration_id} not found")
+
+    team_name = reg["team_name"]
+    league_id = reg["league_id"]
+    season_id = reg["season_id"]
+    division_id = reg["division_id"]
+
+    # Soft delete roster entries for this registration
+    roster_count = db.execute(
+        "UPDATE roster_entries SET removed_at = ? WHERE registration_id = ? AND removed_at IS NULL",
+        (current_time, registration_id)
+    ).rowcount
+
+    # Soft delete the registration by setting withdrawn_at
+    db.execute(
+        "UPDATE team_registrations SET withdrawn_at = ? WHERE registration_id = ?",
+        (current_time, registration_id)
+    )
+
+    db.commit()
+    db.close()
+
+    logger.info(f"Withdrew team registration {registration_id} ({team_name}) from {league_id}/{season_id}/{division_id}, soft-deleted {roster_count} roster entries")
+
+    return {"status": "ok", "message": f"Team {team_name} withdrawn from division"}
+
+
 # ---------- New HTML Admin Pages ----------
 
 @app.get("/admin/rinks-admin")
 async def list_rinks_admin(format: Optional[str] = Query(None)):
-    """List all rinks with HTML admin UI (full model)."""
+    """List all venues with hierarchical tree view (Venues → Sheets → Devices)."""
     from fastapi.responses import HTMLResponse
 
     db = get_db()
-    rows = db.execute("""
+
+    # Fetch all rinks (venues)
+    venues = db.execute("""
         SELECT rink_id, name, address, city, province_state, postal_code, country, phone, website, created_at
         FROM rinks ORDER BY name
     """).fetchall()
-    db.close()
 
-    rinks = [dict(r) for r in rows]
+    # Build nested data structure
+    venue_data = []
 
-    if format == "json":
-        return {"rinks": rinks}
+    for venue in venues:
+        venue_dict = dict(venue)
 
-    import datetime
-    def format_timestamp(ts):
-        if ts:
-            return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
-        return "-"
+        # Fetch sheets for this venue
+        sheets = db.execute("""
+            SELECT sheet_id, rink_id, name, surface_type, capacity, created_at
+            FROM rink_sheets
+            WHERE rink_id = ?
+            ORDER BY name
+        """, (venue["rink_id"],)).fetchall()
 
-    rows_html = ""
-    if not rinks:
-        rows_html = '<tr><td colspan="8" style="text-align: center; color: #666; padding: 40px;">No rinks found.</td></tr>'
-    else:
-        for r in rinks:
-            location = ", ".join(filter(None, [r["city"], r["province_state"], r["country"]])) or "-"
-            rows_html += f'''
-            <tr>
-                <td class="device-id">{r["rink_id"]}</td>
-                <td>{r["name"]}</td>
-                <td>{r["address"] or "-"}</td>
-                <td>{location}</td>
-                <td>{r["phone"] or "-"}</td>
-                <td>{r["website"] or "-"}</td>
-                <td class="timestamp">{format_timestamp(r.get("created_at"))}</td>
-            </tr>'''
+        venue_dict["sheets"] = []
 
-    html = f'''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>score-cloud | Rinks</title>
-        <link rel="stylesheet" href="/static/admin.css">
-    </head>
-    <body>
-        {admin_nav("rinks")}
-        <div class="container">
-            <h1>Rinks</h1>
-            <div class="content">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Rink ID</th>
-                            <th>Name</th>
-                            <th>Address</th>
-                            <th>Location</th>
-                            <th>Phone</th>
-                            <th>Website</th>
-                            <th>Created</th>
-                        </tr>
-                    </thead>
-                    <tbody>{rows_html}</tbody>
-                </table>
-            </div>
-        </div>
-    </body>
-    </html>
-    '''
-    return HTMLResponse(content=html)
+        for sheet in sheets:
+            sheet_dict = dict(sheet)
 
+            # Fetch device for this sheet (1:1 relationship)
+            # Devices reference sheets by rink_id + sheet_name (not sheet_id FK)
+            device = db.execute("""
+                SELECT device_id, device_name, last_seen_at, is_assigned
+                FROM devices
+                WHERE rink_id = ? AND sheet_name = ? AND is_assigned = 1
+            """, (venue["rink_id"], sheet["name"])).fetchone()
 
-@app.get("/admin/rule-sets-admin")
-async def list_rule_sets_admin(format: Optional[str] = Query(None)):
-    """List all rule sets with HTML admin UI."""
-    from fastapi.responses import HTMLResponse
+            sheet_dict["device"] = dict(device) if device else None
+            venue_dict["sheets"].append(sheet_dict)
 
-    db = get_db()
-    rows = db.execute("SELECT * FROM rule_sets ORDER BY name").fetchall()
-    db.close()
+        venue_data.append(venue_dict)
 
-    rule_sets = [dict(r) for r in rows]
-
-    if format == "json":
-        return {"rule_sets": rule_sets}
-
-    rows_html = ""
-    if not rule_sets:
-        rows_html = '<tr><td colspan="8" style="text-align: center; color: #666; padding: 40px;">No rule sets found.</td></tr>'
-    else:
-        for r in rule_sets:
-            checking = "Yes" if r.get("body_checking") else "No"
-            rows_html += f'''
-            <tr>
-                <td class="device-id">{r["rule_set_id"]}</td>
-                <td>{r["name"]}</td>
-                <td>{r["num_periods"]} x {r["period_length_min"]}min</td>
-                <td>{r["overtime_length_min"] or "-"}min {r["overtime_type"] or ""}</td>
-                <td>{r["icing_rule"]}</td>
-                <td>{checking}</td>
-                <td>{r["points_win"]}/{r["points_loss"]}/{r["points_tie"]}/{r["points_otl"]}</td>
-                <td>{r["description"] or "-"}</td>
-            </tr>'''
-
-    html = f'''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>score-cloud | Rule Sets</title>
-        <link rel="stylesheet" href="/static/admin.css">
-    </head>
-    <body>
-        {admin_nav("rules")}
-        <div class="container">
-            <h1>Rule Sets</h1>
-            <div class="content">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Rule Set ID</th>
-                            <th>Name</th>
-                            <th>Periods</th>
-                            <th>Overtime</th>
-                            <th>Icing</th>
-                            <th>Checking</th>
-                            <th>Points (W/L/T/OTL)</th>
-                            <th>Description</th>
-                        </tr>
-                    </thead>
-                    <tbody>{rows_html}</tbody>
-                </table>
-            </div>
-        </div>
-    </body>
-    </html>
-    '''
-    return HTMLResponse(content=html)
-
-
-@app.get("/admin/officials-admin")
-async def list_officials_admin(format: Optional[str] = Query(None)):
-    """List all officials with HTML admin UI."""
-    from fastapi.responses import HTMLResponse
-
-    db = get_db()
-    rows = db.execute("SELECT * FROM officials ORDER BY last_name, first_name").fetchall()
-    db.close()
-
-    officials = [dict(r) for r in rows]
-
-    if format == "json":
-        return {"officials": officials}
-
-    import datetime
-    def format_timestamp(ts):
-        if ts:
-            return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
-        return "-"
-
-    rows_html = ""
-    if not officials:
-        rows_html = '<tr><td colspan="5" style="text-align: center; color: #666; padding: 40px;">No officials found.</td></tr>'
-    else:
-        for r in officials:
-            rows_html += f'''
-            <tr>
-                <td class="device-id">{r["official_id"]}</td>
-                <td>{r["full_name"]}</td>
-                <td>{r["first_name"]}</td>
-                <td>{r["last_name"]}</td>
-                <td>{r["certification_level"] or "-"}</td>
-            </tr>'''
-
-    html = f'''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>score-cloud | Officials</title>
-        <link rel="stylesheet" href="/static/admin.css">
-    </head>
-    <body>
-        {admin_nav("officials")}
-        <div class="container">
-            <h1>Officials</h1>
-            <div class="content">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Official ID</th>
-                            <th>Full Name</th>
-                            <th>First Name</th>
-                            <th>Last Name</th>
-                            <th>Certification</th>
-                        </tr>
-                    </thead>
-                    <tbody>{rows_html}</tbody>
-                </table>
-            </div>
-        </div>
-    </body>
-    </html>
-    '''
-    return HTMLResponse(content=html)
-
-
-@app.get("/admin/tournaments-admin")
-async def list_tournaments_admin(format: Optional[str] = Query(None)):
-    """List all tournaments with HTML admin UI."""
-    from fastapi.responses import HTMLResponse
-
-    db = get_db()
-    rows = db.execute("SELECT * FROM tournaments ORDER BY start_date DESC").fetchall()
-    db.close()
-
-    tournaments = [dict(r) for r in rows]
-
-    if format == "json":
-        return {"tournaments": tournaments}
-
-    rows_html = ""
-    if not tournaments:
-        rows_html = '<tr><td colspan="6" style="text-align: center; color: #666; padding: 40px;">No tournaments found.</td></tr>'
-    else:
-        for r in tournaments:
-            rows_html += f'''
-            <tr>
-                <td class="device-id">{r["tournament_id"]}</td>
-                <td>{r["name"]}</td>
-                <td>{r["tournament_type"] or "-"}</td>
-                <td>{r["location"] or "-"}</td>
-                <td>{r["start_date"]}</td>
-                <td>{r["end_date"]}</td>
-            </tr>'''
-
-    html = f'''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>score-cloud | Tournaments</title>
-        <link rel="stylesheet" href="/static/admin.css">
-    </head>
-    <body>
-        {admin_nav("tournaments")}
-        <div class="container">
-            <h1>Tournaments</h1>
-            <div class="content">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Tournament ID</th>
-                            <th>Name</th>
-                            <th>Type</th>
-                            <th>Location</th>
-                            <th>Start Date</th>
-                            <th>End Date</th>
-                        </tr>
-                    </thead>
-                    <tbody>{rows_html}</tbody>
-                </table>
-            </div>
-        </div>
-    </body>
-    </html>
-    '''
-    return HTMLResponse(content=html)
-
-
-@app.get("/admin/registrations-admin")
-async def list_registrations_admin(format: Optional[str] = Query(None)):
-    """List all team registrations with HTML admin UI."""
-    from fastapi.responses import HTMLResponse
-
-    db = get_db()
-    rows = db.execute("""
-        SELECT tr.*, t.name as team_name, t.abbreviation,
-               d.name as division_name
-        FROM team_registrations tr
-        LEFT JOIN teams t ON tr.team_id = t.team_id
-        LEFT JOIN divisions d ON tr.division_id = d.division_id
-        ORDER BY tr.registered_at DESC
+    # Fetch unassigned devices
+    unassigned_devices = db.execute("""
+        SELECT device_id, device_name, last_seen_at
+        FROM devices
+        WHERE is_assigned = 0 OR is_assigned IS NULL OR rink_id IS NULL
+        ORDER BY last_seen_at DESC
     """).fetchall()
+
     db.close()
 
-    registrations = [dict(r) for r in rows]
-
+    # Return JSON if requested
     if format == "json":
-        return {"registrations": registrations}
+        return {
+            "venues": venue_data,
+            "unassigned_devices": [dict(d) for d in unassigned_devices]
+        }
 
+    # Generate HTML view
     import datetime
+
     def format_timestamp(ts):
         if ts:
-            return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
-        return "-"
+            dt = datetime.datetime.fromtimestamp(ts)
+            delta = datetime.datetime.now() - dt
+            if delta.seconds < 60:
+                return "Just now"
+            elif delta.seconds < 3600:
+                return f"{delta.seconds // 60} min ago"
+            elif delta.seconds < 86400:
+                return f"{delta.seconds // 3600} hr ago"
+            else:
+                return dt.strftime("%Y-%m-%d %H:%M")
+        return "Never"
 
-    rows_html = ""
-    if not registrations:
-        rows_html = '<tr><td colspan="7" style="text-align: center; color: #666; padding: 40px;">No registrations found.</td></tr>'
+    def generate_tree_html(data):
+        if not data:
+            return '<div class="empty-state">No venues found. <button class="btn-add" onclick="openModal(\'venue\')">+ Add Venue</button></div>'
+
+        html_parts = []
+        for venue in data:
+            sheet_count = len(venue["sheets"])
+            html_parts.append(f'''
+            <div class="tree-node level-1" data-id="{venue["rink_id"]}" data-type="venue">
+                <div class="node-header" onclick="toggleNode(this)">
+                    <span class="toggle-icon">▶</span>
+                    <span class="node-name">{venue["name"]}</span>
+                    <span class="node-meta">({sheet_count} sheet{"s" if sheet_count != 1 else ""})</span>
+                    <button class="btn-add" onclick="event.stopPropagation(); openModal('sheet', '{venue["rink_id"]}')"+ Sheet</button>
+                </div>
+                <div class="node-children" style="display: none;">
+            ''')
+
+            for sheet in venue["sheets"]:
+                device = sheet["device"]
+                surface_badge = f'<span class="node-badge">{sheet["surface_type"]}</span>' if sheet["surface_type"] else ''
+
+                html_parts.append(f'''
+                <div class="tree-node level-2" data-id="{sheet["sheet_id"]}" data-type="sheet">
+                    <div class="node-header">
+                        <span class="node-name">{sheet["name"]}</span>
+                        {surface_badge}
+                ''')
+
+                if device:
+                    # Show device with unassign button
+                    html_parts.append(f'''
+                        <span class="node-meta">{device["device_id"]} ({format_timestamp(device["last_seen_at"])})</span>
+                        <button class="btn-unassign" onclick="event.stopPropagation(); unassignDevice('{device["device_id"]}', '{venue["rink_id"]}', '{sheet["name"]}')">Unassign</button>
+                    ''')
+                else:
+                    # Show assign device dropdown
+                    html_parts.append(f'''
+                        <select class="assign-select" onchange="assignDevice(this.value, '{venue["rink_id"]}', '{sheet["name"]}')" onclick="event.stopPropagation()">
+                            <option value="">Assign Device...</option>
+                    ''')
+                    for unassigned in unassigned_devices:
+                        html_parts.append(f'<option value="{unassigned["device_id"]}">{unassigned["device_id"]}</option>')
+                    html_parts.append('</select>')
+
+                html_parts.append('''
+                    </div>
+                </div>
+                ''')
+
+            if not venue["sheets"]:
+                html_parts.append('<div class="empty-state-inline">No sheets</div>')
+
+            html_parts.append('</div></div>')  # Close venue
+
+        return ''.join(html_parts)
+
+    tree_html = generate_tree_html(venue_data)
+
+    # Generate unassigned devices HTML
+    unassigned_html = ""
+    if unassigned_devices:
+        for d in unassigned_devices:
+            unassigned_html += f'''
+            <div class="unassigned-device">
+                <span class="device-id">{d["device_id"]}</span>
+                <span class="device-meta">{format_timestamp(d["last_seen_at"])}</span>
+            </div>
+            '''
     else:
-        for r in registrations:
-            context = r["league_id"] or r["tournament_id"] or "-"
-            if r["season_id"]:
-                context += f" / {r['season_id']}"
-            rows_html += f'''
-            <tr>
-                <td class="device-id">{r["registration_id"]}</td>
-                <td>{r["team_name"] or r["team_id"]}</td>
-                <td>{r["abbreviation"] or "-"}</td>
-                <td>{r["division_name"] or r["division_id"]}</td>
-                <td>{context}</td>
-                <td class="timestamp">{format_timestamp(r.get("registered_at"))}</td>
-            </tr>'''
+        unassigned_html = '<div class="empty-state-inline">All devices are assigned</div>'
 
     html = f'''
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="UTF-8">
-        <title>score-cloud | Team Registrations</title>
+        <title>score-cloud | Venues</title>
         <link rel="stylesheet" href="/static/admin.css">
+        <style>
+            .assign-select {{
+                max-width: 200px;
+                font-size: 0.9em;
+            }}
+        </style>
+        <script>
+            // Tree state management
+            const TREE_STATE_KEY = 'venues_tree_expanded_nodes';
+
+            function getExpandedNodes() {{
+                const stored = localStorage.getItem(TREE_STATE_KEY);
+                return stored ? JSON.parse(stored) : [];
+            }}
+
+            function saveExpandedNodes(expandedNodes) {{
+                localStorage.setItem(TREE_STATE_KEY, JSON.stringify(expandedNodes));
+            }}
+
+            function getNodeKey(node) {{
+                const type = node.getAttribute('data-type');
+                const id = node.getAttribute('data-id');
+                return `${{type}}:${{id}}`;
+            }}
+
+            // Tree navigation
+            function toggleNode(header) {{
+                const node = header.parentElement;
+                const children = node.querySelector('.node-children');
+                const icon = header.querySelector('.toggle-icon');
+                const nodeKey = getNodeKey(node);
+                let expandedNodes = getExpandedNodes();
+
+                if (children.style.display === 'none') {{
+                    children.style.display = 'block';
+                    icon.textContent = '▼';
+                    if (!expandedNodes.includes(nodeKey)) {{
+                        expandedNodes.push(nodeKey);
+                    }}
+                }} else {{
+                    children.style.display = 'none';
+                    icon.textContent = '▶';
+                    expandedNodes = expandedNodes.filter(k => k !== nodeKey);
+                }}
+
+                saveExpandedNodes(expandedNodes);
+            }}
+
+            // Restore tree state on page load
+            function restoreTreeState() {{
+                const expandedNodes = getExpandedNodes();
+                expandedNodes.forEach(nodeKey => {{
+                    const [type, id] = nodeKey.split(':');
+                    const node = document.querySelector(`.tree-node[data-type="${{type}}"][data-id="${{id}}"]`);
+                    if (node) {{
+                        const children = node.querySelector('.node-children');
+                        const icon = node.querySelector('.toggle-icon');
+                        if (children && icon) {{
+                            children.style.display = 'block';
+                            icon.textContent = '▼';
+                        }}
+                    }}
+                }});
+            }}
+
+            document.addEventListener('DOMContentLoaded', restoreTreeState);
+
+            // Modal management
+            let currentModalType = null;
+            let currentContext = {{}};
+
+            function openModal(type, ...context) {{
+                currentModalType = type;
+                const modal = document.getElementById('entityModal');
+                const title = document.getElementById('modalTitle');
+                const form = document.getElementById('entityForm');
+                const fields = document.getElementById('modalFields');
+
+                form.reset();
+
+                if (type === 'venue') {{
+                    title.textContent = 'Add Venue';
+                    fields.innerHTML = `
+                        <div class="form-group">
+                            <label>Name <span class="required">*</span></label>
+                            <input type="text" name="name" required placeholder="e.g., Sharks Ice at San Jose">
+                        </div>
+                        <div class="form-group">
+                            <label>Address</label>
+                            <input type="text" name="address" placeholder="e.g., 1500 S 10th St">
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>City</label>
+                                <input type="text" name="city" placeholder="e.g., San Jose">
+                            </div>
+                            <div class="form-group">
+                                <label>State/Province</label>
+                                <input type="text" name="province_state" placeholder="e.g., CA">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Postal Code</label>
+                                <input type="text" name="postal_code" placeholder="e.g., 95112">
+                            </div>
+                            <div class="form-group">
+                                <label>Country</label>
+                                <input type="text" name="country" placeholder="e.g., USA">
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Phone</label>
+                                <input type="tel" name="phone" placeholder="e.g., 555-1234">
+                            </div>
+                            <div class="form-group">
+                                <label>Website</label>
+                                <input type="url" name="website" placeholder="e.g., https://venue.com">
+                            </div>
+                        </div>
+                    `;
+                }} else if (type === 'sheet') {{
+                    currentContext = {{rink_id: context[0]}};
+                    title.textContent = 'Add Sheet to Venue';
+                    fields.innerHTML = `
+                        <div class="form-group">
+                            <label>Name <span class="required">*</span></label>
+                            <input type="text" name="name" required placeholder="e.g., Sheet A">
+                        </div>
+                        <div class="form-group">
+                            <label>Surface Type</label>
+                            <select name="surface_type">
+                                <option value="">--</option>
+                                <option value="NHL">NHL</option>
+                                <option value="Olympic">Olympic</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Capacity</label>
+                            <input type="number" name="capacity" min="0" placeholder="e.g., 500">
+                        </div>
+                    `;
+                }}
+
+                modal.style.display = 'flex';
+            }}
+
+            function closeModal() {{
+                document.getElementById('entityModal').style.display = 'none';
+                currentModalType = null;
+                currentContext = {{}};
+            }}
+
+            // Form submission
+            document.addEventListener('DOMContentLoaded', function() {{
+                document.getElementById('entityForm').addEventListener('submit', async function(e) {{
+                    e.preventDefault();
+
+                    const formData = new FormData(e.target);
+                    let endpoint = '';
+                    let body = {{}};
+
+                    if (currentModalType === 'venue') {{
+                        endpoint = '/admin/rinks';
+                        body = {{
+                            name: formData.get('name'),
+                            address: formData.get('address') || null,
+                            city: formData.get('city') || null,
+                            province_state: formData.get('province_state') || null,
+                            postal_code: formData.get('postal_code') || null,
+                            country: formData.get('country') || null,
+                            phone: formData.get('phone') || null,
+                            website: formData.get('website') || null
+                        }};
+                    }} else if (currentModalType === 'sheet') {{
+                        endpoint = '/admin/rink-sheets';
+                        body = {{
+                            rink_id: currentContext.rink_id,
+                            name: formData.get('name'),
+                            surface_type: formData.get('surface_type') || null,
+                            capacity: formData.get('capacity') ? parseInt(formData.get('capacity')) : null
+                        }};
+                    }}
+
+                    try {{
+                        const response = await fetch(endpoint, {{
+                            method: 'POST',
+                            headers: {{'Content-Type': 'application/json'}},
+                            body: JSON.stringify(body)
+                        }});
+
+                        if (response.ok) {{
+                            showMessage('Created successfully', 'success');
+                            closeModal();
+                            saveScrollPosition();
+                            setTimeout(() => location.reload(), 1000);
+                        }} else {{
+                            const error = await response.json();
+                            showMessage(error.detail || 'Failed to create', 'error');
+                        }}
+                    }} catch (error) {{
+                        showMessage('Network error', 'error');
+                    }}
+                }});
+            }});
+
+            function showMessage(text, type) {{
+                const msg = document.getElementById('message');
+                msg.textContent = text;
+                msg.className = `message ${{type}}`;
+                msg.style.display = 'block';
+                setTimeout(() => {{ msg.style.display = 'none'; }}, 5000);
+            }}
+
+            // Device assignment
+            async function assignDevice(deviceId, rinkId, sheetName) {{
+                if (!deviceId) return;
+
+                try {{
+                    const response = await fetch(`/admin/devices/${{deviceId}}`, {{
+                        method: 'PUT',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify({{
+                            rink_id: rinkId,
+                            sheet_name: sheetName
+                        }})
+                    }});
+
+                    if (response.ok) {{
+                        showMessage(`Device ${{deviceId}} assigned`, 'success');
+                        setTimeout(() => location.reload(), 1000);
+                    }} else {{
+                        const error = await response.json();
+                        showMessage(error.detail || 'Failed to assign', 'error');
+                    }}
+                }} catch (error) {{
+                    showMessage('Network error', 'error');
+                }}
+            }}
+
+            async function unassignDevice(deviceId, rinkId, sheetName) {{
+                if (!confirm(`Unassign device ${{deviceId}}?`)) return;
+
+                try {{
+                    const response = await fetch(`/admin/devices/${{deviceId}}/assignment`, {{
+                        method: 'DELETE'
+                    }});
+
+                    if (response.ok) {{
+                        showMessage(`Device ${{deviceId}} unassigned`, 'success');
+                        setTimeout(() => location.reload(), 1000);
+                    }} else {{
+                        const error = await response.json();
+                        showMessage(error.detail || 'Failed to unassign', 'error');
+                    }}
+                }} catch (error) {{
+                    showMessage('Network error', 'error');
+                }}
+            }}
+
+            // Close modal on outside click
+            document.addEventListener('click', function(e) {{
+                const modal = document.getElementById('entityModal');
+                if (e.target === modal) {{
+                    closeModal();
+                }}
+            }});
+        </script>
     </head>
     <body>
-        {admin_nav("registrations")}
-        <div class="container">
-            <h1>Team Registrations</h1>
+        {admin_nav("venues")}
+        <div class="container wide">
+            <h1>Venues</h1>
+
+            <div id="message" class="message"></div>
+
+            <!-- Unassigned Devices Section -->
             <div class="content">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Registration ID</th>
-                            <th>Team</th>
-                            <th>Abbrev</th>
-                            <th>Division</th>
-                            <th>Context (League/Season or Tournament)</th>
-                            <th>Registered</th>
-                        </tr>
-                    </thead>
-                    <tbody>{rows_html}</tbody>
-                </table>
+                <h2>Unassigned Devices</h2>
+                <div class="unassigned-devices-list">
+                    {unassigned_html}
+                </div>
+            </div>
+
+            <!-- Add Venue Button -->
+            <div style="margin: 20px 0;">
+                <button class="btn-add" onclick="openModal('venue')">+ Add Venue</button>
+            </div>
+
+            <!-- Tree view -->
+            <div class="content">
+                <div class="tree-container">
+                    {tree_html}
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal -->
+        <div id="entityModal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 id="modalTitle">Add Entity</h2>
+                    <span class="modal-close" onclick="closeModal()">&times;</span>
+                </div>
+                <form id="entityForm">
+                    <div id="modalFields"></div>
+                    <div class="form-actions">
+                        <button type="button" onclick="closeModal()">Cancel</button>
+                        <button type="submit" class="btn-save">Create</button>
+                    </div>
+                </form>
             </div>
         </div>
     </body>
     </html>
     '''
     return HTMLResponse(content=html)
+
 
 
 # ---------- Database Seeding Admin Page ----------
@@ -2810,6 +4311,7 @@ class SeedRequest(PydanticBaseModel):
     player_count: int = 120
     game_count: int = 8
     seed_all: bool = False
+    exclude_games: bool = False
 
 
 class ClearRequest(PydanticBaseModel):
@@ -2817,327 +4319,9 @@ class ClearRequest(PydanticBaseModel):
     confirm: bool = False
 
 
-@app.get("/admin/seed")
-async def seed_admin_page():
-    """Admin page for database seeding."""
-    from fastapi.responses import HTMLResponse
-
-    db = get_db()
-
-    # Get current counts
-    counts = {
-        "leagues": db.execute("SELECT COUNT(*) FROM leagues").fetchone()[0],
-        "seasons": db.execute("SELECT COUNT(*) FROM seasons").fetchone()[0],
-        "divisions": db.execute("SELECT COUNT(*) FROM divisions").fetchone()[0],
-        "rinks": db.execute("SELECT COUNT(*) FROM rinks").fetchone()[0],
-        "teams": db.execute("SELECT COUNT(*) FROM teams").fetchone()[0],
-        "players": db.execute("SELECT COUNT(*) FROM players").fetchone()[0],
-        "registrations": db.execute("SELECT COUNT(*) FROM team_registrations").fetchone()[0],
-        "rosters": db.execute("SELECT COUNT(*) FROM roster_entries").fetchone()[0],
-        "games": db.execute("SELECT COUNT(*) FROM games").fetchone()[0],
-    }
-
-    db.close()
-
-    html = f'''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>score-cloud | Seed Database</title>
-        <link rel="stylesheet" href="/static/admin.css">
-        <style>
-            .seed-container {{
-                display: flex;
-                gap: 24px;
-            }}
-            .seed-options {{
-                flex: 1;
-                background: #fafafa;
-                border: 1px solid #e0e0e0;
-                border-radius: 4px;
-                padding: 16px;
-            }}
-            .seed-options h3 {{
-                margin: 0 0 12px 0;
-                font-size: 12px;
-                text-transform: uppercase;
-                color: #666;
-            }}
-            .seed-option {{
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                margin-bottom: 8px;
-            }}
-            .seed-option input[type="checkbox"] {{
-                flex-shrink: 0;
-                width: 16px;
-                height: 16px;
-            }}
-            .seed-option label {{
-                min-width: 140px;
-            }}
-            .seed-option .number-input {{
-                width: 60px;
-                text-align: right;
-                flex-shrink: 0;
-            }}
-            .seed-option .count {{
-                color: #666;
-                font-size: 12px;
-                white-space: nowrap;
-            }}
-            .seed-actions {{
-                width: 200px;
-                flex-shrink: 0;
-            }}
-            .seed-actions button {{
-                width: 100%;
-                padding: 10px 16px;
-                margin-bottom: 8px;
-                font-size: 13px;
-            }}
-            .btn-seed-all {{
-                background: #1a1a2e;
-                color: white;
-            }}
-            .btn-seed-all:hover {{
-                background: #2d2d44;
-            }}
-            .btn-seed-selected {{
-                background: #1e7e34;
-                color: white;
-            }}
-            .btn-clear {{
-                background: #dc3545;
-                color: white;
-            }}
-            #status {{
-                margin-top: 16px;
-                padding: 12px;
-                border-radius: 4px;
-                display: none;
-            }}
-            #status.success {{
-                background: #e6f4ea;
-                color: #1e7e34;
-                border: 1px solid #c3e6cb;
-            }}
-            #status.error {{
-                background: #fce4ec;
-                color: #c62828;
-                border: 1px solid #f5c6cb;
-            }}
-        </style>
-    </head>
-    <body>
-        {admin_nav("seed")}
-        <div class="container">
-            <h1>Database Seeding</h1>
-            <div class="content">
-                <div class="hint">
-                    Seed the database with sample data for development and testing.
-                    Existing data will not be overwritten.
-                </div>
-
-                <div class="seed-container">
-                    <div class="seed-options">
-                        <h3>Seed Options</h3>
-
-                        <div class="seed-option">
-                            <input type="checkbox" id="seed-leagues" checked>
-                            <label for="seed-leagues">Leagues</label>
-                            <span class="count">({counts['leagues']} existing)</span>
-                        </div>
-
-                        <div class="seed-option">
-                            <input type="checkbox" id="seed-seasons" checked>
-                            <label for="seed-seasons">Seasons</label>
-                            <span class="count">({counts['seasons']} existing)</span>
-                        </div>
-
-                        <div class="seed-option">
-                            <input type="checkbox" id="seed-divisions" checked>
-                            <label for="seed-divisions">Divisions</label>
-                            <span class="count">({counts['divisions']} existing)</span>
-                        </div>
-
-                        <div class="seed-option">
-                            <input type="checkbox" id="seed-rinks" checked>
-                            <label for="seed-rinks">Rinks</label>
-                            <span class="count">({counts['rinks']} existing)</span>
-                        </div>
-
-                        <div class="seed-option">
-                            <input type="checkbox" id="seed-teams" checked>
-                            <label for="seed-teams">Teams</label>
-                            <span class="count">({counts['teams']} existing)</span>
-                        </div>
-
-                        <div class="seed-option">
-                            <input type="checkbox" id="seed-players" checked>
-                            <label for="seed-players">Players</label>
-                            <input type="number" id="player-count" class="number-input" value="120" min="10" max="500">
-                            <span class="count">({counts['players']} existing)</span>
-                        </div>
-
-                        <div class="seed-option">
-                            <input type="checkbox" id="seed-registrations" checked>
-                            <label for="seed-registrations">Team Registrations</label>
-                            <span class="count">({counts['registrations']} existing)</span>
-                        </div>
-
-                        <div class="seed-option">
-                            <input type="checkbox" id="seed-rosters" checked>
-                            <label for="seed-rosters">Roster Entries</label>
-                            <span class="count">({counts['rosters']} existing)</span>
-                        </div>
-
-                        <div class="seed-option">
-                            <input type="checkbox" id="seed-games" checked>
-                            <label for="seed-games">Games</label>
-                            <input type="number" id="game-count" class="number-input" value="8" min="1" max="50">
-                            <span class="count">({counts['games']} existing)</span>
-                        </div>
-                    </div>
-
-                    <div class="seed-actions">
-                        <h3>Actions</h3>
-                        <button class="btn-seed-all" onclick="seedAll()">Seed All</button>
-                        <button class="btn-seed-selected" onclick="seedSelected()">Seed Selected</button>
-                        <button class="btn-clear" onclick="clearAll()">Clear All Data</button>
-                    </div>
-                </div>
-
-                <div id="status"></div>
-            </div>
-        </div>
-
-        <script>
-        function showStatus(message, type) {{
-            const status = document.getElementById('status');
-            status.textContent = message;
-            status.className = type;
-            status.style.display = 'block';
-        }}
-
-        function getSelectedCategories() {{
-            const categories = [];
-            if (document.getElementById('seed-leagues').checked) categories.push('leagues');
-            if (document.getElementById('seed-seasons').checked) categories.push('seasons');
-            if (document.getElementById('seed-divisions').checked) categories.push('divisions');
-            if (document.getElementById('seed-rinks').checked) categories.push('rinks');
-            if (document.getElementById('seed-teams').checked) categories.push('teams');
-            if (document.getElementById('seed-players').checked) categories.push('players');
-            if (document.getElementById('seed-registrations').checked) categories.push('registrations');
-            if (document.getElementById('seed-rosters').checked) categories.push('rosters');
-            if (document.getElementById('seed-games').checked) categories.push('games');
-            return categories;
-        }}
-
-        async function seedAll() {{
-            showStatus('Seeding all data...', 'success');
-
-            try {{
-                const response = await fetch('/admin/seed', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{
-                        seed_all: true,
-                        player_count: parseInt(document.getElementById('player-count').value),
-                        game_count: parseInt(document.getElementById('game-count').value)
-                    }})
-                }});
-
-                const result = await response.json();
-
-                if (response.ok) {{
-                    const seeded = result.seeded;
-                    const summary = Object.entries(seeded)
-                        .filter(([k, v]) => v > 0)
-                        .map(([k, v]) => `${{k}}: ${{v}}`)
-                        .join(', ');
-                    showStatus(`Seeded: ${{summary}}`, 'success');
-                    setTimeout(() => location.reload(), 2000);
-                }} else {{
-                    showStatus(`Error: ${{result.detail || 'Failed to seed'}}`, 'error');
-                }}
-            }} catch (error) {{
-                showStatus(`Error: ${{error.message}}`, 'error');
-            }}
-        }}
-
-        async function seedSelected() {{
-            const categories = getSelectedCategories();
-            if (categories.length === 0) {{
-                showStatus('Please select at least one category', 'error');
-                return;
-            }}
-
-            showStatus('Seeding selected categories...', 'success');
-
-            try {{
-                const response = await fetch('/admin/seed', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{
-                        categories: categories,
-                        player_count: parseInt(document.getElementById('player-count').value),
-                        game_count: parseInt(document.getElementById('game-count').value)
-                    }})
-                }});
-
-                const result = await response.json();
-
-                if (response.ok) {{
-                    const seeded = result.seeded;
-                    const summary = Object.entries(seeded)
-                        .filter(([k, v]) => v > 0)
-                        .map(([k, v]) => `${{k}}: ${{v}}`)
-                        .join(', ');
-                    showStatus(`Seeded: ${{summary || 'nothing new'}}`, 'success');
-                    setTimeout(() => location.reload(), 2000);
-                }} else {{
-                    showStatus(`Error: ${{result.detail || 'Failed to seed'}}`, 'error');
-                }}
-            }} catch (error) {{
-                showStatus(`Error: ${{error.message}}`, 'error');
-            }}
-        }}
-
-        async function clearAll() {{
-            if (!confirm('Are you sure you want to clear ALL data? This cannot be undone.')) {{
-                return;
-            }}
-
-            showStatus('Clearing all data...', 'success');
-
-            try {{
-                const response = await fetch('/admin/seed/clear', {{
-                    method: 'POST',
-                    headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ confirm: true }})
-                }});
-
-                const result = await response.json();
-
-                if (response.ok) {{
-                    showStatus('All data cleared', 'success');
-                    setTimeout(() => location.reload(), 1500);
-                }} else {{
-                    showStatus(`Error: ${{result.detail || 'Failed to clear'}}`, 'error');
-                }}
-            }} catch (error) {{
-                showStatus(`Error: ${{error.message}}`, 'error');
-            }}
-        }}
-        </script>
-    </body>
-    </html>
-    '''
-
-    return HTMLResponse(content=html)
+class SeedGamesRequest(PydanticBaseModel):
+    """Request to seed games using existing team data."""
+    game_count: int = 8
 
 
 @app.post("/admin/seed")
@@ -3145,7 +4329,7 @@ async def execute_seed(request: SeedRequest):
     """Execute database seeding."""
     from score.seed import (
         seed_leagues, seed_seasons, seed_divisions, seed_rinks,
-        seed_teams, seed_players, seed_league_seasons,
+        seed_players, seed_league_seasons, seed_league_season_divisions,
         seed_registrations, seed_rosters, seed_games
     )
 
@@ -3159,12 +4343,13 @@ async def execute_seed(request: SeedRequest):
             results["seasons"] = seed_seasons(db)
             results["divisions"] = seed_divisions(db)
             results["rinks"] = seed_rinks(db)
-            results["teams"] = seed_teams(db)
             results["players"] = seed_players(db, request.player_count)
             results["league_seasons"] = seed_league_seasons(db)
+            results["league_season_divisions"] = seed_league_season_divisions(db)
             results["registrations"] = seed_registrations(db)
             results["rosters"] = seed_rosters(db)
-            results["games"] = seed_games(db, request.game_count)
+            if not request.exclude_games:
+                results["games"] = seed_games(db, request.game_count)
         else:
             # Seed only selected categories (in dependency order)
             if "leagues" in request.categories:
@@ -3175,13 +4360,12 @@ async def execute_seed(request: SeedRequest):
                 results["divisions"] = seed_divisions(db)
             if "rinks" in request.categories:
                 results["rinks"] = seed_rinks(db)
-            if "teams" in request.categories:
-                results["teams"] = seed_teams(db)
             if "players" in request.categories:
                 results["players"] = seed_players(db, request.player_count)
-            # League seasons is implicit when seeding registrations
+            # League seasons and league_season_divisions are implicit when seeding registrations
             if "registrations" in request.categories:
                 results["league_seasons"] = seed_league_seasons(db)
+                results["league_season_divisions"] = seed_league_season_divisions(db)
                 results["registrations"] = seed_registrations(db)
             if "rosters" in request.categories:
                 results["rosters"] = seed_rosters(db)
@@ -3222,6 +4406,544 @@ async def clear_seed_data(request: ClearRequest):
     return {
         "status": "ok",
         "cleared": counts
+    }
+
+
+@app.post("/admin/seed/games")
+async def seed_games_only(request: SeedGamesRequest):
+    """Seed games using existing team registrations.
+
+    This endpoint requires that league data (teams, registrations) already exists.
+    """
+    from score.seed import seed_games
+
+    db = get_db()
+
+    # Check if we have team registrations
+    regs = db.execute("SELECT COUNT(*) as count FROM team_registrations").fetchone()
+    if not regs or regs["count"] < 2:
+        db.close()
+        raise HTTPException(
+            status_code=400,
+            detail="Need at least 2 team registrations. Seed league data first."
+        )
+
+    try:
+        count = seed_games(db, request.game_count)
+        db.commit()
+    finally:
+        db.close()
+
+    logger.info(f"Seeded {count} games")
+
+    return {
+        "status": "ok",
+        "seeded": {"games": count}
+    }
+
+
+@app.delete("/admin/games/all")
+async def delete_all_games():
+    """Delete all games from the database."""
+    db = get_db()
+
+    try:
+        # Also delete received events for these games
+        db.execute("DELETE FROM received_events")
+        result = db.execute("DELETE FROM games")
+        count = result.rowcount
+        db.commit()
+    finally:
+        db.close()
+
+    logger.info(f"Deleted all {count} games")
+
+    return {
+        "status": "ok",
+        "message": f"Deleted {count} games"
+    }
+
+
+@app.delete("/admin/games/division/{league_id}/{season_id}/{division_id}")
+async def delete_division_games(
+    league_id: str,
+    season_id: str,
+    division_id: str
+):
+    """Delete all games for a specific division."""
+    db = get_db()
+
+    try:
+        # Get all games for this division (where either home or away team is in this division)
+        game_ids = db.execute("""
+            SELECT DISTINCT g.game_id
+            FROM games g
+            LEFT JOIN team_registrations tr_home ON g.home_registration_id = tr_home.registration_id
+            LEFT JOIN team_registrations tr_away ON g.away_registration_id = tr_away.registration_id
+            WHERE (tr_home.league_id = ? AND tr_home.season_id = ? AND tr_home.division_id = ?)
+               OR (tr_away.league_id = ? AND tr_away.season_id = ? AND tr_away.division_id = ?)
+        """, (league_id, season_id, division_id, league_id, season_id, division_id)).fetchall()
+
+        game_id_list = [row["game_id"] for row in game_ids]
+
+        if game_id_list:
+            # Delete received events for these games
+            placeholders = ','.join('?' * len(game_id_list))
+            db.execute(f"DELETE FROM received_events WHERE game_id IN ({placeholders})", game_id_list)
+
+            # Delete the games
+            result = db.execute(f"DELETE FROM games WHERE game_id IN ({placeholders})", game_id_list)
+            count = result.rowcount
+        else:
+            count = 0
+
+        db.commit()
+    finally:
+        db.close()
+
+    logger.info(f"Deleted {count} games for division {division_id}")
+
+    return {
+        "status": "ok",
+        "message": f"Deleted {count} games for this division"
+    }
+
+
+# ---------- Schedule Generation ----------
+
+class DivisionScheduleSpec(PydanticBaseModel):
+    """Specification for one division in a multi-division schedule."""
+    division_id: str
+    games_per_team: int
+
+class ScheduleGenerateRequest(PydanticBaseModel):
+    """Request to generate a schedule for one or more divisions."""
+    league_id: str
+    season_id: str
+    # Single division mode (legacy) - both must be provided together or both omitted
+    division_id: Optional[str] = None
+    games_per_team: Optional[int] = None
+    # Multi-division mode
+    divisions: Optional[list[DivisionScheduleSpec]] = None
+    # Common fields
+    days_of_week: list[str]  # ['sunday', 'monday', etc.]
+    time_slots: list[str]  # ['18:00', '19:30', '21:00']
+    sheet_ids: list[str]  # Sheet IDs to use
+    blackout_dates: list[str] = []  # Optional blackout dates
+    clear_existing: bool = False  # Clear existing games for divisions
+    # Solver weights
+    weight_time_slot: int = 10
+    weight_sheet: int = 10
+    weight_home_away: int = 20
+    weight_opponent: int = 5
+    weight_packing: int = 1
+    weight_no_consecutive_opponent: int = 50
+    max_consecutive_byes: int = 1
+    timeout_seconds: int = 30  # Max time for optimizer
+
+
+@app.post("/admin/schedules/generate")
+async def generate_division_schedule(request: ScheduleGenerateRequest):
+    """Generate a schedule preview for one or more divisions using OR-Tools scheduler."""
+    from score.scheduler import (
+        ScheduleConfig, Division, Team, Sheet, SolverSettings,
+        generate_schedule, analyze_fairness, _generate_slots
+    )
+    from datetime import datetime, time as dt_time
+
+    db = get_db()
+
+    try:
+        # Determine if multi-division or single-division mode
+        if request.divisions:
+            # Multi-division mode
+            division_specs = request.divisions
+        elif request.division_id and request.games_per_team:
+            # Single division mode (legacy)
+            division_specs = [DivisionScheduleSpec(
+                division_id=request.division_id,
+                games_per_team=request.games_per_team
+            )]
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Must provide either 'divisions' or 'division_id' with 'games_per_team'"
+            )
+
+        # Fetch season dates
+        season = db.execute(
+            "SELECT start_date, end_date FROM seasons WHERE season_id = ?",
+            (request.season_id,)
+        ).fetchone()
+
+        if not season:
+            db.close()
+            raise HTTPException(status_code=404, detail=f"Season {request.season_id} not found")
+
+        # Build divisions list
+        divisions_list = []
+        for div_spec in division_specs:
+            # Fetch teams in this division
+            teams_rows = db.execute("""
+                SELECT registration_id, team_name, abbreviation
+                FROM team_registrations
+                WHERE league_id = ? AND season_id = ? AND division_id = ?
+            """, (request.league_id, request.season_id, div_spec.division_id)).fetchall()
+
+            if len(teams_rows) < 2:
+                db.close()
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Need at least 2 teams in division {div_spec.division_id}. Found {len(teams_rows)}."
+                )
+
+            # Build teams
+            teams = [
+                Team(
+                    registration_id=row["registration_id"],
+                    name=row["team_name"],
+                    abbreviation=row["abbreviation"],
+                    division_id=div_spec.division_id
+                )
+                for row in teams_rows
+            ]
+
+            # Build division
+            division = Division(
+                division_id=div_spec.division_id,
+                teams=teams,
+                games_per_team=div_spec.games_per_team
+            )
+            divisions_list.append(division)
+
+        # Fetch rink info from sheets
+        rink_id = None
+        sheets_info = []
+        for sheet_id in request.sheet_ids:
+            sheet_row = db.execute(
+                "SELECT sheet_id, rink_id, name FROM rink_sheets WHERE sheet_id = ?",
+                (sheet_id,)
+            ).fetchone()
+            if sheet_row:
+                if rink_id is None:
+                    rink_id = sheet_row["rink_id"]
+                sheets_info.append(Sheet(
+                    sheet_id=sheet_row["sheet_id"],
+                    name=sheet_row["name"]
+                ))
+
+        if not rink_id or not sheets_info:
+            db.close()
+            raise HTTPException(status_code=400, detail="Invalid sheet selection")
+
+        # Parse days of week
+        day_map = {
+            "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+            "friday": 4, "saturday": 5, "sunday": 6
+        }
+        days_of_week_ints = [day_map[d] for d in request.days_of_week if d in day_map]
+
+        # Parse time slots
+        time_slots = []
+        for ts in request.time_slots:
+            parts = ts.split(":")
+            time_slots.append(dt_time(int(parts[0]), int(parts[1])))
+
+        # Parse blackout dates
+        blackout_dates = set()
+        for d_str in request.blackout_dates:
+            try:
+                blackout_dates.add(datetime.strptime(d_str, "%Y-%m-%d").date())
+            except ValueError:
+                pass  # Skip invalid dates
+
+        # Parse season dates
+        start_date = datetime.strptime(season["start_date"], "%Y-%m-%d").date()
+        end_date_str = season["end_date"]
+        if end_date_str:
+            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+        else:
+            # Default to 6 months from start
+            from datetime import timedelta
+            end_date = start_date + timedelta(days=180)
+
+        # Build config
+        config = ScheduleConfig(
+            league_id=request.league_id,
+            season_id=request.season_id,
+            rink_id=rink_id,
+            sheets=sheets_info,
+            divisions=divisions_list,
+            period_length_min=20,  # Default
+            num_periods=3,  # Default
+            game_type="regular",
+            days_of_week=days_of_week_ints,
+            start_date=start_date,
+            end_date=end_date,
+            blackout_dates=blackout_dates,
+            time_slots=time_slots,
+            solver=SolverSettings(
+                timeout_seconds=request.timeout_seconds,
+                weight_time_slot=request.weight_time_slot,
+                weight_sheet=request.weight_sheet,
+                weight_home_away=request.weight_home_away,
+                weight_opponent=request.weight_opponent,
+                weight_packing=request.weight_packing,
+                weight_no_consecutive_opponent=request.weight_no_consecutive_opponent,
+                max_consecutive_byes=request.max_consecutive_byes,
+            )
+        )
+
+    except HTTPException:
+        db.close()
+        raise
+    except Exception as e:
+        db.close()
+        logger.error(f"Error preparing schedule generation: {e}")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+    # Release db connection before running solver
+    db.close()
+
+    # Run the solver
+    try:
+        logger.info(f"Generating schedule preview for division {request.division_id}")
+        games = generate_schedule(config)
+        logger.info(f"Generated {len(games)} games")
+
+        # Analyze fairness
+        report = analyze_fairness(games, config)
+        logger.info(f"\n{report.summary()}")
+
+    except Exception as e:
+        logger.error(f"Schedule generation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Schedule generation failed: {str(e)}")
+
+    # Convert games to JSON-serializable format for preview
+    games_preview = []
+
+    # Build a sheet_id to name mapping
+    db = get_db()
+    sheet_names = {}
+    for sheet_id in request.sheet_ids:
+        sheet_row = db.execute(
+            "SELECT sheet_id, name FROM rink_sheets WHERE sheet_id = ?",
+            (sheet_id,)
+        ).fetchone()
+        if sheet_row:
+            sheet_names[sheet_row["sheet_id"]] = sheet_row["name"]
+    db.close()
+
+    for game in games:
+        games_preview.append({
+            "game_id": game.game_id,
+            "division_id": game.division_id,
+            "home_team": game.home_team,
+            "away_team": game.away_team,
+            "home_abbrev": game.home_abbrev,
+            "away_abbrev": game.away_abbrev,
+            "start_time": game.start_time.isoformat(),
+            "sheet_name": sheet_names.get(game.sheet_id, "Unknown"),
+            "home_registration_id": game.home_registration_id,
+            "away_registration_id": game.away_registration_id,
+        })
+
+    # Build fairness metrics for frontend
+    fairness_metrics = {
+        "utilization_pct": round(report.utilization_pct, 1),
+        "used_slots": report.used_slots,
+        "total_slots": report.total_slots,
+        "games_count": len(games),
+        "home_away_balance": {
+            team: {"home": home, "away": away}
+            for team, (home, away) in report.home_away_balance.items()
+        },
+        "time_slot_distribution": report.time_slot_distribution,
+        "sheet_distribution": report.sheet_distribution,
+        "opponent_distribution": report.opponent_distribution,
+    }
+
+    # Generate all slots and build comprehensive schedule view showing used and unused slots
+    all_slots = _generate_slots(config)
+
+    # Build lookup of games by (date, time, sheet_id)
+    game_lookup = {}
+    for game in games:
+        key = (game.start_time.date(), game.start_time.time(), game.sheet_id)
+        game_lookup[key] = game
+
+    # Find last game date to only show slots up to last scheduled game
+    last_game_date = max(game.start_time.date() for game in games) if games else None
+
+    # Build comprehensive slot list with games or "unused" markers
+    comprehensive_schedule = []
+    for slot in all_slots:
+        # Only include slots up to the last game date
+        if last_game_date and slot.date > last_game_date:
+            continue
+
+        key = (slot.date, slot.time, slot.sheet_id)
+        game = game_lookup.get(key)
+
+        if game:
+            # Slot has a game
+            comprehensive_schedule.append({
+                "date": slot.date.isoformat(),
+                "time": slot.time.strftime("%H:%M"),
+                "sheet_id": slot.sheet_id,
+                "sheet_name": sheet_names.get(slot.sheet_id, "Unknown"),
+                "used": True,
+                "game": {
+                    "game_id": game.game_id,
+                    "division_id": game.division_id,
+                    "home_team": game.home_team,
+                    "away_team": game.away_team,
+                    "home_abbrev": game.home_abbrev,
+                    "away_abbrev": game.away_abbrev,
+                    "home_registration_id": game.home_registration_id,
+                    "away_registration_id": game.away_registration_id,
+                }
+            })
+        else:
+            # Unused slot
+            comprehensive_schedule.append({
+                "date": slot.date.isoformat(),
+                "time": slot.time.strftime("%H:%M"),
+                "sheet_id": slot.sheet_id,
+                "sheet_name": sheet_names.get(slot.sheet_id, "Unknown"),
+                "used": False,
+                "game": None
+            })
+
+    return {
+        "status": "preview",
+        "games": games_preview,
+        "slots": comprehensive_schedule,  # Complete slot view
+        "fairness": fairness_metrics,
+        "config": {
+            "league_id": request.league_id,
+            "season_id": request.season_id,
+            # For compatibility, still include division_id if single-division mode
+            "division_id": request.division_id if request.division_id else None,
+            "divisions": [{"division_id": d.division_id, "games_per_team": d.games_per_team}
+                         for d in division_specs],
+            "clear_existing": request.clear_existing,
+            # Include weights so preview can show them
+            "weight_time_slot": request.weight_time_slot,
+            "weight_sheet": request.weight_sheet,
+            "weight_home_away": request.weight_home_away,
+            "weight_opponent": request.weight_opponent,
+            "weight_packing": request.weight_packing,
+            "weight_no_consecutive_opponent": request.weight_no_consecutive_opponent,
+            "max_consecutive_byes": request.max_consecutive_byes,
+            "timeout_seconds": request.timeout_seconds,
+        }
+    }
+
+
+class SaveScheduleRequest(PydanticBaseModel):
+    """Request to save a generated schedule."""
+    league_id: str
+    season_id: str
+    division_id: str
+    games: list[dict]  # Games from preview
+    clear_existing: bool = False
+
+
+@app.post("/admin/schedules/save")
+async def save_schedule(request: SaveScheduleRequest):
+    """Save a generated schedule to the database."""
+    db = get_db()
+    current_time = int(time.time())
+
+    try:
+        # Clear existing games if requested
+        if request.clear_existing:
+            game_ids = db.execute("""
+                SELECT DISTINCT g.game_id
+                FROM games g
+                LEFT JOIN team_registrations tr_home ON g.home_registration_id = tr_home.registration_id
+                LEFT JOIN team_registrations tr_away ON g.away_registration_id = tr_away.registration_id
+                WHERE (tr_home.league_id = ? AND tr_home.season_id = ? AND tr_home.division_id = ?)
+                   OR (tr_away.league_id = ? AND tr_away.season_id = ? AND tr_away.division_id = ?)
+            """, (request.league_id, request.season_id, request.division_id,
+                  request.league_id, request.season_id, request.division_id)).fetchall()
+
+            game_id_list = [row["game_id"] for row in game_ids]
+            if game_id_list:
+                placeholders = ','.join('?' * len(game_id_list))
+                db.execute(f"DELETE FROM received_events WHERE game_id IN ({placeholders})", game_id_list)
+                db.execute(f"DELETE FROM games WHERE game_id IN ({placeholders})", game_id_list)
+                logger.info(f"Cleared {len(game_id_list)} existing games for division {request.division_id}")
+
+        # Get rink_id and sheet_ids for validation
+        sheet_ids = set()
+        rink_id = None
+        for game in request.games:
+            # Fetch sheet info to get rink_id
+            sheet_row = db.execute(
+                "SELECT sheet_id, rink_id FROM rink_sheets WHERE sheet_id = (SELECT sheet_id FROM rink_sheets WHERE name = ?)",
+                (game["sheet_name"],)
+            ).fetchone()
+            if sheet_row:
+                if rink_id is None:
+                    rink_id = sheet_row["rink_id"]
+                sheet_ids.add(sheet_row["sheet_id"])
+
+        # Need to look up sheet_id from sheet_name
+        # Build mapping
+        all_sheets = db.execute("SELECT sheet_id, name FROM rink_sheets").fetchall()
+        sheet_name_to_id = {row["name"]: row["sheet_id"] for row in all_sheets}
+
+        # Insert games
+        games_created = 0
+        for game_data in request.games:
+            sheet_id = sheet_name_to_id.get(game_data["sheet_name"])
+            if not sheet_id:
+                continue
+
+            db.execute("""
+                INSERT INTO games (
+                    game_id, rink_id, sheet_id,
+                    home_registration_id, away_registration_id,
+                    home_team, away_team, home_abbrev, away_abbrev,
+                    scheduled_start, start_time,
+                    period_length_min, num_periods, game_type,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                game_data["game_id"],
+                rink_id,
+                sheet_id,
+                game_data["home_registration_id"],
+                game_data["away_registration_id"],
+                game_data["home_team"],
+                game_data["away_team"],
+                game_data["home_abbrev"],
+                game_data["away_abbrev"],
+                game_data["start_time"],
+                game_data["start_time"],
+                20,  # period_length_min
+                3,   # num_periods
+                "regular",  # game_type
+                current_time
+            ))
+            games_created += 1
+
+        db.commit()
+        logger.info(f"Saved {games_created} games to database for division {request.division_id}")
+
+    except Exception as e:
+        db.close()
+        logger.error(f"Error saving schedule: {e}")
+        raise HTTPException(status_code=500, detail=f"Error saving schedule: {str(e)}")
+    finally:
+        db.close()
+
+    return {
+        "status": "ok",
+        "games_created": games_created
     }
 
 
@@ -3391,7 +5113,7 @@ def query_top_points(db, league_id=None, season_id=None, division_id=None, final
             all_points.player_id,
             p.full_name,
             MAX(re.jersey_number) as jersey_number,
-            MAX(t.abbreviation) as team_abbrev,
+            MAX(tr.abbreviation) as team_abbrev,
             MAX(l.name) as league_name,
             MAX(s.name) as season_name,
             MAX(d.name) as division_name,
@@ -3443,7 +5165,6 @@ def query_top_points(db, league_id=None, season_id=None, division_id=None, final
                 WHEN all_points.type = 'GOAL_AWAY' THEN g.away_registration_id = tr.registration_id
             END
         )
-        LEFT JOIN teams t ON tr.team_id = t.team_id
         LEFT JOIN leagues l ON tr.league_id = l.league_id
         LEFT JOIN seasons s ON tr.season_id = s.season_id
         LEFT JOIN divisions d ON tr.division_id = d.division_id

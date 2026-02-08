@@ -5,92 +5,77 @@ This module provides functions to populate the cloud database with sample data
 for development and testing purposes.
 """
 
+import logging
 import random
 import sqlite3
 import time
 from datetime import datetime, timedelta
 
+logger = logging.getLogger("score.seed")
+
 # ---------- Sample Data ----------
 
 SAMPLE_LEAGUES = [
     {
-        "league_id": "nhl",
-        "name": "National Hockey League",
-        "league_type": "professional",
-        "description": "Professional hockey league",
-        "website": "https://nhl.com",
-    },
-    {
-        "league_id": "baal",
-        "name": "Bay Area Adult League",
+        "league_id": "tspc",
+        "name": "TSPC Adult Hockey League",
         "league_type": "rec",
-        "description": "Adult recreational hockey league",
+        "description": "Adult recreational hockey league at Toyota Sports Performance Center",
     },
 ]
 
 SAMPLE_SEASONS = [
     {
-        "season_id": "2024-2025",
-        "name": "2024-2025 Season",
-        "start_date": "2024-10-01",
-        "end_date": "2025-04-30",
+        "season_id": "fall-2025",
+        "name": "Fall 2025",
+        "start_date": "2025-09-01",
+        "end_date": "2025-11-30",
     },
     {
-        "season_id": "2025-2026",
-        "name": "2025-2026 Season",
-        "start_date": "2025-10-01",
-        "end_date": "2026-04-30",
+        "season_id": "winter-2026",
+        "name": "Winter 2026",
+        "start_date": "2025-12-01",
+        "end_date": "2026-02-28",
+    },
+    {
+        "season_id": "spring-2026",
+        "name": "Spring 2026",
+        "start_date": "2026-03-01",
+        "end_date": "2026-05-31",
+    },
+    {
+        "season_id": "summer-2026",
+        "name": "Summer 2026",
+        "start_date": "2026-06-01",
+        "end_date": "2026-08-31",
     },
 ]
 
 SAMPLE_DIVISIONS = [
-    # NHL divisions
-    {"division_id": "atlantic", "name": "Atlantic Division", "division_type": "division"},
-    {"division_id": "pacific", "name": "Pacific Division", "division_type": "division"},
-    # Rec league divisions
-    {"division_id": "div-a", "name": "A Division", "division_type": "division"},
-    {"division_id": "div-b", "name": "B Division", "division_type": "division"},
+    {"division_id": "bronze-a", "name": "Bronze A", "division_type": "division"},
+    {"division_id": "bronze-aa", "name": "Bronze AA", "division_type": "division"},
+    {"division_id": "bronze-aaa", "name": "Bronze AAA", "division_type": "division"},
+    {"division_id": "silver-a", "name": "Silver A", "division_type": "division"},
+    {"division_id": "silver-aa", "name": "Silver AA", "division_type": "division"},
+    {"division_id": "gold", "name": "Gold", "division_type": "division"},
 ]
 
 SAMPLE_RINKS = [
     {
-        "rink_id": "sharks-ice",
-        "name": "Sharks Ice at San Jose",
-        "address": "1500 S 10th St",
-        "city": "San Jose",
+        "rink_id": "tspc",
+        "name": "Toyota Sports Performance Center",
+        "address": "555 N Nash St",
+        "city": "El Segundo",
         "province_state": "CA",
-        "postal_code": "95112",
-        "country": "USA",
-    },
-    {
-        "rink_id": "oakland-ice",
-        "name": "Oakland Ice Center",
-        "address": "519 18th St",
-        "city": "Oakland",
-        "province_state": "CA",
-        "postal_code": "94612",
+        "postal_code": "90245",
         "country": "USA",
     },
 ]
 
 SAMPLE_RINK_SHEETS = [
-    {"sheet_id": "sharks-ice-a", "rink_id": "sharks-ice", "name": "Sheet A", "surface_type": "NHL"},
-    {"sheet_id": "sharks-ice-b", "rink_id": "sharks-ice", "name": "Sheet B", "surface_type": "NHL"},
-    {"sheet_id": "oakland-ice-main", "rink_id": "oakland-ice", "name": "Main Rink", "surface_type": "NHL"},
-    {"sheet_id": "oakland-ice-studio", "rink_id": "oakland-ice", "name": "Studio Rink", "surface_type": "NHL"},
-]
-
-SAMPLE_TEAMS = [
-    # NHL teams
-    {"team_id": "sjs", "name": "Sharks", "city": "San Jose", "abbreviation": "SJS", "team_type": "franchise"},
-    {"team_id": "lak", "name": "Kings", "city": "Los Angeles", "abbreviation": "LAK", "team_type": "franchise"},
-    {"team_id": "ana", "name": "Ducks", "city": "Anaheim", "abbreviation": "ANA", "team_type": "franchise"},
-    {"team_id": "vgk", "name": "Golden Knights", "city": "Las Vegas", "abbreviation": "VGK", "team_type": "franchise"},
-    # Rec league teams
-    {"team_id": "ice-dogs", "name": "Ice Dogs", "abbreviation": "DOG", "team_type": "club"},
-    {"team_id": "polar-bears", "name": "Polar Bears", "abbreviation": "PBR", "team_type": "club"},
-    {"team_id": "frozen-fury", "name": "Frozen Fury", "abbreviation": "FRZ", "team_type": "club"},
-    {"team_id": "chill-factor", "name": "Chill Factor", "abbreviation": "CHL", "team_type": "club"},
+    {"sheet_id": "tspc-pond", "rink_id": "tspc", "name": "Pond", "surface_type": "NHL"},
+    {"sheet_id": "tspc-nhl", "rink_id": "tspc", "name": "NHL", "surface_type": "NHL"},
+    {"sheet_id": "tspc-olympic", "rink_id": "tspc", "name": "Olympic", "surface_type": "Olympic"},
 ]
 
 # Player name pools for generation
@@ -132,6 +117,7 @@ def seed_leagues(conn: sqlite3.Connection) -> int:
                 league.get("website"),
                 now,
             ))
+            logger.info(f"Created league: {league['name']} ({league['league_id']})")
             count += 1
         except sqlite3.IntegrityError:
             pass  # Already exists
@@ -154,6 +140,7 @@ def seed_seasons(conn: sqlite3.Connection) -> int:
                 season.get("end_date"),
                 now,
             ))
+            logger.info(f"Created season: {season['name']} ({season['start_date']} to {season.get('end_date', 'ongoing')})")
             count += 1
         except sqlite3.IntegrityError:
             pass
@@ -175,6 +162,7 @@ def seed_divisions(conn: sqlite3.Connection) -> int:
                 div.get("division_type"),
                 now,
             ))
+            logger.info(f"Created division: {div['name']}")
             count += 1
         except sqlite3.IntegrityError:
             pass
@@ -202,6 +190,8 @@ def seed_rinks(conn: sqlite3.Connection) -> int:
                 rink.get("country"),
                 now,
             ))
+            location = f"{rink.get('city', '')}, {rink.get('province_state', '')}".strip(", ")
+            logger.info(f"Created venue: {rink['name']} ({location})")
             rink_count += 1
         except sqlite3.IntegrityError:
             pass
@@ -218,6 +208,7 @@ def seed_rinks(conn: sqlite3.Connection) -> int:
                 sheet.get("surface_type"),
                 now,
             ))
+            logger.info(f"  - Sheet: {sheet['name']} ({sheet.get('surface_type', 'standard')})")
             sheet_count += 1
         except sqlite3.IntegrityError:
             pass
@@ -225,33 +216,11 @@ def seed_rinks(conn: sqlite3.Connection) -> int:
     return rink_count
 
 
-def seed_teams(conn: sqlite3.Connection) -> int:
-    """Seed sample teams."""
-    now = int(time.time())
-    count = 0
-    for team in SAMPLE_TEAMS:
-        try:
-            conn.execute("""
-                INSERT INTO teams (team_id, name, city, abbreviation, team_type, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (
-                team["team_id"],
-                team["name"],
-                team.get("city"),
-                team.get("abbreviation"),
-                team.get("team_type"),
-                now,
-            ))
-            count += 1
-        except sqlite3.IntegrityError:
-            pass
-    return count
-
-
 def seed_players(conn: sqlite3.Connection, count: int = 120) -> int:
     """Seed sample players with random names."""
     now = int(time.time())
     created = 0
+    sample_names = []
 
     # Start player IDs from 1001 to avoid conflicts
     for i in range(count):
@@ -273,8 +242,16 @@ def seed_players(conn: sqlite3.Connection, count: int = 120) -> int:
                 now,
             ))
             created += 1
+            if len(sample_names) < 5:
+                sample_names.append(full_name)
         except sqlite3.IntegrityError:
             pass
+
+    if created > 0:
+        names_preview = ", ".join(sample_names)
+        if created > 5:
+            names_preview += f", ... and {created - 5} more"
+        logger.info(f"Created {created} players: {names_preview}")
 
     return created
 
@@ -284,12 +261,12 @@ def seed_league_seasons(conn: sqlite3.Connection) -> int:
     now = int(time.time())
     count = 0
 
-    # NHL uses NHL rules, rec league uses adult-rec rules
+    # TSPC uses adult-rec rules for all seasons
     links = [
-        ("nhl", "2024-2025", "nhl"),
-        ("nhl", "2025-2026", "nhl"),
-        ("baal", "2024-2025", "adult-rec"),
-        ("baal", "2025-2026", "adult-rec"),
+        ("tspc", "fall-2025", "adult-rec"),
+        ("tspc", "winter-2026", "adult-rec"),
+        ("tspc", "spring-2026", "adult-rec"),
+        ("tspc", "summer-2026", "adult-rec"),
     ]
 
     for league_id, season_id, rule_set_id in links:
@@ -305,31 +282,69 @@ def seed_league_seasons(conn: sqlite3.Connection) -> int:
     return count
 
 
+def seed_league_season_divisions(conn: sqlite3.Connection) -> int:
+    """Link divisions to league-seasons."""
+    now = int(time.time())
+    count = 0
+
+    # Link all divisions to all seasons for TSPC
+    seasons = ["fall-2025", "winter-2026", "spring-2026", "summer-2026"]
+    divisions = [
+        ("bronze-a", 1),
+        ("bronze-aa", 2),
+        ("bronze-aaa", 3),
+        ("silver-a", 4),
+        ("silver-aa", 5),
+        ("gold", 6),
+    ]
+
+    for season_id in seasons:
+        for division_id, display_order in divisions:
+            try:
+                conn.execute("""
+                    INSERT INTO league_season_divisions (league_id, season_id, division_id, display_order, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                """, ("tspc", season_id, division_id, display_order, now))
+                count += 1
+            except sqlite3.IntegrityError:
+                pass
+
+    return count
+
+
 def seed_registrations(conn: sqlite3.Connection) -> int:
     """Register teams in leagues for the current season."""
     now = int(time.time())
     count = 0
 
-    # NHL teams in Pacific division, rec teams split between A and B
+    # Team registrations for Winter 2026 season across different divisions
+    # Format: (reg_id, team_name, abbreviation, league_id, season_id, division_id, organizer_name, organizer_email)
     registrations = [
-        # NHL Pacific teams
-        ("reg-sjs-2025", "sjs", "nhl", "2025-2026", "pacific"),
-        ("reg-lak-2025", "lak", "nhl", "2025-2026", "pacific"),
-        ("reg-ana-2025", "ana", "nhl", "2025-2026", "pacific"),
-        ("reg-vgk-2025", "vgk", "nhl", "2025-2026", "pacific"),
-        # Rec league teams
-        ("reg-dogs-2025", "ice-dogs", "baal", "2025-2026", "div-a"),
-        ("reg-bears-2025", "polar-bears", "baal", "2025-2026", "div-a"),
-        ("reg-fury-2025", "frozen-fury", "baal", "2025-2026", "div-b"),
-        ("reg-chill-2025", "chill-factor", "baal", "2025-2026", "div-b"),
+        # Bronze A teams
+        ("reg-dogs-w26", "Ice Dogs", "DOG", "tspc", "winter-2026", "bronze-a", "John Smith", "john@icedogs.com"),
+        ("reg-bears-w26", "Polar Bears", "PBR", "tspc", "winter-2026", "bronze-a", "Jane Doe", "jane@polarbears.com"),
+        ("reg-fury-w26", "Frozen Fury", "FRZ", "tspc", "winter-2026", "bronze-a", "Mike Johnson", "mike@frozenfury.com"),
+        ("reg-chill-w26", "Chill Factor", "CHL", "tspc", "winter-2026", "bronze-a", "Sarah Williams", "sarah@chillfactor.com"),
+        # Bronze AA teams
+        ("reg-thunder-w26", "Thunder Bay", "THB", "tspc", "winter-2026", "bronze-aa", "Tom Brown", "tom@thunderbay.com"),
+        ("reg-storm-w26", "Ice Storm", "STM", "tspc", "winter-2026", "bronze-aa", "Lisa Chen", "lisa@icestorm.com"),
+        # Silver A teams
+        ("reg-hawks-w26", "Night Hawks", "NHK", "tspc", "winter-2026", "silver-a", "David Lee", "david@nighthawks.com"),
+        ("reg-wolves-w26", "Timber Wolves", "TWF", "tspc", "winter-2026", "silver-a", "Emma Garcia", "emma@timberwolves.com"),
     ]
 
-    for reg_id, team_id, league_id, season_id, division_id in registrations:
+    for reg_id, team_name, abbrev, league_id, season_id, division_id, org_name, org_email in registrations:
         try:
             conn.execute("""
-                INSERT INTO team_registrations (registration_id, team_id, league_id, season_id, division_id, registered_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (reg_id, team_id, league_id, season_id, division_id, now))
+                INSERT INTO team_registrations (
+                    registration_id, team_name, abbreviation,
+                    league_id, season_id, division_id,
+                    organizer_name, organizer_email,
+                    registered_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (reg_id, team_name, abbrev, league_id, season_id, division_id, org_name, org_email, now))
+            logger.info(f"Registered team: {team_name} ({abbrev}) in {division_id}")
             count += 1
         except sqlite3.IntegrityError:
             pass
@@ -348,28 +363,31 @@ def seed_rosters(conn: sqlite3.Connection) -> int:
 
     # Get all registrations grouped by division
     registrations = conn.execute("""
-        SELECT registration_id, division_id FROM team_registrations
+        SELECT registration_id, division_id, team_name FROM team_registrations
     """).fetchall()
 
-    # Get all players
-    players = conn.execute("SELECT player_id FROM players ORDER BY player_id").fetchall()
+    # Get all players with names
+    players = conn.execute("SELECT player_id, full_name FROM players ORDER BY player_id").fetchall()
 
     if not players or not registrations:
         return 0
 
     # Group registrations by division
     regs_by_division = {}
+    reg_names = {}
     for reg in registrations:
         div_id = reg["division_id"]
         if div_id not in regs_by_division:
             regs_by_division[div_id] = []
         regs_by_division[div_id].append(reg["registration_id"])
+        reg_names[reg["registration_id"]] = reg["team_name"]
 
     divisions = list(regs_by_division.keys())
 
     # Reserve first 10 players as "multi-team" players who play in different divisions
     multi_team_players = players[:min(10, len(players) // 4)]
     regular_players = players[len(multi_team_players):]
+    multi_team_count = 0
 
     # Add multi-team players to teams in different divisions with different jersey numbers
     if len(divisions) >= 2:
@@ -397,6 +415,7 @@ def seed_rosters(conn: sqlite3.Connection) -> int:
                         VALUES (?, ?, ?, ?, 'active', ?)
                     """, (reg1, player_id, jersey1, position, now))
                     count += 1
+                    multi_team_count += 1
                 except sqlite3.IntegrityError:
                     pass
 
@@ -412,9 +431,11 @@ def seed_rosters(conn: sqlite3.Connection) -> int:
     # Distribute remaining regular players across teams (15 per team)
     players_per_team = max(1, len(regular_players) // len(registrations))
     player_idx = 0
+    team_roster_counts = {}
 
     for reg in registrations:
         reg_id = reg["registration_id"]
+        team_roster_counts[reg_id] = 0
 
         for jersey_num in range(1, min(players_per_team + 1, 16)):
             if player_idx >= len(regular_players):
@@ -429,10 +450,19 @@ def seed_rosters(conn: sqlite3.Connection) -> int:
                     VALUES (?, ?, ?, ?, 'active', ?)
                 """, (reg_id, player_id, jersey_num, position, now))
                 count += 1
+                team_roster_counts[reg_id] += 1
             except sqlite3.IntegrityError:
                 pass
 
             player_idx += 1
+
+    # Log summary
+    if count > 0:
+        for reg_id, roster_count in team_roster_counts.items():
+            if roster_count > 0:
+                logger.info(f"Added {roster_count} players to {reg_names.get(reg_id, reg_id)}")
+        if multi_team_count > 0:
+            logger.info(f"  ({multi_team_count} multi-team players playing in multiple divisions)")
 
     return count
 
@@ -443,15 +473,14 @@ def seed_games(conn: sqlite3.Connection, game_count: int = 8) -> int:
     count = 0
 
     # Get rinks and sheets
-    sheets = conn.execute("SELECT sheet_id, rink_id FROM rink_sheets").fetchall()
+    sheets = conn.execute("SELECT sheet_id, rink_id, name FROM rink_sheets").fetchall()
     if not sheets:
         return 0
 
     # Get registrations with team info for pairing
     regs = conn.execute("""
-        SELECT tr.registration_id, tr.team_id, t.name, t.abbreviation
-        FROM team_registrations tr
-        JOIN teams t ON tr.team_id = t.team_id
+        SELECT registration_id, team_name, abbreviation
+        FROM team_registrations
     """).fetchall()
     if len(regs) < 2:
         return 0
@@ -481,12 +510,12 @@ def seed_games(conn: sqlite3.Connection, game_count: int = 8) -> int:
             away_reg = reg_list[i + 1]
 
             # Skip if either team already playing today
-            if home_reg["team_id"] in teams_playing or away_reg["team_id"] in teams_playing:
+            if home_reg["registration_id"] in teams_playing or away_reg["registration_id"] in teams_playing:
                 continue
 
             # Mark teams as playing
-            teams_playing.add(home_reg["team_id"])
-            teams_playing.add(away_reg["team_id"])
+            teams_playing.add(home_reg["registration_id"])
+            teams_playing.add(away_reg["registration_id"])
 
             # Pick sheet (rotate through available sheets)
             sheet = sheets[games_created % len(sheets)]
@@ -514,8 +543,8 @@ def seed_games(conn: sqlite3.Connection, game_count: int = 8) -> int:
                     sheet["sheet_id"],
                     home_reg["registration_id"],
                     away_reg["registration_id"],
-                    home_reg["name"],
-                    away_reg["name"],
+                    home_reg["team_name"],
+                    away_reg["team_name"],
                     home_reg["abbreviation"],
                     away_reg["abbreviation"],
                     start_time,
@@ -523,6 +552,8 @@ def seed_games(conn: sqlite3.Connection, game_count: int = 8) -> int:
                     20,  # period_length_min
                     now,
                 ))
+                time_str = game_time.strftime("%b %d %I:%M%p")
+                logger.info(f"Created game: {home_reg['team_name']} vs {away_reg['team_name']} @ {sheet['name']} ({time_str})")
                 games_created += 1
                 count += 1
             except sqlite3.IntegrityError:
@@ -541,9 +572,9 @@ def clear_all(conn: sqlite3.Connection) -> dict:
         "games",
         "roster_entries",
         "team_registrations",
+        "league_season_divisions",
         "league_seasons",
         "players",
-        "teams",
         "rink_sheets",
         "rinks",
         "divisions",
@@ -573,9 +604,9 @@ def seed_all(db_path: str, player_count: int = 120, game_count: int = 8) -> dict
     results["seasons"] = seed_seasons(conn)
     results["divisions"] = seed_divisions(conn)
     results["rinks"] = seed_rinks(conn)
-    results["teams"] = seed_teams(conn)
     results["players"] = seed_players(conn, player_count)
     results["league_seasons"] = seed_league_seasons(conn)
+    results["league_season_divisions"] = seed_league_season_divisions(conn)
     results["registrations"] = seed_registrations(conn)
     results["rosters"] = seed_rosters(conn)
     results["games"] = seed_games(conn, game_count)
