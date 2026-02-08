@@ -110,6 +110,84 @@ POSITIONS = ["C", "LW", "RW", "D", "D", "G"]  # Weighted for realistic distribut
 
 # ---------- Seeding Functions ----------
 
+def seed_sports(conn: sqlite3.Connection) -> int:
+    """Seed sports configuration (global, not client-specific).
+
+    Currently seeds hockey with positions and event types.
+    """
+    now = int(time.time())
+    count = 0
+
+    # Hockey sport
+    try:
+        conn.execute("""
+            INSERT INTO sports (
+                sport_id, name, code,
+                primary_score_name, tracks_assists, max_assists, tracks_shots,
+                period_name, default_periods,
+                venue_name, has_goalie, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            "hockey",
+            "Ice Hockey",
+            "hockey",
+            "Goal",
+            1,  # tracks_assists
+            2,  # max_assists
+            1,  # tracks_shots
+            "Period",
+            3,  # default_periods
+            "Rink",
+            1,  # has_goalie
+            now
+        ))
+        logger.info("Created sport: Ice Hockey")
+        count += 1
+    except sqlite3.IntegrityError:
+        pass  # Already exists
+
+    # Hockey positions
+    hockey_positions = [
+        ("hockey-c", "hockey", "C", "Center", "C", "forward", 1),
+        ("hockey-lw", "hockey", "LW", "Left Wing", "LW", "forward", 2),
+        ("hockey-rw", "hockey", "RW", "Right Wing", "RW", "forward", 3),
+        ("hockey-d", "hockey", "D", "Defense", "D", "defense", 4),
+        ("hockey-g", "hockey", "G", "Goalie", "G", "goalie", 5),
+    ]
+
+    for pos_id, sport_id, code, name, abbrev, category, sort_order in hockey_positions:
+        try:
+            conn.execute("""
+                INSERT INTO sport_positions (
+                    position_id, sport_id, code, name, abbreviation, category, sort_order
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (pos_id, sport_id, code, name, abbrev, category, sort_order))
+            count += 1
+        except sqlite3.IntegrityError:
+            pass  # Already exists
+
+    # Hockey event types
+    hockey_events = [
+        ("hockey-goal", "hockey", "GOAL", "Goal Scored", "scoring", 1, 1),
+        ("hockey-shot", "hockey", "SHOT", "Shot on Goal", "shot", 0, 0),
+        ("hockey-faceoff", "hockey", "FACEOFF", "Faceoff Win", "other", 0, 0),
+    ]
+
+    for evt_id, sport_id, code, name, category, affects_score, score_value in hockey_events:
+        try:
+            conn.execute("""
+                INSERT INTO sport_event_types (
+                    event_type_id, sport_id, code, name, category, affects_score, score_value
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (evt_id, sport_id, code, name, category, affects_score, score_value))
+            count += 1
+        except sqlite3.IntegrityError:
+            pass  # Already exists
+
+    logger.info(f"Seeded {count} sport configuration items")
+    return count
+
+
 def seed_client(conn: sqlite3.Connection, client_id: str = DEFAULT_CLIENT_ID) -> int:
     """Seed the default client or create a specific client."""
     now = int(time.time())
@@ -144,13 +222,14 @@ def seed_leagues(conn: sqlite3.Connection, client_id: str = DEFAULT_CLIENT_ID) -
     for league in SAMPLE_LEAGUES:
         try:
             conn.execute("""
-                INSERT INTO leagues (client_id, league_id, name, league_type, description, website, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO leagues (client_id, league_id, name, league_type, sport_id, description, website, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 client_id,
                 league["league_id"],
                 league["name"],
                 league.get("league_type"),
+                "hockey",  # Default to hockey for backward compatibility
                 league.get("description"),
                 league.get("website"),
                 now,
@@ -649,7 +728,10 @@ def seed_all(db_path: str, player_count: int = 120, game_count: int = 8, client_
 
     results = {}
 
-    # Seed client first
+    # Seed sports first (global configuration)
+    results["sports"] = seed_sports(conn)
+
+    # Seed client
     results["client"] = seed_client(conn, client_id)
 
     # Seed all entities with client context

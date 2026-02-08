@@ -20,6 +20,7 @@ from pathlib import Path
 from fastapi import Body, FastAPI, HTTPException, Path as FastAPIPath, Query, WebSocket, Request, Response, Form, Cookie
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import uvicorn
 
@@ -236,6 +237,10 @@ app = FastAPI(
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# Set up Jinja2 templates
+TEMPLATES_DIR = Path(__file__).parent / "templates"
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
 
 # ---------- API Endpoints ----------
 
@@ -255,74 +260,10 @@ async def login_page(request: Request, error: Optional[str] = None):
     if session:
         return RedirectResponse(url="/admin/devices", status_code=302)
 
-    error_html = ""
-    if error:
-        error_html = f'<div class="message error" style="display:block;">{error}</div>'
-
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Login - Score Cloud</title>
-        <link rel="stylesheet" href="/static/admin.css">
-        <style>
-            .login-container {{
-                max-width: 400px;
-                margin: 100px auto;
-                padding: 30px;
-                background: white;
-                border: 1px solid #e0e0e0;
-                border-radius: 6px;
-            }}
-            .login-container h1 {{
-                text-align: center;
-                margin-bottom: 20px;
-                font-size: 1.5em;
-            }}
-            .login-container form {{
-                display: flex;
-                flex-direction: column;
-                gap: 15px;
-            }}
-            .login-container label {{
-                font-weight: 500;
-                margin-bottom: 4px;
-            }}
-            .login-container button {{
-                padding: 10px;
-                background: #4a9eff;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                font-size: 14px;
-                cursor: pointer;
-                margin-top: 10px;
-            }}
-            .login-container button:hover {{
-                background: #3d8ce5;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="login-container">
-            <h1>Score Cloud Login</h1>
-            {error_html}
-            <form method="POST" action="/admin/login">
-                <div>
-                    <label for="email">Email</label>
-                    <input type="email" id="email" name="email" required autofocus>
-                </div>
-                <div>
-                    <label for="password">Password</label>
-                    <input type="password" id="password" name="password" required>
-                </div>
-                <button type="submit">Login</button>
-            </form>
-        </div>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html)
+    return templates.TemplateResponse("admin/login.html", {
+        "request": request,
+        "error": error
+    })
 
 
 @app.post("/admin/login")

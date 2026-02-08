@@ -58,6 +58,61 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 -- =============================================================================
+-- SPORTS CONFIGURATION (no dependencies)
+-- =============================================================================
+
+-- Sports definition (global, not client-specific)
+CREATE TABLE IF NOT EXISTS sports (
+    sport_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,              -- "Ice Hockey", "Baseball", "Soccer"
+    code TEXT UNIQUE NOT NULL,       -- "hockey", "baseball", "soccer"
+
+    -- Scoring configuration
+    primary_score_name TEXT,         -- "Goal", "Run", "Point"
+    tracks_assists INTEGER DEFAULT 0,
+    max_assists INTEGER DEFAULT 0,   -- Hockey=2, Soccer=1, Baseball=0
+    tracks_shots INTEGER DEFAULT 0,
+
+    -- Game structure
+    period_name TEXT,                -- "Period", "Inning", "Half", "Set"
+    default_periods INTEGER,         -- 3, 9, 2, 5
+
+    -- Venue terminology
+    venue_name TEXT,                 -- "Rink", "Field", "Court", "Pitch"
+
+    -- Player configuration
+    has_goalie INTEGER DEFAULT 0,
+
+    created_at INTEGER NOT NULL
+);
+
+-- Sport-specific positions
+CREATE TABLE IF NOT EXISTS sport_positions (
+    position_id TEXT PRIMARY KEY,
+    sport_id TEXT NOT NULL,
+    code TEXT NOT NULL,              -- "C", "P", "GK"
+    name TEXT NOT NULL,              -- "Center", "Pitcher", "Goalkeeper"
+    abbreviation TEXT NOT NULL,      -- "C", "P", "GK"
+    category TEXT,                   -- "forward", "defense", "infield", "outfield"
+    sort_order INTEGER DEFAULT 0,
+    FOREIGN KEY (sport_id) REFERENCES sports(sport_id),
+    UNIQUE (sport_id, code)
+);
+
+-- Sport-specific event types
+CREATE TABLE IF NOT EXISTS sport_event_types (
+    event_type_id TEXT PRIMARY KEY,
+    sport_id TEXT NOT NULL,
+    code TEXT NOT NULL,              -- "GOAL", "RUN", "POINT"
+    name TEXT NOT NULL,              -- "Goal Scored", "Run Scored", "Point"
+    category TEXT,                   -- "scoring", "penalty", "substitution"
+    affects_score INTEGER DEFAULT 0, -- Does this change the score?
+    score_value INTEGER DEFAULT 1,   -- How much does it change score by?
+    FOREIGN KEY (sport_id) REFERENCES sports(sport_id),
+    UNIQUE (sport_id, code)
+);
+
+-- =============================================================================
 -- PERMANENT ENTITIES (client-scoped)
 -- =============================================================================
 
@@ -67,12 +122,14 @@ CREATE TABLE IF NOT EXISTS leagues (
     league_id TEXT NOT NULL,
     name TEXT NOT NULL,
     league_type TEXT,                -- "professional", "amateur", "rec"
+    sport_id TEXT,                   -- Sport this league is for
     description TEXT,
     website TEXT,
     logo_url TEXT,
     created_at INTEGER NOT NULL,
     PRIMARY KEY (client_id, league_id),
-    FOREIGN KEY (client_id) REFERENCES clients(client_id)
+    FOREIGN KEY (client_id) REFERENCES clients(client_id),
+    FOREIGN KEY (sport_id) REFERENCES sports(sport_id)
 );
 
 -- Time periods (client-scoped)
