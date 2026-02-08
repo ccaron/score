@@ -17,8 +17,10 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from pathlib import Path
-from fastapi import Body, FastAPI, HTTPException, Path as FastAPIPath, Query, WebSocket
+from fastapi import Body, FastAPI, HTTPException, Path as FastAPIPath, Query, WebSocket, Request, Response, Form, Cookie
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 import uvicorn
 
 from score.models import (
@@ -35,10 +37,21 @@ from score.models import (
     AssignDeviceRequest,
     UpdateDeviceRequest,
     DeviceListResponse,
+    RosterEntry,
 )
+from score import auth
 
 # Set up logger
 logger = logging.getLogger("score.cloud")
+
+
+# ---------- Pydantic Models for Admin Endpoints ----------
+
+class CreatePlayerRequest(BaseModel):
+    """Request to create a new player."""
+    first_name: str
+    last_name: str
+    shoots_catches: Optional[str] = None
 
 
 # ---------- Database Configuration ----------
@@ -54,6 +67,35 @@ def get_db():
     return conn
 
 
+# ---------- Authentication Helpers ----------
+
+def get_session_from_request(request: Request) -> Optional[dict]:
+    """Get current session from request cookie."""
+    session_id = request.cookies.get("session_id")
+    if not session_id:
+        return None
+
+    db = get_db()
+    try:
+        session = auth.get_session(db, session_id)
+        db.commit()  # Commit activity update
+        return session
+    finally:
+        db.close()
+
+
+def require_auth(request: Request) -> dict:
+    """
+    Require authentication for a route.
+
+    Returns session dict if authenticated, raises HTTPException otherwise.
+    """
+    session = get_session_from_request(request)
+    if not session:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return session
+
+
 # ---------- Admin Navigation Helper ----------
 ADMIN_NAV_ITEMS = [
     ("leagues", "/admin/organization", "Leagues"),
@@ -64,14 +106,74 @@ ADMIN_NAV_ITEMS = [
 ]
 
 
-def admin_nav(active_page: str) -> str:
-    """Generate admin navigation HTML with the active page highlighted."""
+def admin_nav(active_page: str, session: Optional[dict] = None) -> str:
+    """Generate admin navigation HTML with the active page highlighted.
+
+    For super admins, includes a client switcher dropdown.
+    """
     links = []
+
+    # Client switcher for super admins
+    client_switcher_html = ""
+    if session and auth.is_super_admin(session):
+        # Add System link for super admins
+        css_class = ' class="active"' if active_page == "system" else ""
+        links.append(f'<a href="/admin/system"{css_class}>System</a>')
+
+        # Get current client context
+        active_client_id = session.get("active_client_id")
+
+        # Client switcher dropdown
+        db = get_db()
+        clients = db.execute("SELECT client_id, name FROM clients WHERE is_active = 1 ORDER BY name").fetchall()
+        db.close()
+
+        # Build dropdown options
+        if active_client_id:
+            # Find active client name
+            active_client_name = next((c["name"] for c in clients if c["client_id"] == active_client_id), "Unknown")
+            dropdown_label = f"Client: {active_client_name}"
+        else:
+            dropdown_label = "Client: All Clients"
+
+        client_options = [f'<option value="">All Clients</option>']
+        for client in clients:
+            selected = 'selected' if client["client_id"] == active_client_id else ''
+            client_options.append(f'<option value="{client["client_id"]}" {selected}>{client["name"]}</option>')
+
+        client_switcher_html = f'''
+        <form method="POST" action="/admin/switch-client" style="display: inline-block; margin-left: 16px;">
+            <select name="client_id" onchange="this.form.submit()" style="font-size: 12px; padding: 4px 8px; background: #2d2d44; color: white; border: 1px solid #4a4a5e; border-radius: 3px; cursor: pointer;">
+                {''.join(client_options)}
+            </select>
+        </form>
+        '''
+
+    # Add regular navigation links
     for page_id, href, label in ADMIN_NAV_ITEMS:
         css_class = ' class="active"' if page_id == active_page else ""
         links.append(f'<a href="{href}"{css_class}>{label}</a>')
 
-    return '<div class="nav">\n            ' + '\n            '.join(links) + '\n        </div>'
+    # User indicator (right-aligned)
+    user_indicator = ""
+    if session:
+        role_styles = {
+            "super_admin": "background: #e3f2fd; color: #1565c0;",
+            "admin": "background: #e8f5e9; color: #2e7d32;",
+            "viewer": "background: #fff3e0; color: #e65100;"
+        }
+        role_style = role_styles.get(session["role"], "")
+        role_display = session["role"].replace("_", " ").title()
+
+        user_indicator = f'''
+        <div style="margin-left: auto; display: flex; align-items: center; gap: 12px; padding: 0 12px; color: #a0a0a0; font-size: 12px;">
+            <span>{session["email"]}</span>
+            <span class="badge" style="{role_style} font-size: 10px;">{role_display}</span>
+            <a href="/admin/logout" style="color: #a0a0a0; text-decoration: none; padding: 0 8px; font-size: 12px; font-weight: 500;">Logout</a>
+        </div>
+        '''
+
+    return '<div class="nav" style="display: flex; align-items: center;">\n            ' + '\n            '.join(links) + client_switcher_html + user_indicator + '\n        </div>'
 
 
 def slugify(name: str) -> str:
@@ -83,11 +185,30 @@ def slugify(name: str) -> str:
 
 
 def init_db():
-    """Initialize cloud database schema."""
+    """Initialize cloud database schema and create default super admin."""
     from score.schema import init_schema
     # Set fresh_start=True to drop old tables and use new schema
     # After initial migration, set to False to preserve data
     init_schema(CLOUD_DB_PATH, fresh_start=False)
+
+    # Create default super admin if no users exist
+    db = get_db()
+    try:
+        user_count = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        if user_count == 0:
+            # Create super admin with default password (change in production!)
+            auth.create_user(
+                db,
+                email="admin@example.com",
+                password="admin123",
+                client_id=None,  # No client = super admin
+                role="super_admin"
+            )
+            db.commit()
+            logger.info("Created default super admin user (email: admin@example.com, password: admin123)")
+            logger.warning("IMPORTANT: Change the default admin password in production!")
+    finally:
+        db.close()
 
 
 init_db()
@@ -121,8 +242,808 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 @app.get("/")
 async def root():
     """Root endpoint with navigation to admin pages."""
-    from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/admin/devices")
+
+
+# ---------- Authentication Endpoints ----------
+
+@app.get("/admin/login", response_class=HTMLResponse)
+async def login_page(request: Request, error: Optional[str] = None):
+    """Login page."""
+    # If already authenticated, redirect to admin
+    session = get_session_from_request(request)
+    if session:
+        return RedirectResponse(url="/admin/devices", status_code=302)
+
+    error_html = ""
+    if error:
+        error_html = f'<div class="message error" style="display:block;">{error}</div>'
+
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Login - Score Cloud</title>
+        <link rel="stylesheet" href="/static/admin.css">
+        <style>
+            .login-container {{
+                max-width: 400px;
+                margin: 100px auto;
+                padding: 30px;
+                background: white;
+                border: 1px solid #e0e0e0;
+                border-radius: 6px;
+            }}
+            .login-container h1 {{
+                text-align: center;
+                margin-bottom: 20px;
+                font-size: 1.5em;
+            }}
+            .login-container form {{
+                display: flex;
+                flex-direction: column;
+                gap: 15px;
+            }}
+            .login-container label {{
+                font-weight: 500;
+                margin-bottom: 4px;
+            }}
+            .login-container button {{
+                padding: 10px;
+                background: #4a9eff;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                font-size: 14px;
+                cursor: pointer;
+                margin-top: 10px;
+            }}
+            .login-container button:hover {{
+                background: #3d8ce5;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="login-container">
+            <h1>Score Cloud Login</h1>
+            {error_html}
+            <form method="POST" action="/admin/login">
+                <div>
+                    <label for="email">Email</label>
+                    <input type="email" id="email" name="email" required autofocus>
+                </div>
+                <div>
+                    <label for="password">Password</label>
+                    <input type="password" id="password" name="password" required>
+                </div>
+                <button type="submit">Login</button>
+            </form>
+        </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
+
+
+@app.post("/admin/login")
+async def login(request: Request, email: str = Form(...), password: str = Form(...)):
+    """Handle login form submission."""
+    db = get_db()
+    try:
+        # Authenticate user
+        user = auth.authenticate_user(db, email, password)
+        if not user:
+            db.close()
+            return RedirectResponse(
+                url="/admin/login?error=Invalid email or password",
+                status_code=302
+            )
+
+        # Create session
+        session_id = auth.create_session(db, user["user_id"], user.get("client_id"))
+        db.commit()
+
+        # Set cookie and redirect
+        response = RedirectResponse(url="/admin/organization", status_code=302)
+        response.set_cookie(
+            key="session_id",
+            value=session_id,
+            httponly=True,
+            max_age=auth.SESSION_DURATION_SECONDS,
+            samesite="lax"
+        )
+
+        logger.info(f"User logged in: {email}")
+        return response
+
+    finally:
+        db.close()
+
+
+@app.get("/admin/logout")
+async def logout(request: Request):
+    """Logout and clear session."""
+    session_id = request.cookies.get("session_id")
+    if session_id:
+        db = get_db()
+        try:
+            auth.delete_session(db, session_id)
+            db.commit()
+        finally:
+            db.close()
+
+    response = RedirectResponse(url="/admin/login", status_code=302)
+    response.delete_cookie("session_id")
+    return response
+
+
+@app.post("/admin/switch-client")
+async def switch_client(request: Request, client_id: str = Form("")):
+    """Switch active client context for super admin."""
+    session = require_auth(request)
+
+    # Only super admins can switch clients
+    if not auth.is_super_admin(session):
+        raise HTTPException(status_code=403, detail="Only super admins can switch clients")
+
+    # Update session's active_client_id
+    session_id = session["session_id"]
+    db = get_db()
+    try:
+        # Empty string means "All Clients" (None)
+        active_client_id = client_id if client_id else None
+
+        auth.update_active_client(db, session_id, active_client_id)
+        db.commit()
+
+        client_name = "All Clients" if not active_client_id else active_client_id
+        logger.info(f"Super admin switched to client: {client_name}")
+    finally:
+        db.close()
+
+    # Redirect back to referer or organization page
+    referer = request.headers.get("referer", "/admin/organization")
+    return RedirectResponse(url=referer, status_code=302)
+
+
+@app.get("/admin/system")
+async def system_dashboard(request: Request):
+    """System dashboard for super admins."""
+    from fastapi.responses import HTMLResponse
+
+    session = require_auth(request)
+
+    # Only super admins can access system dashboard
+    if not auth.is_super_admin(session):
+        raise HTTPException(status_code=403, detail="Only super admins can access system dashboard")
+
+    db = get_db()
+
+    # Fetch all clients
+    clients = db.execute("""
+        SELECT client_id, name, slug, contact_email, is_active, created_at
+        FROM clients
+        ORDER BY name
+    """).fetchall()
+
+    # Fetch all users
+    users = db.execute("""
+        SELECT u.user_id, u.email, u.role, u.client_id, u.is_active, u.last_login_at, u.created_at,
+               c.name as client_name
+        FROM users u
+        LEFT JOIN clients c ON u.client_id = c.client_id
+        ORDER BY u.created_at DESC
+    """).fetchall()
+
+    # Fetch all devices
+    devices = db.execute("""
+        SELECT d.device_id, d.client_id, d.rink_id, d.sheet_name, d.device_name,
+               d.is_assigned, d.claim_code, d.first_seen_at, d.last_seen_at,
+               c.name as client_name, r.name as rink_name
+        FROM devices d
+        LEFT JOIN clients c ON d.client_id = c.client_id
+        LEFT JOIN rinks r ON d.rink_id = r.rink_id AND d.client_id = r.client_id
+        ORDER BY d.last_seen_at DESC
+    """).fetchall()
+
+    # Fetch all rinks for assignment dropdowns
+    rinks = db.execute("""
+        SELECT r.client_id, r.rink_id, r.name, c.name as client_name
+        FROM rinks r
+        JOIN clients c ON r.client_id = c.client_id
+        ORDER BY c.name, r.name
+    """).fetchall()
+
+    db.close()
+
+    # Build client rows HTML
+    client_rows = []
+    for client in clients:
+        status_badge = '<span class="status-badge active">Active</span>' if client["is_active"] else '<span class="status-badge inactive">Inactive</span>'
+        created_date = datetime.fromtimestamp(client["created_at"]).strftime("%Y-%m-%d")
+
+        # Deactivate/Reactivate button
+        if client["is_active"]:
+            action_button = f'<button class="btn-unassign" onclick="toggleClientStatus(\'{client["client_id"]}\', 0)" style="font-size: 11px; padding: 3px 8px;">Deactivate</button>'
+        else:
+            action_button = f'<button class="btn-save" onclick="toggleClientStatus(\'{client["client_id"]}\', 1)" style="font-size: 11px; padding: 3px 8px;">Reactivate</button>'
+
+        client_rows.append(f"""
+            <tr>
+                <td class="nowrap">{client["client_id"]}</td>
+                <td><strong>{client["name"]}</strong></td>
+                <td>{client["slug"]}</td>
+                <td>{client["contact_email"] or "-"}</td>
+                <td>{status_badge}</td>
+                <td class="timestamp">{created_date}</td>
+                <td>{action_button}</td>
+            </tr>
+        """)
+
+    # Build user rows HTML
+    user_rows = []
+    for user in users:
+        status_badge = '<span class="status-badge active">Active</span>' if user["is_active"] else '<span class="status-badge inactive">Inactive</span>'
+        created_date = datetime.fromtimestamp(user["created_at"]).strftime("%Y-%m-%d")
+        last_login = datetime.fromtimestamp(user["last_login_at"]).strftime("%Y-%m-%d %H:%M") if user["last_login_at"] else "Never"
+        client_name = user["client_name"] or "(Super Admin)"
+
+        role_badge_color = {
+            "super_admin": "background: #e3f2fd; color: #1565c0;",
+            "admin": "background: #e8f5e9; color: #2e7d32;",
+            "viewer": "background: #fff3e0; color: #e65100;"
+        }.get(user["role"], "")
+
+        # Action buttons
+        reset_button = f'<button class="btn-save" onclick="showResetPassword(\'{user["user_id"]}\', \'{user["email"]}\')" style="font-size: 11px; padding: 3px 8px; margin-right: 4px;">Reset Password</button>'
+
+        if user["is_active"]:
+            toggle_button = f'<button class="btn-unassign" onclick="toggleUserStatus(\'{user["user_id"]}\', 0)" style="font-size: 11px; padding: 3px 8px;">Deactivate</button>'
+        else:
+            toggle_button = f'<button class="btn-save" onclick="toggleUserStatus(\'{user["user_id"]}\', 1)" style="font-size: 11px; padding: 3px 8px;">Reactivate</button>'
+
+        user_rows.append(f"""
+            <tr>
+                <td>{user["email"]}</td>
+                <td><span class="badge" style="{role_badge_color}">{user["role"]}</span></td>
+                <td>{client_name}</td>
+                <td>{status_badge}</td>
+                <td class="timestamp">{last_login}</td>
+                <td class="timestamp">{created_date}</td>
+                <td>
+                    {reset_button}
+                    {toggle_button}
+                </td>
+            </tr>
+        """)
+
+    # Build device rows HTML
+    device_rows = []
+    for device in devices:
+        first_seen = datetime.fromtimestamp(device["first_seen_at"]).strftime("%Y-%m-%d")
+        last_seen = datetime.fromtimestamp(device["last_seen_at"]).strftime("%Y-%m-%d %H:%M")
+        client_name = device["client_name"] or "<span style='color: #999;'>Unclaimed</span>"
+
+        # Status badges
+        if device["is_assigned"]:
+            status_badge = '<span class="status-badge active">Assigned</span>'
+            assignment_info = f"{device['rink_name'] or device['rink_id']} - {device['sheet_name']}"
+        elif device["client_id"]:
+            status_badge = '<span class="status-badge" style="background: #fff3e0; color: #e65100;">Claimed</span>'
+            assignment_info = "<span style='color: #999;'>Not assigned</span>"
+        else:
+            status_badge = '<span class="status-badge" style="background: #f3e5f5; color: #6a1b9a;">Unclaimed</span>'
+            assignment_info = f"<span style='color: #6a1b9a; font-family: monospace; font-weight: 600;'>{device['claim_code']}</span>" if device["claim_code"] else "-"
+
+        # Actions
+        actions = ""
+        if device["client_id"]:
+            # Claimed device - allow unclaiming
+            actions = f'<button class="btn-unassign" onclick="unclaimDevice(\'{device["device_id"]}\')" style="font-size: 11px; padding: 3px 8px;">Unclaim</button>'
+
+        # Device display name
+        device_display = device["device_name"] if device["device_name"] else device["device_id"]
+        device_id_subtitle = f'<br><small style="color: #666; font-size: 11px;">{device["device_id"]}</small>' if device["device_name"] else ""
+
+        device_rows.append(f"""
+            <tr>
+                <td class="nowrap">{device_display}{device_id_subtitle}</td>
+                <td>{client_name}</td>
+                <td>{assignment_info}</td>
+                <td>{status_badge}</td>
+                <td class="timestamp">{first_seen}</td>
+                <td class="timestamp">{last_seen}</td>
+                <td>{actions}</td>
+            </tr>
+        """)
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>score-cloud | System Dashboard</title>
+    <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+    {admin_nav("system", session)}
+    <div class="container wide">
+        <h1>System Dashboard</h1>
+
+        <!-- Clients Section -->
+        <div class="content">
+            <h2>Clients</h2>
+            <p class="hint">Manage multi-tenant clients in the system</p>
+
+            <!-- Add Client Form -->
+            <form method="POST" action="/admin/clients" style="margin-bottom: 20px; padding: 12px; background: #f8f9fa; border-radius: 4px;">
+                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 10px;">
+                    <div class="form-group">
+                        <label>Name <span class="required">*</span></label>
+                        <input type="text" id="clientName" name="name" required placeholder="My Client">
+                        <small style="font-size: 10px; color: #666;">Display name</small>
+                    </div>
+                    <div class="form-group">
+                        <label>Client ID <span class="required">*</span></label>
+                        <input type="text" id="clientId" name="client_id" required placeholder="my-client" readonly style="background: #f5f5f5;">
+                        <small style="font-size: 10px; color: #666;">Auto-generated</small>
+                    </div>
+                    <div class="form-group">
+                        <label>Slug <span class="required">*</span></label>
+                        <input type="text" id="clientSlug" name="slug" required placeholder="my-client" readonly style="background: #f5f5f5;">
+                        <small style="font-size: 10px; color: #666;">Auto-generated</small>
+                    </div>
+                    <div class="form-group">
+                        <label>Contact Email</label>
+                        <input type="email" name="contact_email" placeholder="admin@example.com">
+                        <small style="font-size: 10px; color: #666;">Optional</small>
+                    </div>
+                </div>
+                <button type="submit" class="btn-save">Create Client</button>
+            </form>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Client ID</th>
+                        <th>Name</th>
+                        <th>Slug</th>
+                        <th>Contact Email</th>
+                        <th>Status</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {''.join(client_rows) if client_rows else '<tr><td colspan="7" style="text-align: center; color: #666;">No clients found</td></tr>'}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Users Section -->
+        <div class="content" style="margin-top: 20px;">
+            <h2>Users</h2>
+            <p class="hint">User accounts and their access levels</p>
+
+            <!-- Add User Form -->
+            <form method="POST" action="/admin/users" style="margin-bottom: 20px; padding: 12px; background: #f8f9fa; border-radius: 4px;">
+                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 10px;">
+                    <div class="form-group">
+                        <label>Email <span class="required">*</span></label>
+                        <input type="email" name="email" required placeholder="user@example.com">
+                    </div>
+                    <div class="form-group">
+                        <label>Password <span class="required">*</span></label>
+                        <input type="password" name="password" required placeholder="Password">
+                    </div>
+                    <div class="form-group">
+                        <label>Role <span class="required">*</span></label>
+                        <select name="role" required>
+                            <option value="admin">Admin</option>
+                            <option value="viewer">Viewer</option>
+                            <option value="super_admin">Super Admin</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>Client</label>
+                        <select name="client_id">
+                            <option value="">(Super Admin - no client)</option>
+                            {''.join([f'<option value="{c["client_id"]}">{c["name"]}</option>' for c in clients])}
+                        </select>
+                    </div>
+                </div>
+                <button type="submit" class="btn-save">Create User</button>
+            </form>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Email</th>
+                        <th>Role</th>
+                        <th>Client</th>
+                        <th>Status</th>
+                        <th>Last Login</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {''.join(user_rows) if user_rows else '<tr><td colspan="7" style="text-align: center; color: #666;">No users found</td></tr>'}
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Devices Section -->
+        <div class="content" style="margin-top: 20px;">
+            <h2>Devices</h2>
+            <p class="hint">Monitor and manage all devices across clients</p>
+
+            <!-- Claim Device Form (Super Admin) -->
+            <form method="POST" action="/admin/devices/claim" style="margin-bottom: 20px; padding: 12px; background: #f3e5f5; border-radius: 4px; border: 1px solid #6a1b9a;">
+                <div style="display: flex; gap: 10px; align-items: flex-end;">
+                    <div class="form-group" style="margin: 0; flex: 0 0 200px;">
+                        <label style="font-weight: 600; color: #6a1b9a;">Claim Code <span class="required">*</span></label>
+                        <input type="text" name="claim_code" required placeholder="ABC-123" maxlength="7" style="text-transform: uppercase; font-family: monospace; font-size: 14px; padding: 8px 12px;">
+                    </div>
+                    <div class="form-group" style="margin: 0; flex: 0 0 250px;">
+                        <label style="font-weight: 600; color: #6a1b9a;">For Client <span class="required">*</span></label>
+                        <select name="target_client_id" required style="padding: 8px 12px; font-size: 14px;">
+                            <option value="">Select client...</option>
+                            {''.join([f'<option value="{c["client_id"]}">{c["name"]}</option>' for c in clients])}
+                        </select>
+                    </div>
+                    <div class="form-group" style="margin: 0; flex: 0 0 200px;">
+                        <label style="font-weight: 600; color: #6a1b9a;">Device Name (optional)</label>
+                        <input type="text" name="device_name" placeholder="e.g., Sheet A" style="font-size: 14px; padding: 8px 12px;">
+                    </div>
+                    <button type="submit" class="btn-save">Claim Device</button>
+                    <span style="color: #666; font-size: 12px;">Claim device on behalf of a client</span>
+                </div>
+            </form>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Device</th>
+                        <th>Client</th>
+                        <th>Assignment / Claim Code</th>
+                        <th>Status</th>
+                        <th>First Seen</th>
+                        <th>Last Seen</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {''.join(device_rows) if device_rows else '<tr><td colspan="7" style="text-align: center; color: #666;">No devices found</td></tr>'}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Password Reset Modal -->
+    <div id="resetPasswordModal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 400px;">
+            <div class="modal-header">
+                <h2>Reset Password</h2>
+                <span class="modal-close" onclick="closeResetPassword()">&times;</span>
+            </div>
+            <form method="POST" action="/admin/reset-password" style="padding: 12px;">
+                <input type="hidden" id="resetUserId" name="user_id">
+                <div class="form-group">
+                    <label>User</label>
+                    <input type="text" id="resetUserEmail" readonly style="background: #f5f5f5; font-weight: 500;">
+                </div>
+                <div class="form-group">
+                    <label>New Password <span class="required">*</span></label>
+                    <input type="password" name="new_password" required placeholder="Enter new password" autocomplete="new-password">
+                    <small style="font-size: 11px; color: #666;">Minimum 6 characters recommended</small>
+                </div>
+                <div class="form-actions">
+                    <button type="button" onclick="closeResetPassword()" style="background: #6c757d; color: white; padding: 6px 12px; border: none; border-radius: 3px; cursor: pointer; font-size: 12px;">Cancel</button>
+                    <button type="submit" class="btn-save" style="padding: 6px 12px; font-size: 12px;">Reset Password</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        // Auto-generate client_id and slug from name
+        const nameInput = document.getElementById('clientName');
+        const clientIdInput = document.getElementById('clientId');
+        const slugInput = document.getElementById('clientSlug');
+
+        if (nameInput && clientIdInput && slugInput) {{
+            nameInput.addEventListener('input', function() {{
+                const name = this.value;
+                // Create slug: lowercase, replace spaces with hyphens, remove special chars
+                const slug = name
+                    .toLowerCase()
+                    .trim()
+                    .replace(/[^a-z0-9\\s-]/g, '')  // Remove special characters
+                    .replace(/\\s+/g, '-')           // Replace spaces with hyphens
+                    .replace(/-+/g, '-');            // Replace multiple hyphens with single
+
+                clientIdInput.value = slug;
+                slugInput.value = slug;
+            }});
+        }}
+
+        // Password reset modal functions
+        function showResetPassword(userId, email) {{
+            document.getElementById('resetUserId').value = userId;
+            document.getElementById('resetUserEmail').value = email;
+            document.getElementById('resetPasswordModal').style.display = 'flex';
+        }}
+
+        function closeResetPassword() {{
+            document.getElementById('resetPasswordModal').style.display = 'none';
+            document.getElementById('resetUserId').value = '';
+            document.getElementById('resetUserEmail').value = '';
+        }}
+
+        // Close modal when clicking outside
+        document.getElementById('resetPasswordModal').addEventListener('click', function(e) {{
+            if (e.target === this) {{
+                closeResetPassword();
+            }}
+        }});
+
+        // Toggle client status (deactivate/reactivate)
+        function toggleClientStatus(clientId, isActive) {{
+            const action = isActive ? 'reactivate' : 'deactivate';
+            if (confirm(`Are you sure you want to ${{action}} this client?`)) {{
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = '/admin/toggle-client-status';
+
+                const clientIdInput = document.createElement('input');
+                clientIdInput.type = 'hidden';
+                clientIdInput.name = 'client_id';
+                clientIdInput.value = clientId;
+
+                const isActiveInput = document.createElement('input');
+                isActiveInput.type = 'hidden';
+                isActiveInput.name = 'is_active';
+                isActiveInput.value = isActive;
+
+                form.appendChild(clientIdInput);
+                form.appendChild(isActiveInput);
+                document.body.appendChild(form);
+                form.submit();
+            }}
+        }}
+
+        // Toggle user status (deactivate/reactivate)
+        function toggleUserStatus(userId, isActive) {{
+            const action = isActive ? 'reactivate' : 'deactivate';
+            if (confirm(`Are you sure you want to ${{action}} this user?`)) {{
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = '/admin/toggle-user-status';
+
+                const userIdInput = document.createElement('input');
+                userIdInput.type = 'hidden';
+                userIdInput.name = 'user_id';
+                userIdInput.value = userId;
+
+                const isActiveInput = document.createElement('input');
+                isActiveInput.type = 'hidden';
+                isActiveInput.name = 'is_active';
+                isActiveInput.value = isActive;
+
+                form.appendChild(userIdInput);
+                form.appendChild(isActiveInput);
+                document.body.appendChild(form);
+                form.submit();
+            }}
+        }}
+
+        // Unclaim device
+        function unclaimDevice(deviceId) {{
+            if (confirm('Are you sure you want to unclaim this device? It will generate a new claim code.')) {{
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = `/admin/devices/${{deviceId}}/unclaim`;
+
+                document.body.appendChild(form);
+                form.submit();
+            }}
+        }}
+    </script>
+</body>
+</html>
+"""
+    return HTMLResponse(content=html)
+
+
+@app.post("/admin/clients")
+async def create_client(
+    request: Request,
+    client_id: str = Form(...),
+    name: str = Form(...),
+    slug: str = Form(...),
+    contact_email: str = Form("")
+):
+    """Create a new client."""
+    session = require_auth(request)
+
+    # Only super admins can create clients
+    if not auth.is_super_admin(session):
+        raise HTTPException(status_code=403, detail="Only super admins can create clients")
+
+    db = get_db()
+    current_time = int(time.time())
+
+    # Empty string should become None for optional fields
+    contact_email_value = contact_email if contact_email else None
+
+    try:
+        db.execute("""
+            INSERT INTO clients (client_id, name, slug, contact_email, is_active, created_at)
+            VALUES (?, ?, ?, ?, 1, ?)
+        """, (client_id, name, slug, contact_email_value, current_time))
+        db.commit()
+        logger.info(f"Created client: {name} ({client_id})")
+    except sqlite3.IntegrityError as e:
+        db.close()
+        raise HTTPException(status_code=400, detail=f"Client ID or slug already exists: {e}")
+    finally:
+        db.close()
+
+    return RedirectResponse(url="/admin/system", status_code=302)
+
+
+@app.post("/admin/users")
+async def create_user(
+    request: Request,
+    email: str = Form(...),
+    password: str = Form(...),
+    role: str = Form(...),
+    client_id: str = Form("")
+):
+    """Create a new user."""
+    session = require_auth(request)
+
+    # Only super admins can create users
+    if not auth.is_super_admin(session):
+        raise HTTPException(status_code=403, detail="Only super admins can create users")
+
+    # Validate role
+    if role not in ["super_admin", "admin", "viewer"]:
+        raise HTTPException(status_code=400, detail="Invalid role")
+
+    # Empty string should become None for client_id
+    client_id_value = client_id if client_id else None
+
+    # If not super_admin role, must have a client_id
+    if role != "super_admin" and not client_id_value:
+        raise HTTPException(status_code=400, detail="Non-super admin users must be assigned to a client")
+
+    db = get_db()
+
+    try:
+        user_id = auth.create_user(db, email, password, client_id_value, role)
+        db.commit()
+        logger.info(f"Created user: {email} (role: {role}, client: {client_id_value or 'super_admin'})")
+    except sqlite3.IntegrityError:
+        db.close()
+        raise HTTPException(status_code=400, detail="Email already exists")
+    finally:
+        db.close()
+
+    return RedirectResponse(url="/admin/system", status_code=302)
+
+
+@app.post("/admin/reset-password")
+async def reset_user_password(
+    request: Request,
+    user_id: str = Form(...),
+    new_password: str = Form(...)
+):
+    """Reset a user's password (super admin only)."""
+    session = require_auth(request)
+
+    # Only super admins can reset passwords
+    if not auth.is_super_admin(session):
+        raise HTTPException(status_code=403, detail="Only super admins can reset passwords")
+
+    # Validate password length
+    if len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    db = get_db()
+
+    try:
+        # Check if user exists
+        user = db.execute("SELECT user_id, email FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Hash new password and update
+        password_hash = auth.hash_password(new_password)
+        db.execute("""
+            UPDATE users SET password_hash = ? WHERE user_id = ?
+        """, (password_hash, user_id))
+        db.commit()
+
+        logger.info(f"Password reset for user: {user['email']} by super admin")
+    finally:
+        db.close()
+
+    return RedirectResponse(url="/admin/system", status_code=302)
+
+
+@app.post("/admin/toggle-client-status")
+async def toggle_client_status(
+    request: Request,
+    client_id: str = Form(...),
+    is_active: int = Form(...)
+):
+    """Toggle client active status (super admin only)."""
+    session = require_auth(request)
+
+    # Only super admins can toggle client status
+    if not auth.is_super_admin(session):
+        raise HTTPException(status_code=403, detail="Only super admins can toggle client status")
+
+    db = get_db()
+
+    try:
+        # Check if client exists
+        client = db.execute("SELECT client_id, name, is_active FROM clients WHERE client_id = ?", (client_id,)).fetchone()
+        if not client:
+            raise HTTPException(status_code=404, detail="Client not found")
+
+        # Update status
+        db.execute("""
+            UPDATE clients SET is_active = ? WHERE client_id = ?
+        """, (is_active, client_id))
+        db.commit()
+
+        action = "activated" if is_active else "deactivated"
+        logger.info(f"Client {action}: {client['name']} ({client_id}) by super admin")
+    finally:
+        db.close()
+
+    return RedirectResponse(url="/admin/system", status_code=302)
+
+
+@app.post("/admin/toggle-user-status")
+async def toggle_user_status(
+    request: Request,
+    user_id: str = Form(...),
+    is_active: int = Form(...)
+):
+    """Toggle user active status (super admin only)."""
+    session = require_auth(request)
+
+    # Only super admins can toggle user status
+    if not auth.is_super_admin(session):
+        raise HTTPException(status_code=403, detail="Only super admins can toggle user status")
+
+    db = get_db()
+
+    try:
+        # Check if user exists
+        user = db.execute("SELECT user_id, email, is_active FROM users WHERE user_id = ?", (user_id,)).fetchone()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Prevent deactivating yourself
+        if user_id == session["user_id"] and not is_active:
+            raise HTTPException(status_code=400, detail="Cannot deactivate your own account")
+
+        # Update status
+        db.execute("""
+            UPDATE users SET is_active = ? WHERE user_id = ?
+        """, (is_active, user_id))
+        db.commit()
+
+        action = "activated" if is_active else "deactivated"
+        logger.info(f"User {action}: {user['email']} by super admin")
+    finally:
+        db.close()
+
+    return RedirectResponse(url="/admin/system", status_code=302)
 
 
 @app.get("/v1/rinks/{rink_id}/schedule", response_model=ScheduleResponse)
@@ -247,17 +1168,23 @@ async def get_game_roster(game_id: str = FastAPIPath(..., description="Game ID")
 
 
 @app.get("/v1/devices/{device_id}/config", response_model=DeviceConfigResponse)
-async def get_device_config(device_id: str = FastAPIPath(..., description="Device ID")):
+async def get_device_config(
+    device_id: str = FastAPIPath(..., description="Device ID"),
+    claim_code: Optional[str] = Query(None, description="6-character claim code displayed on device")
+):
     """
     Get configuration for a device.
 
     Returns device assignment (rink_id, sheet_name) if assigned,
     or registers the device as unassigned if first time seeing it.
+
+    If claim_code is provided, stores it for client claiming.
     """
-    logger.info(f"Config request from device_id={device_id}")
+    logger.info(f"Config request from device_id={device_id}, claim_code={claim_code}")
 
     db = get_db()
     current_time = int(time.time())
+    claim_code_expiry = current_time + (24 * 60 * 60)  # 24 hours from now
 
     # Check if device exists
     device = db.execute(
@@ -266,13 +1193,21 @@ async def get_device_config(device_id: str = FastAPIPath(..., description="Devic
     ).fetchone()
 
     if device:
-        # Update last_seen_at
-        db.execute(
-            "UPDATE devices SET last_seen_at = ? WHERE device_id = ?",
-            (current_time, device_id)
-        )
+        # Update last_seen_at and claim_code if provided
+        if claim_code and not device["client_id"]:  # Only update claim code if unclaimed
+            db.execute("""
+                UPDATE devices
+                SET last_seen_at = ?, claim_code = ?, claim_code_expires_at = ?
+                WHERE device_id = ?
+            """, (current_time, claim_code, claim_code_expiry, device_id))
+        else:
+            db.execute(
+                "UPDATE devices SET last_seen_at = ? WHERE device_id = ?",
+                (current_time, device_id)
+            )
         db.commit()
 
+        is_claimed = device["client_id"] is not None
         is_assigned = bool(device["is_assigned"])
 
         if is_assigned:
@@ -280,6 +1215,7 @@ async def get_device_config(device_id: str = FastAPIPath(..., description="Devic
             db.close()
             return DeviceConfigResponse(
                 device_id=device_id,
+                is_claimed=is_claimed,
                 is_assigned=True,
                 rink_id=device["rink_id"],
                 sheet_name=device["sheet_name"],
@@ -287,27 +1223,37 @@ async def get_device_config(device_id: str = FastAPIPath(..., description="Devic
                 message=f"Assigned to {device['rink_id']} - {device['sheet_name']}"
             )
         else:
-            logger.info(f"Device {device_id} exists but is not assigned")
+            logger.info(f"Device {device_id} exists but is not assigned (claimed={is_claimed})")
             db.close()
-            return DeviceConfigResponse(
-                device_id=device_id,
-                is_assigned=False,
-                message="Device registered but not assigned. Please contact admin to assign this device."
-            )
+            if is_claimed:
+                return DeviceConfigResponse(
+                    device_id=device_id,
+                    is_claimed=True,
+                    is_assigned=False,
+                    message="Device claimed. Waiting for admin to assign to rink/sheet."
+                )
+            else:
+                return DeviceConfigResponse(
+                    device_id=device_id,
+                    is_claimed=False,
+                    is_assigned=False,
+                    message="Waiting to be claimed. Enter claim code in admin panel."
+                )
     else:
-        # First time seeing this device - register it as unassigned
-        logger.info(f"New device {device_id} - registering as unassigned")
+        # First time seeing this device - register it as unassigned and unclaimed
+        logger.info(f"New device {device_id} - registering with claim_code={claim_code}")
         db.execute("""
-            INSERT INTO devices (device_id, is_assigned, first_seen_at, last_seen_at)
-            VALUES (?, 0, ?, ?)
-        """, (device_id, current_time, current_time))
+            INSERT INTO devices (device_id, is_assigned, claim_code, claim_code_expires_at, first_seen_at, last_seen_at)
+            VALUES (?, 0, ?, ?, ?, ?)
+        """, (device_id, claim_code, claim_code_expiry if claim_code else None, current_time, current_time))
         db.commit()
         db.close()
 
         return DeviceConfigResponse(
             device_id=device_id,
+            is_claimed=False,
             is_assigned=False,
-            message="Device registered. Please contact admin to assign this device to a rink and sheet."
+            message="Device registered. Waiting to be claimed with claim code."
         )
 
 
@@ -615,34 +1561,52 @@ async def delete_rink(rink_id: str):
 # ---------- Rink Sheets Admin Endpoints ----------
 
 @app.post("/admin/rink-sheets")
-async def create_rink_sheet(
-    rink_id: str = Body(...),
-    name: str = Body(...),
-    surface_type: Optional[str] = Body(None),
-    capacity: Optional[int] = Body(None)
-):
+async def create_rink_sheet(request: Request):
     """
     Create a new sheet within a rink.
 
     Auto-generates sheet_id from rink_id + slugified name.
     """
-    logger.info(f"Creating sheet {name} for rink {rink_id}")
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
+    if not client_id:
+        raise HTTPException(status_code=400, detail="No client selected")
+
+    # Parse request body
+    try:
+        body = await request.json()
+        rink_id = body.get("rink_id")
+        name = body.get("name")
+        surface_type = body.get("surface_type")
+        capacity = body.get("capacity")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid request body: {str(e)}")
+
+    if not rink_id or not name:
+        raise HTTPException(status_code=400, detail="rink_id and name are required")
+
+    logger.info(f"Creating sheet {name} for rink {rink_id} (client: {client_id})")
 
     db = get_db()
 
-    # Verify rink exists
-    rink = db.execute("SELECT rink_id FROM rinks WHERE rink_id = ?", (rink_id,)).fetchone()
+    # Verify rink exists and belongs to this client
+    rink = db.execute(
+        "SELECT rink_id, client_id FROM rinks WHERE rink_id = ? AND client_id = ?",
+        (rink_id, client_id)
+    ).fetchone()
     if not rink:
         db.close()
-        raise HTTPException(status_code=404, detail=f"Rink {rink_id} not found")
+        raise HTTPException(status_code=404, detail=f"Rink {rink_id} not found or access denied")
 
     # Auto-generate sheet_id
     sheet_id = f"{rink_id}-{slugify(name)}"
 
     # Check if sheet already exists
     existing = db.execute(
-        "SELECT sheet_id FROM rink_sheets WHERE sheet_id = ?",
-        (sheet_id,)
+        "SELECT sheet_id FROM rink_sheets WHERE client_id = ? AND sheet_id = ?",
+        (client_id, sheet_id)
     ).fetchone()
 
     if existing:
@@ -654,11 +1618,11 @@ async def create_rink_sheet(
 
     current_time = int(time.time())
 
-    # Insert sheet
+    # Insert sheet with client_id
     db.execute("""
-        INSERT INTO rink_sheets (sheet_id, rink_id, name, surface_type, capacity, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (sheet_id, rink_id, name, surface_type, capacity, current_time))
+        INSERT INTO rink_sheets (client_id, rink_id, sheet_id, name, surface_type, capacity, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (client_id, rink_id, sheet_id, name, surface_type, capacity, current_time))
 
     db.commit()
     db.close()
@@ -698,31 +1662,38 @@ async def get_rink_sheets(rink_id: str):
 
 
 @app.delete("/admin/rink-sheets/{sheet_id}")
-async def delete_rink_sheet(sheet_id: str):
+async def delete_rink_sheet(request: Request, sheet_id: str):
     """
     Delete a sheet.
 
     This will fail if there are devices assigned to this sheet.
     """
-    logger.info(f"Deleting sheet {sheet_id}")
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
+    if not client_id:
+        raise HTTPException(status_code=400, detail="No client selected")
+
+    logger.info(f"Deleting sheet {sheet_id} (client: {client_id})")
 
     db = get_db()
 
-    # Check if sheet exists
+    # Check if sheet exists and belongs to this client
     sheet = db.execute(
-        "SELECT sheet_id, rink_id, name FROM rink_sheets WHERE sheet_id = ?",
-        (sheet_id,)
+        "SELECT sheet_id, rink_id, name, client_id FROM rink_sheets WHERE sheet_id = ? AND client_id = ?",
+        (sheet_id, client_id)
     ).fetchone()
 
     if not sheet:
         db.close()
-        raise HTTPException(status_code=404, detail=f"Sheet {sheet_id} not found")
+        raise HTTPException(status_code=404, detail=f"Sheet {sheet_id} not found or access denied")
 
     # Check if any devices are assigned to this sheet
     # Devices reference sheets by rink_id + sheet_name (not sheet_id FK)
     devices = db.execute(
-        "SELECT COUNT(*) as count FROM devices WHERE rink_id = ? AND sheet_name = ? AND is_assigned = 1",
-        (sheet["rink_id"], sheet["name"])
+        "SELECT COUNT(*) as count FROM devices WHERE client_id = ? AND rink_id = ? AND sheet_name = ? AND is_assigned = 1",
+        (client_id, sheet["rink_id"], sheet["name"])
     ).fetchone()
 
     if devices["count"] > 0:
@@ -733,7 +1704,7 @@ async def delete_rink_sheet(sheet_id: str):
         )
 
     # Delete the sheet
-    db.execute("DELETE FROM rink_sheets WHERE sheet_id = ?", (sheet_id,))
+    db.execute("DELETE FROM rink_sheets WHERE sheet_id = ? AND client_id = ?", (sheet_id, client_id))
 
     db.commit()
     db.close()
@@ -746,6 +1717,107 @@ async def delete_rink_sheet(sheet_id: str):
     }
 
 
+
+
+@app.get("/admin/devices")
+async def list_devices(request: Request):
+    """List all devices."""
+    from fastapi.responses import HTMLResponse
+
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
+    db = get_db()
+
+    # Fetch devices filtered by client
+    if client_id:
+        devices = db.execute("""
+            SELECT device_id, client_id, rink_id, sheet_name, device_name, is_assigned,
+                   first_seen_at, last_seen_at, notes
+            FROM devices
+            WHERE client_id = ? OR client_id IS NULL
+            ORDER BY is_assigned DESC, last_seen_at DESC
+        """, (client_id,)).fetchall()
+    else:
+        # Super admin viewing all devices
+        devices = db.execute("""
+            SELECT device_id, client_id, rink_id, sheet_name, device_name, is_assigned,
+                   first_seen_at, last_seen_at, notes
+            FROM devices
+            ORDER BY is_assigned DESC, last_seen_at DESC
+        """).fetchall()
+
+    db.close()
+
+    # Build device rows
+    device_rows = []
+    for device in devices:
+        status = '<span class="badge assigned">Assigned</span>' if device["is_assigned"] else '<span class="badge unassigned">Unassigned</span>'
+        client_info = device["client_id"] or "-"
+        rink_info = device["rink_id"] or "-"
+        sheet_info = device["sheet_name"] or "-"
+        last_seen = datetime.fromtimestamp(device["last_seen_at"]).strftime("%Y-%m-%d %H:%M") if device["last_seen_at"] else "Never"
+
+        device_rows.append(f"""
+            <tr>
+                <td class="device-id">{device["device_id"]}</td>
+                <td>{client_info}</td>
+                <td>{rink_info}</td>
+                <td>{sheet_info}</td>
+                <td>{device["device_name"] or "-"}</td>
+                <td>{status}</td>
+                <td class="timestamp">{last_seen}</td>
+            </tr>
+        """)
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>score-cloud | Devices</title>
+    <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+    {admin_nav("devices", session)}
+    <div class="container wide">
+        <h1>Devices</h1>
+        <p class="hint">Claim new devices using the code displayed on the device screen. Assign devices to rinks in the Venues page.</p>
+
+        <!-- Claim Device Form -->
+        <div class="content" style="margin-bottom: 16px;">
+            <h2 style="font-size: 14px; margin-bottom: 8px;">Claim New Device</h2>
+            <form method="POST" action="/admin/devices/claim" style="display: flex; gap: 8px; align-items: center;">
+                <div style="flex: 0 0 200px;">
+                    <input type="text" name="claim_code" required placeholder="ABC-123" maxlength="7" style="text-transform: uppercase; font-family: monospace; font-size: 14px; padding: 6px 10px;">
+                </div>
+                <button type="submit" class="btn-save">Claim Device</button>
+                <span style="color: #666; font-size: 12px;">Enter the 6-character code shown on the device</span>
+            </form>
+        </div>
+
+        <div class="content">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Device ID</th>
+                        <th>Client</th>
+                        <th>Rink</th>
+                        <th>Sheet</th>
+                        <th>Name</th>
+                        <th>Status</th>
+                        <th>Last Seen</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {''.join(device_rows) if device_rows else '<tr><td colspan="7" style="text-align: center; color: #666;">No devices found</td></tr>'}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>
+"""
+    return HTMLResponse(content=html)
 
 
 @app.post("/admin/devices")
@@ -861,7 +1933,7 @@ async def get_device(device_id: str):
 
 
 @app.put("/admin/devices/{device_id}")
-async def update_device(device_id: str, request: UpdateDeviceRequest):
+async def update_device(request: Request, device_id: str, update_request: UpdateDeviceRequest):
     """
     Update a device's assignment and details.
 
@@ -869,13 +1941,17 @@ async def update_device(device_id: str, request: UpdateDeviceRequest):
     To update an existing assignment, provide any fields you want to change.
     To unassign, use DELETE /admin/devices/{device_id}/assignment instead.
     """
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
     logger.info(f"Updating device {device_id}")
 
     db = get_db()
 
     # Check if device exists
     device = db.execute(
-        "SELECT device_id FROM devices WHERE device_id = ?",
+        "SELECT device_id, client_id FROM devices WHERE device_id = ?",
         (device_id,)
     ).fetchone()
 
@@ -883,33 +1959,55 @@ async def update_device(device_id: str, request: UpdateDeviceRequest):
         db.close()
         raise HTTPException(status_code=404, detail=f"Device {device_id} not found. Device must connect at least once before assignment.")
 
+    # If device is already assigned, validate client ownership (unless super admin viewing all)
+    if device["client_id"] and client_id:
+        if device["client_id"] != client_id:
+            db.close()
+            raise HTTPException(status_code=403, detail="Cannot update device assigned to different client")
+
     # Build update query dynamically based on provided fields
     updates = []
     params = []
 
-    if request.rink_id is not None:
-        # Validate rink exists
-        rink = db.execute("SELECT rink_id FROM rinks WHERE rink_id = ?", (request.rink_id,)).fetchone()
+    if update_request.rink_id is not None:
+        # Validate rink exists and get its client_id
+        if client_id:
+            rink = db.execute(
+                "SELECT rink_id, client_id FROM rinks WHERE rink_id = ? AND client_id = ?",
+                (update_request.rink_id, client_id)
+            ).fetchone()
+        else:
+            # Super admin can assign to any rink
+            rink = db.execute(
+                "SELECT rink_id, client_id FROM rinks WHERE rink_id = ?",
+                (update_request.rink_id,)
+            ).fetchone()
+
         if not rink:
             db.close()
-            raise HTTPException(status_code=404, detail=f"Rink {request.rink_id} not found")
+            raise HTTPException(status_code=404, detail=f"Rink {update_request.rink_id} not found in client context")
+
         updates.append("rink_id = ?")
-        params.append(request.rink_id)
+        params.append(update_request.rink_id)
 
-    if request.sheet_name is not None:
+        # Inherit rink's client_id
+        updates.append("client_id = ?")
+        params.append(rink["client_id"])
+
+    if update_request.sheet_name is not None:
         updates.append("sheet_name = ?")
-        params.append(request.sheet_name)
+        params.append(update_request.sheet_name)
 
-    if request.device_name is not None:
+    if update_request.device_name is not None:
         updates.append("device_name = ?")
-        params.append(request.device_name)
+        params.append(update_request.device_name)
 
-    if request.notes is not None:
+    if update_request.notes is not None:
         updates.append("notes = ?")
-        params.append(request.notes)
+        params.append(update_request.notes)
 
     # If rink_id and sheet_name are both provided, mark as assigned
-    if request.rink_id is not None and request.sheet_name is not None:
+    if update_request.rink_id is not None and update_request.sheet_name is not None:
         updates.append("is_assigned = 1")
 
     if not updates:
@@ -951,15 +2049,19 @@ async def update_device(device_id: str, request: UpdateDeviceRequest):
 
 
 @app.delete("/admin/devices/{device_id}/assignment")
-async def unassign_device(device_id: str):
+async def unassign_device(request: Request, device_id: str):
     """Clear a device's assignment (unassign from rink and sheet)."""
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
     logger.info(f"Unassigning device {device_id}")
 
     db = get_db()
 
-    # Check if device exists
+    # Check if device exists and validate client ownership
     device = db.execute(
-        "SELECT device_id FROM devices WHERE device_id = ?",
+        "SELECT device_id, client_id FROM devices WHERE device_id = ?",
         (device_id,)
     ).fetchone()
 
@@ -967,7 +2069,13 @@ async def unassign_device(device_id: str):
         db.close()
         raise HTTPException(status_code=404, detail=f"Device {device_id} not found")
 
-    # Unassign the device
+    # Validate client ownership (unless super admin viewing all)
+    if device["client_id"] and client_id:
+        if device["client_id"] != client_id:
+            db.close()
+            raise HTTPException(status_code=403, detail="Cannot unassign device from different client")
+
+    # Unassign the device (clear rink_id, sheet_name, but keep client_id)
     db.execute("""
         UPDATE devices
         SET rink_id = NULL,
@@ -988,21 +2096,31 @@ async def unassign_device(device_id: str):
 
 
 @app.delete("/admin/devices/{device_id}")
-async def delete_device(device_id: str):
+async def delete_device(request: Request, device_id: str):
     """Completely delete a device from the database."""
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
     logger.info(f"Deleting device {device_id}")
 
     db = get_db()
 
-    # Check if device exists
+    # Check if device exists and validate ownership
     device = db.execute(
-        "SELECT device_id FROM devices WHERE device_id = ?",
+        "SELECT device_id, client_id FROM devices WHERE device_id = ?",
         (device_id,)
     ).fetchone()
 
     if not device:
         db.close()
         raise HTTPException(status_code=404, detail=f"Device {device_id} not found")
+
+    # Validate client ownership (unless super admin viewing all)
+    if device["client_id"] and client_id:
+        if device["client_id"] != client_id:
+            db.close()
+            raise HTTPException(status_code=403, detail="Cannot delete device from different client")
 
     # Delete the device (this will cascade delete deliveries if we had FK constraints)
     db.execute("DELETE FROM devices WHERE device_id = ?", (device_id,))
@@ -1018,15 +2136,124 @@ async def delete_device(device_id: str):
     }
 
 
+@app.post("/admin/devices/claim")
+async def claim_device(request: Request, claim_code: str = Form(...), target_client_id: str = Form(""), device_name: str = Form("")):
+    """Claim an unclaimed device using its claim code."""
+    # Require authentication
+    session = require_auth(request)
+
+    # Determine which client to claim for
+    if target_client_id:
+        # Super admin claiming for a specific client
+        if not auth.is_super_admin(session):
+            raise HTTPException(status_code=403, detail="Only super admins can claim devices for other clients")
+        client_id = target_client_id
+    else:
+        # Regular admin claiming for their own client
+        client_id = auth.get_current_client(session)
+        if not client_id:
+            raise HTTPException(status_code=400, detail="Must specify target client or have active client selected")
+
+    claim_code = claim_code.strip().upper()  # Normalize code
+    logger.info(f"Client {client_id} attempting to claim device with code {claim_code}")
+
+    db = get_db()
+    current_time = int(time.time())
+
+    # Find device with matching claim code
+    device = db.execute("""
+        SELECT device_id, client_id, claim_code, claim_code_expires_at
+        FROM devices
+        WHERE claim_code = ?
+    """, (claim_code,)).fetchone()
+
+    if not device:
+        db.close()
+        raise HTTPException(status_code=404, detail="Invalid claim code. Check the code on your device screen.")
+
+    # Check if already claimed
+    if device["client_id"]:
+        db.close()
+        raise HTTPException(status_code=400, detail="Device already claimed by another client")
+
+    # Check if code expired
+    if device["claim_code_expires_at"] and device["claim_code_expires_at"] < current_time:
+        db.close()
+        raise HTTPException(status_code=400, detail="Claim code expired. Restart the device to generate a new code.")
+
+    # Claim the device
+    db.execute("""
+        UPDATE devices
+        SET client_id = ?, claim_code = NULL, claim_code_expires_at = NULL, device_name = ?
+        WHERE device_id = ?
+    """, (client_id, device_name if device_name else None, device["device_id"]))
+    db.commit()
+    db.close()
+
+    logger.info(f"Device {device['device_id']} claimed by client {client_id}")
+
+    # Redirect back to Venues page
+    return RedirectResponse(url="/admin/rinks-admin", status_code=302)
+
+
+@app.post("/admin/devices/{device_id}/unclaim")
+async def unclaim_device(request: Request, device_id: str):
+    """Unclaim a device and generate a new claim code."""
+    # Require authentication (super admin only)
+    session = require_auth(request)
+
+    if not auth.is_super_admin(session):
+        raise HTTPException(status_code=403, detail="Only super admins can unclaim devices")
+
+    logger.info(f"Super admin unclaiming device {device_id}")
+
+    db = get_db()
+    current_time = int(time.time())
+
+    # Check if device exists
+    device = db.execute("SELECT * FROM devices WHERE device_id = ?", (device_id,)).fetchone()
+
+    if not device:
+        db.close()
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    # Generate new claim code
+    import random
+    import string
+    letters = ''.join(random.choices(string.ascii_uppercase, k=3))
+    digits = ''.join(random.choices(string.digits, k=3))
+    new_claim_code = f"{letters}-{digits}"
+    claim_code_expiry = current_time + (24 * 60 * 60)  # 24 hours from now
+
+    # Unclaim the device: clear client_id, assignment, generate new claim code
+    db.execute("""
+        UPDATE devices
+        SET client_id = NULL,
+            rink_id = NULL,
+            sheet_name = NULL,
+            device_name = NULL,
+            is_assigned = 0,
+            claim_code = ?,
+            claim_code_expires_at = ?
+        WHERE device_id = ?
+    """, (new_claim_code, claim_code_expiry, device_id))
+    db.commit()
+    db.close()
+
+    logger.info(f"Device {device_id} unclaimed, new claim code: {new_claim_code}")
+
+    return RedirectResponse(url="/admin/system", status_code=302)
+
+
 # Keep legacy endpoints for backwards compatibility
 @app.post("/admin/devices/{device_id}/assign")
-async def assign_device_legacy(device_id: str, request: AssignDeviceRequest):
+async def assign_device_legacy(req: Request, device_id: str, assign_request: AssignDeviceRequest):
     """Legacy endpoint - use PUT /admin/devices/{device_id} instead."""
-    return await update_device(device_id, UpdateDeviceRequest(
-        rink_id=request.rink_id,
-        sheet_name=request.sheet_name,
-        device_name=request.device_name,
-        notes=request.notes
+    return await update_device(req, device_id, UpdateDeviceRequest(
+        rink_id=assign_request.rink_id,
+        sheet_name=assign_request.sheet_name,
+        device_name=assign_request.device_name,
+        notes=assign_request.notes
     ))
 
 
@@ -1055,7 +2282,7 @@ async def get_latest_heartbeats():
 
 
 @app.get("/admin/events")
-async def list_events_admin(format: Optional[str] = Query(None, description="Response format: 'json' or 'html'")):
+async def list_events_admin(request: Request, format: Optional[str] = Query(None, description="Response format: 'json' or 'html'")):
     """
     Admin page to view all received events with column filters.
 
@@ -1063,13 +2290,28 @@ async def list_events_admin(format: Optional[str] = Query(None, description="Res
     """
     from fastapi.responses import HTMLResponse
 
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
     db = get_db()
 
-    events = db.execute("""
-        SELECT * FROM received_events
-        ORDER BY received_at DESC, seq DESC
-        LIMIT 1000
-    """).fetchall()
+    # Fetch events (filtered by client's games)
+    if client_id:
+        events = db.execute("""
+            SELECT e.* FROM received_events e
+            JOIN games g ON e.game_id = g.game_id
+            WHERE g.client_id = ?
+            ORDER BY e.received_at DESC, e.seq DESC
+            LIMIT 1000
+        """, (client_id,)).fetchall()
+    else:
+        # Super admin viewing all clients
+        events = db.execute("""
+            SELECT * FROM received_events
+            ORDER BY received_at DESC, seq DESC
+            LIMIT 1000
+        """).fetchall()
 
     db.close()
 
@@ -1148,7 +2390,7 @@ async def list_events_admin(format: Optional[str] = Query(None, description="Res
         </style>
     </head>
     <body>
-        {admin_nav("events")}
+        {admin_nav("events", session)}
         <div class="container wide">
             <h1>Events</h1>
             <div class="content overflow">
@@ -1336,7 +2578,7 @@ async def get_all_game_states(format: Optional[str] = Query(None, description="R
 
 
 @app.get("/admin/organization")
-async def get_organization_admin():
+async def get_organization_admin(request: Request):
     """
     Admin page showing organizational hierarchy: Leagues → Seasons → Divisions → Teams → Rosters.
 
@@ -1344,10 +2586,21 @@ async def get_organization_admin():
     """
     from fastapi.responses import HTMLResponse
 
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
     db = get_db()
 
-    # Fetch all leagues
-    leagues = db.execute("SELECT league_id, name, league_type, description FROM leagues ORDER BY name").fetchall()
+    # Fetch all leagues (filtered by client)
+    if client_id:
+        leagues = db.execute(
+            "SELECT league_id, name, league_type, description FROM leagues WHERE client_id = ? ORDER BY name",
+            (client_id,)
+        ).fetchall()
+    else:
+        # Super admin viewing all clients
+        leagues = db.execute("SELECT league_id, name, league_type, description FROM leagues ORDER BY name").fetchall()
 
     # Build nested data structure
     org_data = []
@@ -1356,13 +2609,22 @@ async def get_organization_admin():
         league_dict = dict(league)
 
         # Fetch seasons for this league
-        seasons = db.execute("""
-            SELECT s.season_id, s.name, s.start_date, s.end_date
-            FROM seasons s
-            JOIN league_seasons ls ON s.season_id = ls.season_id
-            WHERE ls.league_id = ?
-            ORDER BY s.start_date DESC
-        """, (league["league_id"],)).fetchall()
+        if client_id:
+            seasons = db.execute("""
+                SELECT s.season_id, s.name, s.start_date, s.end_date
+                FROM seasons s
+                JOIN league_seasons ls ON s.season_id = ls.season_id AND s.client_id = ls.client_id
+                WHERE ls.league_id = ? AND ls.client_id = ?
+                ORDER BY s.start_date DESC
+            """, (league["league_id"], client_id)).fetchall()
+        else:
+            seasons = db.execute("""
+                SELECT s.season_id, s.name, s.start_date, s.end_date
+                FROM seasons s
+                JOIN league_seasons ls ON s.season_id = ls.season_id
+                WHERE ls.league_id = ?
+                ORDER BY s.start_date DESC
+            """, (league["league_id"],)).fetchall()
 
         league_dict["seasons"] = []
 
@@ -1370,13 +2632,22 @@ async def get_organization_admin():
             season_dict = dict(season)
 
             # Fetch divisions for this league+season (via league_season_divisions)
-            divisions = db.execute("""
-                SELECT d.division_id, d.name
-                FROM divisions d
-                JOIN league_season_divisions lsd ON d.division_id = lsd.division_id
-                WHERE lsd.league_id = ? AND lsd.season_id = ?
-                ORDER BY lsd.display_order, d.name
-            """, (league["league_id"], season["season_id"])).fetchall()
+            if client_id:
+                divisions = db.execute("""
+                    SELECT d.division_id, d.name
+                    FROM divisions d
+                    JOIN league_season_divisions lsd ON d.division_id = lsd.division_id AND d.client_id = lsd.client_id
+                    WHERE lsd.league_id = ? AND lsd.season_id = ? AND lsd.client_id = ?
+                    ORDER BY lsd.display_order, d.name
+                """, (league["league_id"], season["season_id"], client_id)).fetchall()
+            else:
+                divisions = db.execute("""
+                    SELECT d.division_id, d.name
+                    FROM divisions d
+                    JOIN league_season_divisions lsd ON d.division_id = lsd.division_id
+                    WHERE lsd.league_id = ? AND lsd.season_id = ?
+                    ORDER BY lsd.display_order, d.name
+                """, (league["league_id"], season["season_id"])).fetchall()
 
             season_dict["divisions"] = []
 
@@ -1384,14 +2655,24 @@ async def get_organization_admin():
                 division_dict = dict(division)
 
                 # Fetch team registrations for this division
-                registrations = db.execute("""
-                    SELECT registration_id, team_name, abbreviation,
-                           (SELECT COUNT(*) FROM roster_entries re
-                            WHERE re.registration_id = tr.registration_id AND re.removed_at IS NULL) as roster_count
-                    FROM team_registrations tr
-                    WHERE league_id = ? AND season_id = ? AND division_id = ?
-                    ORDER BY team_name
-                """, (league["league_id"], season["season_id"], division["division_id"])).fetchall()
+                if client_id:
+                    registrations = db.execute("""
+                        SELECT registration_id, team_name, abbreviation,
+                               (SELECT COUNT(*) FROM roster_entries re
+                                WHERE re.registration_id = tr.registration_id AND re.removed_at IS NULL AND re.client_id = ?) as roster_count
+                        FROM team_registrations tr
+                        WHERE league_id = ? AND season_id = ? AND division_id = ? AND client_id = ?
+                        ORDER BY team_name
+                    """, (client_id, league["league_id"], season["season_id"], division["division_id"], client_id)).fetchall()
+                else:
+                    registrations = db.execute("""
+                        SELECT registration_id, team_name, abbreviation,
+                               (SELECT COUNT(*) FROM roster_entries re
+                                WHERE re.registration_id = tr.registration_id AND re.removed_at IS NULL) as roster_count
+                        FROM team_registrations tr
+                        WHERE league_id = ? AND season_id = ? AND division_id = ?
+                        ORDER BY team_name
+                    """, (league["league_id"], season["season_id"], division["division_id"])).fetchall()
 
                 division_dict["registrations"] = []
 
@@ -1399,35 +2680,64 @@ async def get_organization_admin():
                     reg_dict = dict(registration)
 
                     # Fetch roster entries for this registration
-                    roster = db.execute("""
-                        SELECT re.id, re.player_id, p.full_name, re.jersey_number, re.position,
-                               re.roster_status, re.is_captain, re.is_alternate
-                        FROM roster_entries re
-                        JOIN players p ON re.player_id = p.player_id
-                        WHERE re.registration_id = ? AND re.removed_at IS NULL
-                        ORDER BY re.jersey_number, p.last_name
-                    """, (registration["registration_id"],)).fetchall()
+                    if client_id:
+                        roster = db.execute("""
+                            SELECT re.id, re.player_id, p.full_name, re.jersey_number, re.position,
+                                   re.roster_status, re.is_captain, re.is_alternate
+                            FROM roster_entries re
+                            JOIN players p ON re.player_id = p.player_id AND re.client_id = p.client_id
+                            WHERE re.registration_id = ? AND re.removed_at IS NULL AND re.client_id = ?
+                            ORDER BY re.jersey_number, p.last_name
+                        """, (registration["registration_id"], client_id)).fetchall()
+                    else:
+                        roster = db.execute("""
+                            SELECT re.id, re.player_id, p.full_name, re.jersey_number, re.position,
+                                   re.roster_status, re.is_captain, re.is_alternate
+                            FROM roster_entries re
+                            JOIN players p ON re.player_id = p.player_id
+                            WHERE re.registration_id = ? AND re.removed_at IS NULL
+                            ORDER BY re.jersey_number, p.last_name
+                        """, (registration["registration_id"],)).fetchall()
 
                     reg_dict["roster"] = [dict(r) for r in roster]
                     division_dict["registrations"].append(reg_dict)
 
                 # Fetch games for this division
-                games = db.execute("""
-                    SELECT DISTINCT g.game_id, g.home_team, g.away_team, g.home_abbrev, g.away_abbrev,
-                           g.start_time, g.rink_id, g.sheet_id,
-                           r.name as venue_name,
-                           rs.name as sheet_name,
-                           g.home_registration_id, g.away_registration_id
-                    FROM games g
-                    LEFT JOIN team_registrations tr_home ON g.home_registration_id = tr_home.registration_id
-                    LEFT JOIN team_registrations tr_away ON g.away_registration_id = tr_away.registration_id
-                    LEFT JOIN rinks r ON g.rink_id = r.rink_id
-                    LEFT JOIN rink_sheets rs ON g.sheet_id = rs.sheet_id
-                    WHERE (tr_home.league_id = ? AND tr_home.season_id = ? AND tr_home.division_id = ?)
-                       OR (tr_away.league_id = ? AND tr_away.season_id = ? AND tr_away.division_id = ?)
-                    ORDER BY g.start_time
-                """, (league["league_id"], season["season_id"], division["division_id"],
-                      league["league_id"], season["season_id"], division["division_id"])).fetchall()
+                if client_id:
+                    games = db.execute("""
+                        SELECT DISTINCT g.game_id, g.home_team, g.away_team, g.home_abbrev, g.away_abbrev,
+                               g.start_time, g.rink_id, g.sheet_id,
+                               r.name as venue_name,
+                               rs.name as sheet_name,
+                               g.home_registration_id, g.away_registration_id
+                        FROM games g
+                        LEFT JOIN team_registrations tr_home ON g.home_registration_id = tr_home.registration_id AND g.client_id = tr_home.client_id
+                        LEFT JOIN team_registrations tr_away ON g.away_registration_id = tr_away.registration_id AND g.client_id = tr_away.client_id
+                        LEFT JOIN rinks r ON g.rink_id = r.rink_id AND g.client_id = r.client_id
+                        LEFT JOIN rink_sheets rs ON g.sheet_id = rs.sheet_id AND g.client_id = rs.client_id AND g.rink_id = rs.rink_id
+                        WHERE g.client_id = ?
+                          AND ((tr_home.league_id = ? AND tr_home.season_id = ? AND tr_home.division_id = ?)
+                           OR (tr_away.league_id = ? AND tr_away.season_id = ? AND tr_away.division_id = ?))
+                        ORDER BY g.start_time
+                    """, (client_id, league["league_id"], season["season_id"], division["division_id"],
+                          league["league_id"], season["season_id"], division["division_id"])).fetchall()
+                else:
+                    games = db.execute("""
+                        SELECT DISTINCT g.game_id, g.home_team, g.away_team, g.home_abbrev, g.away_abbrev,
+                               g.start_time, g.rink_id, g.sheet_id,
+                               r.name as venue_name,
+                               rs.name as sheet_name,
+                               g.home_registration_id, g.away_registration_id
+                        FROM games g
+                        LEFT JOIN team_registrations tr_home ON g.home_registration_id = tr_home.registration_id
+                        LEFT JOIN team_registrations tr_away ON g.away_registration_id = tr_away.registration_id
+                        LEFT JOIN rinks r ON g.rink_id = r.rink_id
+                        LEFT JOIN rink_sheets rs ON g.sheet_id = rs.sheet_id
+                        WHERE (tr_home.league_id = ? AND tr_home.season_id = ? AND tr_home.division_id = ?)
+                           OR (tr_away.league_id = ? AND tr_away.season_id = ? AND tr_away.division_id = ?)
+                        ORDER BY g.start_time
+                    """, (league["league_id"], season["season_id"], division["division_id"],
+                          league["league_id"], season["season_id"], division["division_id"])).fetchall()
 
                 # Reconstruct game states
                 games_with_state = []
@@ -1446,22 +2756,43 @@ async def get_organization_admin():
 
         org_data.append(league_dict)
 
-    # Fetch all players for dropdown
-    all_players = db.execute("SELECT player_id, full_name, first_name, last_name FROM players ORDER BY last_name, first_name").fetchall()
+    # Fetch all players for dropdown (filtered by client)
+    if client_id:
+        all_players = db.execute(
+            "SELECT player_id, full_name, first_name, last_name, shoots_catches FROM players WHERE client_id = ? ORDER BY last_name, first_name",
+            (client_id,)
+        ).fetchall()
+    else:
+        all_players = db.execute("SELECT player_id, full_name, first_name, last_name, shoots_catches FROM players ORDER BY last_name, first_name").fetchall()
 
     # Fetch all unique teams for team re-registration dropdown (includes withdrawn teams)
-    all_teams = db.execute("""
-        SELECT DISTINCT team_name, abbreviation, organizer_name, organizer_email, organizer_phone
-        FROM team_registrations
-        ORDER BY team_name
-    """).fetchall()
+    if client_id:
+        all_teams = db.execute("""
+            SELECT DISTINCT team_name, abbreviation, organizer_name, organizer_email, organizer_phone
+            FROM team_registrations
+            WHERE client_id = ?
+            ORDER BY team_name
+        """, (client_id,)).fetchall()
+    else:
+        all_teams = db.execute("""
+            SELECT DISTINCT team_name, abbreviation, organizer_name, organizer_email, organizer_phone
+            FROM team_registrations
+            ORDER BY team_name
+        """).fetchall()
 
     # Fetch active registrations per division (to exclude from dropdown when adding to that division)
-    active_registrations = db.execute("""
-        SELECT league_id, season_id, division_id, team_name, abbreviation
-        FROM team_registrations
-        WHERE withdrawn_at IS NULL
-    """).fetchall()
+    if client_id:
+        active_registrations = db.execute("""
+            SELECT league_id, season_id, division_id, team_name, abbreviation
+            FROM team_registrations
+            WHERE withdrawn_at IS NULL AND client_id = ?
+        """, (client_id,)).fetchall()
+    else:
+        active_registrations = db.execute("""
+            SELECT league_id, season_id, division_id, team_name, abbreviation
+            FROM team_registrations
+            WHERE withdrawn_at IS NULL
+        """).fetchall()
 
     # Build a map: "league_id|season_id|division_id" -> ["TeamName|ABBR", ...]
     active_teams_by_division = {}
@@ -1473,8 +2804,12 @@ async def get_organization_admin():
         active_teams_by_division[div_key].append(team_key)
 
     # Fetch all rinks and sheets for schedule modal
-    all_rinks = db.execute("SELECT rink_id, name FROM rinks ORDER BY name").fetchall()
-    all_sheets = db.execute("SELECT sheet_id, rink_id, name FROM rink_sheets ORDER BY rink_id, name").fetchall()
+    if client_id:
+        all_rinks = db.execute("SELECT rink_id, name FROM rinks WHERE client_id = ? ORDER BY name", (client_id,)).fetchall()
+        all_sheets = db.execute("SELECT sheet_id, rink_id, name FROM rink_sheets WHERE client_id = ? ORDER BY rink_id, name", (client_id,)).fetchall()
+    else:
+        all_rinks = db.execute("SELECT rink_id, name FROM rinks ORDER BY name").fetchall()
+        all_sheets = db.execute("SELECT sheet_id, rink_id, name FROM rink_sheets ORDER BY rink_id, name").fetchall()
 
     db.close()
 
@@ -1707,8 +3042,18 @@ async def get_organization_admin():
 
     tree_html = generate_tree_html(org_data)
 
-    # Generate player options for dropdown
-    player_options = ''.join([f'<option value="{p["player_id"]}">{p["last_name"]}, {p["first_name"]}</option>' for p in all_players])
+    # Generate player options for dropdown (with JSON data for auto-fill)
+    import html as html_module
+    player_options = ''
+    player_data_json = {}
+    for p in all_players:
+        player_options += f'<option value="{p["player_id"]}">{p["last_name"]}, {p["first_name"]}</option>'
+        player_data_json[p["player_id"]] = {
+            "first_name": p["first_name"],
+            "last_name": p["last_name"],
+            "shoots_catches": p["shoots_catches"] or ""
+        }
+    player_data_json_str = json.dumps(player_data_json)
 
     # Generate team options for dropdown (including JSON data for auto-fill)
     import html as html_module
@@ -1958,10 +3303,28 @@ async def get_organization_admin():
                     title.textContent = `Add Player to ${{context[1]}}`;
                     fields.innerHTML = `
                         <div class="form-group">
-                            <label>Player <span class="required">*</span></label>
-                            <select name="player_id" required>
-                                <option value="">-- Select Player --</option>
+                            <label>Select Existing Player (optional)</label>
+                            <select id="existingPlayerSelect" name="existing_player_id" onchange="fillPlayerData(this.value)">
+                                <option value="">-- Select Player or Enter Manually Below --</option>
                                 {player_options}
+                            </select>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>First Name <span class="required">*</span></label>
+                                <input type="text" id="playerFirstNameInput" name="first_name" required placeholder="e.g., John">
+                            </div>
+                            <div class="form-group">
+                                <label>Last Name <span class="required">*</span></label>
+                                <input type="text" id="playerLastNameInput" name="last_name" required placeholder="e.g., Smith">
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Shoots/Catches</label>
+                            <select id="playerShootsInput" name="shoots_catches">
+                                <option value="">--</option>
+                                <option value="L">Left</option>
+                                <option value="R">Right</option>
                             </select>
                         </div>
                         <div class="form-row">
@@ -2006,6 +3369,9 @@ async def get_organization_admin():
             // Team data for auto-filling registration form
             const teamData = {team_data_json_str};
 
+            // Player data for auto-filling player form
+            const playerData = {player_data_json_str};
+
             // Active teams by division (to exclude from dropdown)
             const activeTeamsByDivision = {active_teams_by_division_str};
 
@@ -2028,6 +3394,24 @@ async def get_organization_admin():
                     document.getElementById('organizerNameInput').value = team.organizer_name || '';
                     document.getElementById('organizerEmailInput').value = team.organizer_email || '';
                     document.getElementById('organizerPhoneInput').value = team.organizer_phone || '';
+                }}
+            }}
+
+            // Fill player data when selecting from existing player dropdown
+            function fillPlayerData(playerId) {{
+                if (!playerId) {{
+                    // Clear fields if no player selected
+                    document.getElementById('playerFirstNameInput').value = '';
+                    document.getElementById('playerLastNameInput').value = '';
+                    document.getElementById('playerShootsInput').value = '';
+                    return;
+                }}
+
+                const player = playerData[playerId];
+                if (player) {{
+                    document.getElementById('playerFirstNameInput').value = player.first_name || '';
+                    document.getElementById('playerLastNameInput').value = player.last_name || '';
+                    document.getElementById('playerShootsInput').value = player.shoots_catches || '';
                 }}
             }}
 
@@ -2184,10 +3568,47 @@ async def get_organization_admin():
                             division_id: currentContext.division_id
                         }};
                     }} else if (currentModalType === 'player') {{
+                        // Handle player: either use existing or create new
+                        const existingPlayerId = formData.get('existing_player_id');
+                        let playerId;
+
+                        if (existingPlayerId) {{
+                            // Use existing player
+                            playerId = parseInt(existingPlayerId);
+                        }} else {{
+                            // Create new player first
+                            const playerBody = {{
+                                first_name: formData.get('first_name'),
+                                last_name: formData.get('last_name'),
+                                shoots_catches: formData.get('shoots_catches') || null
+                            }};
+
+                            try {{
+                                const playerResponse = await fetch('/admin/players', {{
+                                    method: 'POST',
+                                    headers: {{'Content-Type': 'application/json'}},
+                                    body: JSON.stringify(playerBody)
+                                }});
+
+                                if (!playerResponse.ok) {{
+                                    const err = await playerResponse.json();
+                                    showMessage(err.detail || 'Failed to create player', 'error');
+                                    return;
+                                }}
+
+                                const playerResult = await playerResponse.json();
+                                playerId = playerResult.player_id;
+                            }} catch (error) {{
+                                showMessage('Network error creating player', 'error');
+                                return;
+                            }}
+                        }}
+
+                        // Now add player to roster
                         endpoint = '/admin/roster-entries';
                         body = {{
                             registration_id: currentContext.registration_id,
-                            player_id: parseInt(formData.get('player_id')),
+                            player_id: playerId,
                             jersey_number: formData.get('jersey_number') ? parseInt(formData.get('jersey_number')) : null,
                             position: formData.get('position') || null,
                             roster_status: formData.get('roster_status') || 'active',
@@ -2213,7 +3634,8 @@ async def get_organization_admin():
                             showMessage(error.detail || 'Failed to create', 'error');
                         }}
                     }} catch (error) {{
-                        showMessage('Network error', 'error');
+                        console.error('Network error:', error);
+                        showMessage('Network error: ' + error.message, 'error');
                     }}
                 }});
             }});
@@ -2264,32 +3686,6 @@ async def get_organization_admin():
                 }}
             }}
 
-            // Seed games function
-            async function seedGames() {{
-                if (!confirm('Seed sample games? This requires existing league data (teams, registrations).')) {{
-                    return;
-                }}
-
-                try {{
-                    const response = await fetch('/admin/seed/games', {{
-                        method: 'POST',
-                        headers: {{'Content-Type': 'application/json'}},
-                        body: JSON.stringify({{ game_count: 8 }})
-                    }});
-
-                    const result = await response.json();
-
-                    if (response.ok) {{
-                        showMessage(`Seeded ${{result.seeded.games}} games`, 'success');
-                        setTimeout(() => location.reload(), 1500);
-                    }} else {{
-                        showMessage(result.detail || 'Failed to seed games', 'error');
-                    }}
-                }} catch (error) {{
-                    showMessage('Network error', 'error');
-                }}
-            }}
-
             // Team filter function
             function filterDivisionGames(divId, regId) {{
                 const table = document.getElementById('games_' + divId);
@@ -2317,30 +3713,6 @@ async def get_organization_admin():
 
                 try {{
                     const response = await fetch(`/admin/games/division/${{leagueId}}/${{seasonId}}/${{divisionId}}`, {{
-                        method: 'DELETE'
-                    }});
-
-                    const result = await response.json();
-
-                    if (response.ok) {{
-                        showMessage(result.message, 'success');
-                        setTimeout(() => location.reload(), 1500);
-                    }} else {{
-                        showMessage(result.detail || 'Failed to delete games', 'error');
-                    }}
-                }} catch (error) {{
-                    showMessage('Network error', 'error');
-                }}
-            }}
-
-            // Delete all games
-            async function deleteAllGames() {{
-                if (!confirm('DELETE ALL GAMES? This cannot be undone!')) {{
-                    return;
-                }}
-
-                try {{
-                    const response = await fetch('/admin/games/all', {{
                         method: 'DELETE'
                     }});
 
@@ -3092,7 +4464,7 @@ async def get_organization_admin():
         </style>
     </head>
     <body>
-        {admin_nav("leagues")}
+        {admin_nav("leagues", session)}
         <div class="container wide">
             <h1>Leagues</h1>
 
@@ -3103,8 +4475,6 @@ async def get_organization_admin():
             <div style="margin-bottom: 20px; padding: 12px; background: #f5f5f5; border-radius: 4px; display: flex; align-items: center; gap: 12px;">
                 <span style="color: #666; font-size: 13px; font-weight: 500;">Data:</span>
                 <button onclick="seedLeagueData()" style="padding: 6px 12px; font-size: 13px; background: #1a1a2e; color: white; border: none; border-radius: 3px; cursor: pointer;">Seed League Data</button>
-                <button onclick="seedGames()" style="padding: 6px 12px; font-size: 13px; background: #1a1a2e; color: white; border: none; border-radius: 3px; cursor: pointer;">Seed Games</button>
-                <button onclick="deleteAllGames()" style="padding: 6px 12px; font-size: 13px; background: #dc3545; color: white; border: none; border-radius: 3px; cursor: pointer;">Delete All Games</button>
                 <button onclick="clearAllData()" style="padding: 6px 12px; font-size: 13px; background: #dc3545; color: white; border: none; border-radius: 3px; cursor: pointer;">Clear All Data</button>
             </div>
 
@@ -3285,7 +4655,7 @@ async def get_organization_admin():
 
 
 @app.get("/admin/players")
-async def get_players_admin(format: Optional[str] = Query(None, description="Response format: 'json' or 'html'")):
+async def get_players_admin(request: Request, format: Optional[str] = Query(None, description="Response format: 'json' or 'html'")):
     """
     Admin page to view all players.
 
@@ -3293,13 +4663,27 @@ async def get_players_admin(format: Optional[str] = Query(None, description="Res
     """
     from fastapi.responses import HTMLResponse
 
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
     db = get_db()
 
-    players = db.execute("""
-        SELECT player_id, first_name, last_name, created_at
-        FROM players
-        ORDER BY last_name, first_name
-    """).fetchall()
+    # Fetch players (filtered by client)
+    if client_id:
+        players = db.execute("""
+            SELECT player_id, first_name, last_name, created_at
+            FROM players
+            WHERE client_id = ?
+            ORDER BY last_name, first_name
+        """, (client_id,)).fetchall()
+    else:
+        # Super admin viewing all clients
+        players = db.execute("""
+            SELECT player_id, first_name, last_name, created_at
+            FROM players
+            ORDER BY last_name, first_name
+        """).fetchall()
 
     db.close()
 
@@ -3364,7 +4748,7 @@ async def get_players_admin(format: Optional[str] = Query(None, description="Res
         </script>
     </head>
     <body>
-        {admin_nav("players")}
+        {admin_nav("players", session)}
         <div class="container wide">
             <h1>Players</h1>
             <div class="content overflow">
@@ -3432,15 +4816,23 @@ from score.models import (
 
 
 @app.post("/admin/leagues")
-async def create_league(league: League):
+async def create_league(request: Request, league: League):
     """Create a new league."""
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
+    # Super admin must specify a client context
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Super admin must have active client selected")
+
     db = get_db()
     current_time = int(time.time())
     try:
         db.execute("""
-            INSERT INTO leagues (league_id, name, league_type, description, website, logo_url, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (league.league_id, league.name, league.league_type, league.description,
+            INSERT INTO leagues (client_id, league_id, name, league_type, description, website, logo_url, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (client_id, league.league_id, league.name, league.league_type, league.description,
               league.website, league.logo_url, current_time))
         db.commit()
     except sqlite3.IntegrityError:
@@ -3451,15 +4843,23 @@ async def create_league(league: League):
 
 
 @app.post("/admin/seasons")
-async def create_season(season: Season):
+async def create_season(request: Request, season: Season):
     """Create a new season."""
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
+    # Super admin must specify a client context
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Super admin must have active client selected")
+
     db = get_db()
     current_time = int(time.time())
     try:
         db.execute("""
-            INSERT INTO seasons (season_id, name, start_date, end_date, created_at)
-            VALUES (?, ?, ?, ?, ?)
-        """, (season.season_id, season.name, season.start_date, season.end_date, current_time))
+            INSERT INTO seasons (client_id, season_id, name, start_date, end_date, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (client_id, season.season_id, season.name, season.start_date, season.end_date, current_time))
         db.commit()
     except sqlite3.IntegrityError:
         db.close()
@@ -3470,18 +4870,27 @@ async def create_season(season: Season):
 
 @app.post("/admin/league-seasons")
 async def create_league_season(
+    request: Request,
     league_id: str = Body(...),
     season_id: str = Body(...),
     rule_set_id: Optional[str] = Body(None)
 ):
     """Link a season to a league."""
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
+    # Super admin must specify a client context
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Super admin must have active client selected")
+
     db = get_db()
     current_time = int(time.time())
     try:
         db.execute("""
-            INSERT INTO league_seasons (league_id, season_id, rule_set_id, is_active, created_at)
-            VALUES (?, ?, ?, 1, ?)
-        """, (league_id, season_id, rule_set_id, current_time))
+            INSERT INTO league_seasons (client_id, league_id, season_id, rule_set_id, is_active, created_at)
+            VALUES (?, ?, ?, ?, 1, ?)
+        """, (client_id, league_id, season_id, rule_set_id, current_time))
         db.commit()
     except sqlite3.IntegrityError:
         db.close()
@@ -3491,15 +4900,23 @@ async def create_league_season(
 
 
 @app.post("/admin/divisions")
-async def create_division(division: Division):
+async def create_division(request: Request, division: Division):
     """Create a new division."""
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
+    # Super admin must specify a client context
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Super admin must have active client selected")
+
     db = get_db()
     current_time = int(time.time())
     try:
         db.execute("""
-            INSERT INTO divisions (division_id, name, division_type, parent_division_id, description, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (division.division_id, division.name, division.division_type,
+            INSERT INTO divisions (client_id, division_id, name, division_type, parent_division_id, description, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (client_id, division.division_id, division.name, division.division_type,
               division.parent_division_id, division.description, current_time))
         db.commit()
     except sqlite3.IntegrityError:
@@ -3511,19 +4928,28 @@ async def create_division(division: Division):
 
 @app.post("/admin/league-season-divisions")
 async def link_division_to_league_season(
+    request: Request,
     league_id: str = Body(...),
     season_id: str = Body(...),
     division_id: str = Body(...),
     display_order: Optional[int] = Body(None)
 ):
     """Link a division to a league-season."""
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
+    # Super admin must specify a client context
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Super admin must have active client selected")
+
     db = get_db()
     current_time = int(time.time())
     try:
         db.execute("""
-            INSERT INTO league_season_divisions (league_id, season_id, division_id, display_order, created_at)
-            VALUES (?, ?, ?, ?, ?)
-        """, (league_id, season_id, division_id, display_order, current_time))
+            INSERT INTO league_season_divisions (client_id, league_id, season_id, division_id, display_order, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (client_id, league_id, season_id, division_id, display_order, current_time))
         db.commit()
     except sqlite3.IntegrityError:
         db.close()
@@ -3617,8 +5043,16 @@ async def list_infractions(rule_set_id: str):
 
 
 @app.post("/admin/team-registrations")
-async def create_team_registration(reg: TeamRegistration):
+async def create_team_registration(request: Request, reg: TeamRegistration):
     """Register a team in a league+season or tournament."""
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
+    # Super admin must specify a client context
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Super admin must have active client selected")
+
     db = get_db()
     current_time = int(time.time())
 
@@ -3640,10 +5074,10 @@ async def create_team_registration(reg: TeamRegistration):
     if reg.league_id and reg.season_id:
         existing = db.execute("""
             SELECT registration_id FROM team_registrations
-            WHERE league_id = ? AND season_id = ? AND division_id = ?
+            WHERE client_id = ? AND league_id = ? AND season_id = ? AND division_id = ?
               AND (team_name = ? OR abbreviation = ?)
               AND withdrawn_at IS NULL
-        """, (reg.league_id, reg.season_id, reg.division_id, reg.team_name, reg.abbreviation)).fetchone()
+        """, (client_id, reg.league_id, reg.season_id, reg.division_id, reg.team_name, reg.abbreviation)).fetchone()
 
         if existing:
             db.close()
@@ -3654,10 +5088,10 @@ async def create_team_registration(reg: TeamRegistration):
     elif reg.tournament_id:
         existing = db.execute("""
             SELECT registration_id FROM team_registrations
-            WHERE tournament_id = ? AND division_id = ?
+            WHERE client_id = ? AND tournament_id = ? AND division_id = ?
               AND (team_name = ? OR abbreviation = ?)
               AND withdrawn_at IS NULL
-        """, (reg.tournament_id, reg.division_id, reg.team_name, reg.abbreviation)).fetchone()
+        """, (client_id, reg.tournament_id, reg.division_id, reg.team_name, reg.abbreviation)).fetchone()
 
         if existing:
             db.close()
@@ -3669,11 +5103,11 @@ async def create_team_registration(reg: TeamRegistration):
     try:
         db.execute("""
             INSERT INTO team_registrations
-                (registration_id, team_name, abbreviation, logo_url, primary_color, secondary_color,
+                (client_id, registration_id, team_name, abbreviation, logo_url, primary_color, secondary_color,
                  organizer_name, organizer_email, organizer_phone,
                  league_id, season_id, tournament_id, division_id, registered_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (reg.registration_id, reg.team_name, reg.abbreviation, reg.logo_url,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (client_id, reg.registration_id, reg.team_name, reg.abbreviation, reg.logo_url,
               reg.primary_color, reg.secondary_color, reg.organizer_name, reg.organizer_email,
               reg.organizer_phone, reg.league_id, reg.season_id, reg.tournament_id,
               reg.division_id, current_time))
@@ -3711,19 +5145,75 @@ async def list_team_registrations(
     return [dict(r) for r in rows]
 
 
-@app.post("/admin/roster-entries")
-async def add_roster_entry(entry: RosterEntry):
-    """Add a player to a team's roster."""
+@app.post("/admin/players")
+async def create_player(request: Request, player: CreatePlayerRequest):
+    """Create a new player."""
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
+    # Super admin must specify a client context
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Super admin must have active client selected")
+
     db = get_db()
     current_time = int(time.time())
+    full_name = f"{player.first_name} {player.last_name}"
+
+    try:
+        cursor = db.execute("""
+            INSERT INTO players (client_id, first_name, last_name, full_name, shoots_catches, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (client_id, player.first_name, player.last_name, full_name, player.shoots_catches, current_time))
+        player_id = cursor.lastrowid
+        db.commit()
+    except sqlite3.IntegrityError as e:
+        db.close()
+        raise HTTPException(status_code=409, detail=str(e))
+    db.close()
+    return {"status": "ok", "message": f"Player {full_name} created", "player_id": player_id}
+
+
+@app.post("/admin/roster-entries")
+async def add_roster_entry(request: Request, entry: RosterEntry):
+    """Add a player to a team's roster."""
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
+    # Super admin must specify a client context
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Super admin must have active client selected")
+
+    db = get_db()
+    current_time = int(time.time())
+
+    # Validate that registration exists and belongs to client
+    reg = db.execute("""
+        SELECT client_id FROM team_registrations WHERE registration_id = ?
+    """, (entry.registration_id,)).fetchone()
+    if not reg:
+        db.close()
+        raise HTTPException(status_code=404, detail=f"Registration {entry.registration_id} not found")
+    if reg["client_id"] != client_id:
+        db.close()
+        raise HTTPException(status_code=403, detail="Cannot add player to registration from different client")
+
+    # Validate that player exists and belongs to client
+    player = db.execute("""
+        SELECT client_id FROM players WHERE client_id = ? AND player_id = ?
+    """, (client_id, entry.player_id)).fetchone()
+    if not player:
+        db.close()
+        raise HTTPException(status_code=404, detail=f"Player {entry.player_id} not found in client context")
 
     try:
         db.execute("""
             INSERT INTO roster_entries
-                (registration_id, player_id, jersey_number, position, roster_status,
+                (client_id, registration_id, player_id, jersey_number, position, roster_status,
                  is_captain, is_alternate, added_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (entry.registration_id, entry.player_id, entry.jersey_number, entry.position,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (client_id, entry.registration_id, entry.player_id, entry.jersey_number, entry.position,
               entry.roster_status, 1 if entry.is_captain else 0, 1 if entry.is_alternate else 0,
               current_time))
         db.commit()
@@ -3750,20 +5240,33 @@ async def get_roster_entries(registration_id: str):
 
 
 @app.delete("/admin/roster-entries/{roster_entry_id}")
-async def remove_roster_entry(roster_entry_id: int):
+async def remove_roster_entry(request: Request, roster_entry_id: int):
     """Remove a player from a team roster (soft delete via removed_at timestamp)."""
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
+    # Super admin must specify a client context
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Super admin must have active client selected")
+
     db = get_db()
     current_time = int(time.time())
 
-    # Check if entry exists
-    entry = db.execute(
-        "SELECT id, registration_id, player_id FROM roster_entries WHERE id = ?",
-        (roster_entry_id,)
-    ).fetchone()
+    # Check if entry exists and belongs to client
+    entry = db.execute("""
+        SELECT re.id, re.registration_id, re.player_id, re.client_id
+        FROM roster_entries re
+        WHERE re.id = ?
+    """, (roster_entry_id,)).fetchone()
 
     if not entry:
         db.close()
         raise HTTPException(status_code=404, detail=f"Roster entry {roster_entry_id} not found")
+
+    if entry["client_id"] != client_id:
+        db.close()
+        raise HTTPException(status_code=403, detail="Cannot remove roster entry from different client")
 
     # Soft delete by setting removed_at
     db.execute(
@@ -3779,20 +5282,32 @@ async def remove_roster_entry(roster_entry_id: int):
 
 
 @app.delete("/admin/registrations/{registration_id}")
-async def remove_team_registration(registration_id: str):
+async def remove_team_registration(request: Request, registration_id: str):
     """Remove a team registration from a league/season/division (soft delete via withdrawn_at)."""
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
+    # Super admin must specify a client context
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Super admin must have active client selected")
+
     db = get_db()
     current_time = int(time.time())
 
-    # Check if registration exists
-    reg = db.execute(
-        "SELECT registration_id, team_name, league_id, season_id, division_id FROM team_registrations WHERE registration_id = ?",
-        (registration_id,)
-    ).fetchone()
+    # Check if registration exists and belongs to client
+    reg = db.execute("""
+        SELECT registration_id, team_name, league_id, season_id, division_id, client_id
+        FROM team_registrations WHERE registration_id = ?
+    """, (registration_id,)).fetchone()
 
     if not reg:
         db.close()
         raise HTTPException(status_code=404, detail=f"Registration {registration_id} not found")
+
+    if reg["client_id"] != client_id:
+        db.close()
+        raise HTTPException(status_code=403, detail="Cannot remove registration from different client")
 
     team_name = reg["team_name"]
     league_id = reg["league_id"]
@@ -3822,17 +5337,30 @@ async def remove_team_registration(registration_id: str):
 # ---------- New HTML Admin Pages ----------
 
 @app.get("/admin/rinks-admin")
-async def list_rinks_admin(format: Optional[str] = Query(None)):
+async def list_rinks_admin(request: Request, format: Optional[str] = Query(None)):
     """List all venues with hierarchical tree view (Venues → Sheets → Devices)."""
     from fastapi.responses import HTMLResponse
 
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
     db = get_db()
 
-    # Fetch all rinks (venues)
-    venues = db.execute("""
-        SELECT rink_id, name, address, city, province_state, postal_code, country, phone, website, created_at
-        FROM rinks ORDER BY name
-    """).fetchall()
+    # Fetch all rinks (venues) filtered by client
+    if client_id:
+        venues = db.execute("""
+            SELECT rink_id, name, address, city, province_state, postal_code, country, phone, website, created_at
+            FROM rinks
+            WHERE client_id = ?
+            ORDER BY name
+        """, (client_id,)).fetchall()
+    else:
+        # Super admin viewing all clients
+        venues = db.execute("""
+            SELECT rink_id, name, address, city, province_state, postal_code, country, phone, website, created_at
+            FROM rinks ORDER BY name
+        """).fetchall()
 
     # Build nested data structure
     venue_data = []
@@ -3866,13 +5394,28 @@ async def list_rinks_admin(format: Optional[str] = Query(None)):
 
         venue_data.append(venue_dict)
 
-    # Fetch unassigned devices
-    unassigned_devices = db.execute("""
-        SELECT device_id, device_name, last_seen_at
-        FROM devices
-        WHERE is_assigned = 0 OR is_assigned IS NULL OR rink_id IS NULL
-        ORDER BY last_seen_at DESC
-    """).fetchall()
+    # Fetch unassigned devices for this client (only recent ones)
+    current_time = int(time.time())
+    seven_days_ago = current_time - (7 * 24 * 60 * 60)
+
+    if client_id:
+        unassigned_devices = db.execute("""
+            SELECT device_id, device_name, last_seen_at
+            FROM devices
+            WHERE client_id = ?
+              AND (is_assigned = 0 OR is_assigned IS NULL OR rink_id IS NULL)
+              AND last_seen_at > ?
+            ORDER BY last_seen_at DESC
+        """, (client_id, seven_days_ago)).fetchall()
+    else:
+        # Super admin sees all unassigned devices (only recent ones)
+        unassigned_devices = db.execute("""
+            SELECT device_id, device_name, last_seen_at
+            FROM devices
+            WHERE (is_assigned = 0 OR is_assigned IS NULL OR rink_id IS NULL)
+              AND last_seen_at > ?
+            ORDER BY last_seen_at DESC
+        """, (seven_days_ago,)).fetchall()
 
     db.close()
 
@@ -3913,7 +5456,7 @@ async def list_rinks_admin(format: Optional[str] = Query(None)):
                     <span class="toggle-icon">▶</span>
                     <span class="node-name">{venue["name"]}</span>
                     <span class="node-meta">({sheet_count} sheet{"s" if sheet_count != 1 else ""})</span>
-                    <button class="btn-add" onclick="event.stopPropagation(); openModal('sheet', '{venue["rink_id"]}')"+ Sheet</button>
+                    <button class="btn-add" onclick="event.stopPropagation(); openModal('sheet', '{venue["rink_id"]}')">+ Sheet</button>
                 </div>
                 <div class="node-children" style="display: none;">
             ''')
@@ -3931,8 +5474,9 @@ async def list_rinks_admin(format: Optional[str] = Query(None)):
 
                 if device:
                     # Show device with unassign button
+                    device_display = device["device_name"] if device["device_name"] else device["device_id"]
                     html_parts.append(f'''
-                        <span class="node-meta">{device["device_id"]} ({format_timestamp(device["last_seen_at"])})</span>
+                        <span class="node-meta">{device_display} ({format_timestamp(device["last_seen_at"])})</span>
                         <button class="btn-unassign" onclick="event.stopPropagation(); unassignDevice('{device["device_id"]}', '{venue["rink_id"]}', '{sheet["name"]}')">Unassign</button>
                     ''')
                 else:
@@ -3942,8 +5486,14 @@ async def list_rinks_admin(format: Optional[str] = Query(None)):
                             <option value="">Assign Device...</option>
                     ''')
                     for unassigned in unassigned_devices:
-                        html_parts.append(f'<option value="{unassigned["device_id"]}">{unassigned["device_id"]}</option>')
+                        device_label = unassigned["device_name"] if unassigned["device_name"] else unassigned["device_id"]
+                        html_parts.append(f'<option value="{unassigned["device_id"]}">{device_label}</option>')
                     html_parts.append('</select>')
+
+                # Delete button (rightmost)
+                html_parts.append(f'''
+                        <button class="btn-remove" onclick="event.stopPropagation(); deleteSheet('{sheet["sheet_id"]}', '{sheet["name"]}')" style="margin-left: 8px; font-size: 11px; padding: 3px 8px;">Delete</button>
+                ''')
 
                 html_parts.append('''
                     </div>
@@ -3963,14 +5513,47 @@ async def list_rinks_admin(format: Optional[str] = Query(None)):
     unassigned_html = ""
     if unassigned_devices:
         for d in unassigned_devices:
+            device_display = d["device_name"] if d["device_name"] else d["device_id"]
+            device_subtitle = d["device_id"] if d["device_name"] else format_timestamp(d["last_seen_at"])
             unassigned_html += f'''
             <div class="unassigned-device">
-                <span class="device-id">{d["device_id"]}</span>
-                <span class="device-meta">{format_timestamp(d["last_seen_at"])}</span>
+                <span class="device-id">{device_display}</span>
+                <span class="device-meta">{device_subtitle}</span>
             </div>
             '''
     else:
-        unassigned_html = '<div class="empty-state-inline">All devices are assigned</div>'
+        unassigned_html = '<div class="empty-state-inline">No unassigned devices (last 7 days)</div>'
+
+    # Generate claim form HTML (only show if client is selected)
+    if client_id:
+        claim_form_html = '''
+        <div class="content" style="margin-bottom: 20px;">
+            <h2>Claim New Device</h2>
+            <p class="hint">Enter the claim code shown on your device screen</p>
+            <form method="POST" action="/admin/devices/claim" style="padding: 12px; background: #f3e5f5; border-radius: 4px; border: 1px solid #6a1b9a;">
+                <div style="display: flex; gap: 10px; align-items: flex-end;">
+                    <div class="form-group" style="margin: 0; flex: 0 0 200px;">
+                        <label style="font-weight: 600; color: #6a1b9a;">Claim Code <span class="required">*</span></label>
+                        <input type="text" name="claim_code" required placeholder="ABC-123" maxlength="7" style="text-transform: uppercase; font-family: monospace; font-size: 14px; padding: 8px 12px;">
+                    </div>
+                    <div class="form-group" style="margin: 0; flex: 0 0 250px;">
+                        <label style="font-weight: 600; color: #6a1b9a;">Device Name (optional)</label>
+                        <input type="text" name="device_name" placeholder="e.g., Sheet A Scoreboard" style="font-size: 14px; padding: 8px 12px;">
+                    </div>
+                    <button type="submit" class="btn-save">Claim Device</button>
+                    <span style="color: #666; font-size: 12px;">After claiming, assign the device to a sheet below</span>
+                </div>
+            </form>
+        </div>
+        '''
+    else:
+        claim_form_html = '''
+        <div class="content" style="margin-bottom: 20px; padding: 16px; background: #fff3e0; border: 1px solid #ff9800; border-radius: 4px;">
+            <p style="margin: 0; color: #e65100;">
+                <strong>Note:</strong> Please select a client from the dropdown above to claim devices.
+            </p>
+        </div>
+        '''
 
     html = f'''
     <!DOCTYPE html>
@@ -4174,14 +5757,25 @@ async def list_rinks_admin(format: Optional[str] = Query(None)):
                         if (response.ok) {{
                             showMessage('Created successfully', 'success');
                             closeModal();
-                            saveScrollPosition();
+
+                            // Ensure the parent venue stays expanded after reload
+                            if (currentModalType === 'sheet' && currentContext.rink_id) {{
+                                let expandedNodes = getExpandedNodes();
+                                const nodeKey = `venue:${{currentContext.rink_id}}`;
+                                if (!expandedNodes.includes(nodeKey)) {{
+                                    expandedNodes.push(nodeKey);
+                                    saveExpandedNodes(expandedNodes);
+                                }}
+                            }}
+
                             setTimeout(() => location.reload(), 1000);
                         }} else {{
                             const error = await response.json();
                             showMessage(error.detail || 'Failed to create', 'error');
                         }}
                     }} catch (error) {{
-                        showMessage('Network error', 'error');
+                        console.error('Network error:', error);
+                        showMessage('Network error: ' + error.message, 'error');
                     }}
                 }});
             }});
@@ -4240,6 +5834,26 @@ async def list_rinks_admin(format: Optional[str] = Query(None)):
                 }}
             }}
 
+            async function deleteSheet(sheetId, sheetName) {{
+                if (!confirm(`Delete sheet "${{sheetName}}"? This cannot be undone.`)) return;
+
+                try {{
+                    const response = await fetch(`/admin/rink-sheets/${{sheetId}}`, {{
+                        method: 'DELETE'
+                    }});
+
+                    if (response.ok) {{
+                        showMessage(`Sheet "${{sheetName}}" deleted`, 'success');
+                        setTimeout(() => location.reload(), 1000);
+                    }} else {{
+                        const error = await response.json();
+                        showMessage(error.detail || 'Failed to delete sheet', 'error');
+                    }}
+                }} catch (error) {{
+                    showMessage('Network error', 'error');
+                }}
+            }}
+
             // Close modal on outside click
             document.addEventListener('click', function(e) {{
                 const modal = document.getElementById('entityModal');
@@ -4250,15 +5864,19 @@ async def list_rinks_admin(format: Optional[str] = Query(None)):
         </script>
     </head>
     <body>
-        {admin_nav("venues")}
+        {admin_nav("venues", session)}
         <div class="container wide">
             <h1>Venues</h1>
 
             <div id="message" class="message"></div>
 
+            <!-- Claim Device Section -->
+            {claim_form_html}
+
             <!-- Unassigned Devices Section -->
             <div class="content">
                 <h2>Unassigned Devices</h2>
+                <p class="hint">Devices claimed but not yet assigned to a sheet (last 7 days)</p>
                 <div class="unassigned-devices-list">
                     {unassigned_html}
                 </div>
@@ -4317,11 +5935,6 @@ class SeedRequest(PydanticBaseModel):
 class ClearRequest(PydanticBaseModel):
     """Request to clear database."""
     confirm: bool = False
-
-
-class SeedGamesRequest(PydanticBaseModel):
-    """Request to seed games using existing team data."""
-    game_count: int = 8
 
 
 @app.post("/admin/seed")
@@ -4406,61 +6019,6 @@ async def clear_seed_data(request: ClearRequest):
     return {
         "status": "ok",
         "cleared": counts
-    }
-
-
-@app.post("/admin/seed/games")
-async def seed_games_only(request: SeedGamesRequest):
-    """Seed games using existing team registrations.
-
-    This endpoint requires that league data (teams, registrations) already exists.
-    """
-    from score.seed import seed_games
-
-    db = get_db()
-
-    # Check if we have team registrations
-    regs = db.execute("SELECT COUNT(*) as count FROM team_registrations").fetchone()
-    if not regs or regs["count"] < 2:
-        db.close()
-        raise HTTPException(
-            status_code=400,
-            detail="Need at least 2 team registrations. Seed league data first."
-        )
-
-    try:
-        count = seed_games(db, request.game_count)
-        db.commit()
-    finally:
-        db.close()
-
-    logger.info(f"Seeded {count} games")
-
-    return {
-        "status": "ok",
-        "seeded": {"games": count}
-    }
-
-
-@app.delete("/admin/games/all")
-async def delete_all_games():
-    """Delete all games from the database."""
-    db = get_db()
-
-    try:
-        # Also delete received events for these games
-        db.execute("DELETE FROM received_events")
-        result = db.execute("DELETE FROM games")
-        count = result.rowcount
-        db.commit()
-    finally:
-        db.close()
-
-    logger.info(f"Deleted all {count} games")
-
-    return {
-        "status": "ok",
-        "message": f"Deleted {count} games"
     }
 
 
@@ -4988,7 +6546,7 @@ def get_final_games(db, league_id=None, season_id=None, division_id=None):
         return game_ids if game_ids else None  # None means "no filter"
 
 
-def query_top_scorers(db, league_id=None, season_id=None, division_id=None, final_only=True, limit=20):
+def query_top_scorers(db, league_id=None, season_id=None, division_id=None, final_only=True, limit=20, client_id=None):
     """Query top goal scorers from events, properly filtered by team context."""
 
     # Build WHERE clause for team registration filters
@@ -4999,6 +6557,8 @@ def query_top_scorers(db, league_id=None, season_id=None, division_id=None, fina
         filter_conditions.append(f"tr.season_id = '{season_id}'")
     if division_id:
         filter_conditions.append(f"tr.division_id = '{division_id}'")
+    if client_id:
+        filter_conditions.append(f"g.client_id = '{client_id}'")
 
     team_filter = f"AND ({' AND '.join(filter_conditions)})" if filter_conditions else ""
 
@@ -5029,7 +6589,7 @@ def query_top_scorers(db, league_id=None, season_id=None, division_id=None, fina
     return [dict(r) for r in rows]
 
 
-def query_top_assists(db, league_id=None, season_id=None, division_id=None, final_only=True, limit=20):
+def query_top_assists(db, league_id=None, season_id=None, division_id=None, final_only=True, limit=20, client_id=None):
     """Query top assist leaders from events, properly filtered by team context."""
 
     # Build WHERE clause for team registration filters
@@ -5040,6 +6600,8 @@ def query_top_assists(db, league_id=None, season_id=None, division_id=None, fina
         filter_conditions.append(f"tr.season_id = '{season_id}'")
     if division_id:
         filter_conditions.append(f"tr.division_id = '{division_id}'")
+    if client_id:
+        filter_conditions.append(f"g.client_id = '{client_id}'")
 
     team_filter = f"AND ({' AND '.join(filter_conditions)})" if filter_conditions else ""
 
@@ -5093,7 +6655,7 @@ def query_top_assists(db, league_id=None, season_id=None, division_id=None, fina
     return [dict(r) for r in rows]
 
 
-def query_top_points(db, league_id=None, season_id=None, division_id=None, final_only=True, limit=20):
+def query_top_points(db, league_id=None, season_id=None, division_id=None, final_only=True, limit=20, client_id=None):
     """Query top point leaders (goals + assists) from events, properly filtered by team context."""
 
     # Build WHERE clause for team registration filters
@@ -5104,6 +6666,8 @@ def query_top_points(db, league_id=None, season_id=None, division_id=None, final
         filter_conditions.append(f"tr.season_id = '{season_id}'")
     if division_id:
         filter_conditions.append(f"tr.division_id = '{division_id}'")
+    if client_id:
+        filter_conditions.append(f"g.client_id = '{client_id}'")
 
     team_filter = f"AND ({' AND '.join(filter_conditions)})" if filter_conditions else ""
 
@@ -5187,6 +6751,7 @@ def query_top_points(db, league_id=None, season_id=None, division_id=None, final
 # ---------- Admin: Stats Page ----------
 @app.get("/admin/stats")
 async def stats_page(
+    request: Request,
     league_id: Optional[str] = Query(None),
     season_id: Optional[str] = Query(None),
     division_id: Optional[str] = Query(None),
@@ -5196,12 +6761,16 @@ async def stats_page(
     """Statistics leaderboards page."""
     from fastapi.responses import HTMLResponse
 
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
     db = get_db()
 
-    # Query player stats
-    scorers = query_top_scorers(db, league_id, season_id, division_id, final_only)
-    assists_leaders = query_top_assists(db, league_id, season_id, division_id, final_only)
-    points_leaders = query_top_points(db, league_id, season_id, division_id, final_only)
+    # Query player stats (with client filtering)
+    scorers = query_top_scorers(db, league_id, season_id, division_id, final_only, client_id=client_id)
+    assists_leaders = query_top_assists(db, league_id, season_id, division_id, final_only, client_id=client_id)
+    points_leaders = query_top_points(db, league_id, season_id, division_id, final_only, client_id=client_id)
     penalty_leaders = []  # TODO: implement
     standings = []  # TODO: implement
 
@@ -5225,7 +6794,7 @@ async def stats_page(
     <link rel="stylesheet" href="/static/admin.css">
 </head>
 <body>
-    {admin_nav("stats")}
+    {admin_nav("stats", session)}
     <div class="container wide">
         <h1>League Statistics</h1>
 

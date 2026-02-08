@@ -557,6 +557,24 @@ select option {
 .scoreboard.hidden {
     display: none;
 }
+
+.claim-code-value {
+    font-family: 'SF Mono', 'Menlo', 'Roboto Mono', 'Fira Code', ui-monospace, monospace;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    color: #667eea;
+    font-size: 0.95em;
+    user-select: text;
+    cursor: pointer;
+    padding: 4px 8px;
+    background: rgba(102, 126, 234, 0.1);
+    border-radius: 4px;
+    transition: background 0.2s ease;
+}
+
+.claim-code-value:hover {
+    background: rgba(102, 126, 234, 0.2);
+}
 </style>
 </head>
 <body>
@@ -565,6 +583,10 @@ select option {
     <div class="status-item">
         <div class="status-dot" id="assignmentStatus"></div>
         <span>Device Assignment</span>
+    </div>
+    <div class="status-item" id="claimCodeItem" style="display: none;">
+        <span style="opacity: 0.7;">Claim Code:</span>
+        <span class="claim-code-value" id="claimCodeDisplay" onclick="copyClaimCode()" title="Click to copy">ABC-123</span>
     </div>
     <div class="status-item">
         <div class="status-dot" id="scheduleStatus"></div>
@@ -800,6 +822,21 @@ ws.onmessage = (event) => {
     // Update schedule status indicator
     const scheduleStatus = document.getElementById("scheduleStatus");
     scheduleStatus.className = `status-dot ${data.schedule_status}`;
+
+    // Update claim code display
+    const claimCodeItem = document.getElementById("claimCodeItem");
+    const claimCodeDisplay = document.getElementById("claimCodeDisplay");
+
+    console.log('Device claimed:', data.device_claimed, 'Claim code:', data.claim_code);
+
+    // Show claim code if device is not claimed
+    // (Manual mode still works without claiming - this just shows the code)
+    if (!data.device_claimed && data.claim_code) {
+        claimCodeDisplay.textContent = data.claim_code;
+        claimCodeItem.style.display = 'flex';
+    } else {
+        claimCodeItem.style.display = 'none';
+    }
 
     // If device just got assigned, reload games
     if (data.device_assigned && !wasAssigned) {
@@ -1091,6 +1128,33 @@ document.addEventListener('keydown', (e) => {
         }
     }
 });
+
+// Copy claim code to clipboard
+function copyClaimCode() {
+    const claimCodeElement = document.getElementById('claimCodeDisplay');
+    const claimCode = claimCodeElement.textContent;
+
+    // Use modern clipboard API
+    navigator.clipboard.writeText(claimCode).then(() => {
+        // Visual feedback
+        const originalBg = claimCodeElement.style.background;
+        claimCodeElement.style.background = 'rgba(76, 175, 80, 0.3)';
+        claimCodeElement.textContent = 'Copied!';
+
+        setTimeout(() => {
+            claimCodeElement.style.background = '';
+            claimCodeElement.textContent = claimCode;
+        }, 1000);
+    }).catch(err => {
+        console.error('Failed to copy:', err);
+        // Fallback: select the text so user can copy manually
+        const range = document.createRange();
+        range.selectNodeContents(claimCodeElement);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+    });
+}
 </script>
 
 </body>

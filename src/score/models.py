@@ -100,7 +100,8 @@ class HeartbeatResponse(BaseModel):
 class DeviceConfigResponse(BaseModel):
     """Device configuration from cloud."""
     device_id: str
-    is_assigned: bool
+    is_claimed: bool  # Whether device has been claimed by a client
+    is_assigned: bool  # Whether device has been assigned to a rink/sheet
     rink_id: Optional[str] = None
     sheet_name: Optional[str] = None
     device_name: Optional[str] = None

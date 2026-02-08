@@ -19,55 +19,107 @@ SCHEMA_VERSION = "2.0.0"
 
 TABLES = """
 -- =============================================================================
--- PERMANENT ENTITIES (no dependencies)
+-- MULTI-TENANCY & AUTHENTICATION (no dependencies)
+-- =============================================================================
+
+-- Clients (tenants) - each client has isolated data
+CREATE TABLE IF NOT EXISTS clients (
+    client_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    slug TEXT UNIQUE NOT NULL,       -- for URLs: "la-kings-youth"
+    contact_email TEXT,
+    is_active INTEGER DEFAULT 1,
+    created_at INTEGER NOT NULL
+);
+
+-- Users with authentication
+CREATE TABLE IF NOT EXISTS users (
+    user_id TEXT PRIMARY KEY,
+    client_id TEXT,                  -- NULL = super admin
+    email TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT DEFAULT 'admin',       -- 'super_admin', 'admin', 'viewer'
+    is_active INTEGER DEFAULT 1,
+    last_login_at INTEGER,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (client_id) REFERENCES clients(client_id)
+);
+
+-- Sessions for authentication
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    active_client_id TEXT,           -- super admin's current view context
+    expires_at INTEGER NOT NULL,
+    last_activity_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(user_id),
+    FOREIGN KEY (active_client_id) REFERENCES clients(client_id)
+);
+
+-- =============================================================================
+-- PERMANENT ENTITIES (client-scoped)
 -- =============================================================================
 
 -- Organizations that run competitions
 CREATE TABLE IF NOT EXISTS leagues (
-    league_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    league_id TEXT NOT NULL,
     name TEXT NOT NULL,
     league_type TEXT,                -- "professional", "amateur", "rec"
     description TEXT,
     website TEXT,
     logo_url TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (client_id, league_id),
+    FOREIGN KEY (client_id) REFERENCES clients(client_id)
 );
 
--- Time periods (independent of leagues)
+-- Time periods (client-scoped)
 CREATE TABLE IF NOT EXISTS seasons (
-    season_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    season_id TEXT NOT NULL,
     name TEXT NOT NULL,              -- "2025-2026", "Winter 2026"
     start_date TEXT NOT NULL,        -- ISO 8601
     end_date TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (client_id, season_id),
+    FOREIGN KEY (client_id) REFERENCES clients(client_id)
 );
 
--- Team groupings (reusable across seasons)
+-- Team groupings (client-scoped, reusable across seasons)
 CREATE TABLE IF NOT EXISTS divisions (
-    division_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    division_id TEXT NOT NULL,
     name TEXT NOT NULL,
     division_type TEXT,              -- "conference", "division", "bracket", "pool"
     parent_division_id TEXT,         -- For conference→division nesting
     description TEXT,
     created_at INTEGER NOT NULL,
-    FOREIGN KEY (parent_division_id) REFERENCES divisions(division_id)
+    PRIMARY KEY (client_id, division_id),
+    FOREIGN KEY (client_id) REFERENCES clients(client_id),
+    FOREIGN KEY (client_id, parent_division_id) REFERENCES divisions(client_id, division_id)
 );
 
--- Time-bound events (alternative to league+season)
+-- Time-bound events (client-scoped, alternative to league+season)
 CREATE TABLE IF NOT EXISTS tournaments (
-    tournament_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    tournament_id TEXT NOT NULL,
     name TEXT NOT NULL,
     start_date TEXT NOT NULL,
     end_date TEXT NOT NULL,
     location TEXT,
     tournament_type TEXT,            -- "championship", "invitational", "playoff"
     description TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (client_id, tournament_id),
+    FOREIGN KEY (client_id) REFERENCES clients(client_id)
 );
 
--- Individual athletes
+-- Individual athletes (client-scoped)
 CREATE TABLE IF NOT EXISTS players (
-    player_id INTEGER PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    player_id INTEGER NOT NULL,
     first_name TEXT NOT NULL,
     last_name TEXT NOT NULL,
     full_name TEXT NOT NULL,
@@ -79,12 +131,15 @@ CREATE TABLE IF NOT EXISTS players (
     shoots_catches TEXT,             -- "L", "R"
     public_email TEXT,               -- Optional, for spare contact
     public_phone TEXT,               -- Optional, for spare contact
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (client_id, player_id),
+    FOREIGN KEY (client_id) REFERENCES clients(client_id)
 );
 
--- Physical venues
+-- Physical venues (client-scoped)
 CREATE TABLE IF NOT EXISTS rinks (
-    rink_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    rink_id TEXT NOT NULL,
     name TEXT NOT NULL,
     address TEXT,
     city TEXT,
@@ -95,41 +150,49 @@ CREATE TABLE IF NOT EXISTS rinks (
     website TEXT,
     parking_info TEXT,
     notes TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (client_id, rink_id),
+    FOREIGN KEY (client_id) REFERENCES clients(client_id)
 );
 
--- Referees and linesmen
+-- Referees and linesmen (client-scoped)
 CREATE TABLE IF NOT EXISTS officials (
-    official_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    official_id TEXT NOT NULL,
     first_name TEXT NOT NULL,
     last_name TEXT NOT NULL,
     full_name TEXT NOT NULL,
     certification_level TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (client_id, official_id),
+    FOREIGN KEY (client_id) REFERENCES clients(client_id)
 );
 
 -- =============================================================================
 -- DEPENDENT PERMANENT ENTITIES
 -- =============================================================================
 
--- Ice surfaces within a rink
+-- Ice surfaces within a rink (inherits client via rink)
 CREATE TABLE IF NOT EXISTS rink_sheets (
-    sheet_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
     rink_id TEXT NOT NULL,
+    sheet_id TEXT NOT NULL,
     name TEXT NOT NULL,              -- "Sheet A", "Main Rink"
     surface_type TEXT,               -- "NHL", "Olympic"
     capacity INTEGER,
     created_at INTEGER NOT NULL,
-    FOREIGN KEY (rink_id) REFERENCES rinks(rink_id)
+    PRIMARY KEY (client_id, rink_id, sheet_id),
+    FOREIGN KEY (client_id, rink_id) REFERENCES rinks(client_id, rink_id)
 );
 
 -- =============================================================================
 -- RULE CONFIGURATION
 -- =============================================================================
 
--- Rule sets define league-specific configurations
+-- Rule sets define league-specific configurations (NULL client_id = system default)
 CREATE TABLE IF NOT EXISTS rule_sets (
-    rule_set_id TEXT PRIMARY KEY,
+    client_id TEXT,                  -- NULL = system-wide default rule set
+    rule_set_id TEXT NOT NULL,
     name TEXT NOT NULL,              -- "NHL Rules", "Youth U12", "Adult Rec"
     description TEXT,
 
@@ -156,12 +219,15 @@ CREATE TABLE IF NOT EXISTS rule_sets (
     min_players_to_start INTEGER,
     max_players_dressed INTEGER,
 
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (client_id, rule_set_id),
+    FOREIGN KEY (client_id) REFERENCES clients(client_id)
 );
 
 -- Infractions defined per rule set
 CREATE TABLE IF NOT EXISTS rule_set_infractions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id TEXT,
     rule_set_id TEXT NOT NULL,
 
     code TEXT NOT NULL,              -- "TRIP", "HOOK", "SLASH", "ROUGH"
@@ -183,8 +249,8 @@ CREATE TABLE IF NOT EXISTS rule_set_infractions (
 
     display_order INTEGER,
 
-    UNIQUE(rule_set_id, code),
-    FOREIGN KEY (rule_set_id) REFERENCES rule_sets(rule_set_id)
+    UNIQUE(client_id, rule_set_id, code),
+    FOREIGN KEY (client_id, rule_set_id) REFERENCES rule_sets(client_id, rule_set_id)
 );
 
 -- =============================================================================
@@ -193,43 +259,46 @@ CREATE TABLE IF NOT EXISTS rule_set_infractions (
 
 -- League operates during a season
 CREATE TABLE IF NOT EXISTS league_seasons (
+    client_id TEXT NOT NULL,
     league_id TEXT NOT NULL,
     season_id TEXT NOT NULL,
-    rule_set_id TEXT,                -- Rules for this league+season
+    rule_set_id TEXT,                -- Rules for this league+season (client_id nullable for system defaults)
     is_active INTEGER DEFAULT 1,
     created_at INTEGER NOT NULL,
-    PRIMARY KEY (league_id, season_id),
-    FOREIGN KEY (league_id) REFERENCES leagues(league_id),
-    FOREIGN KEY (season_id) REFERENCES seasons(season_id),
-    FOREIGN KEY (rule_set_id) REFERENCES rule_sets(rule_set_id)
+    PRIMARY KEY (client_id, league_id, season_id),
+    FOREIGN KEY (client_id, league_id) REFERENCES leagues(client_id, league_id),
+    FOREIGN KEY (client_id, season_id) REFERENCES seasons(client_id, season_id)
 );
 
 -- Division active in a league+season
 CREATE TABLE IF NOT EXISTS league_season_divisions (
+    client_id TEXT NOT NULL,
     league_id TEXT NOT NULL,
     season_id TEXT NOT NULL,
     division_id TEXT NOT NULL,
     display_order INTEGER,
     created_at INTEGER NOT NULL,
-    PRIMARY KEY (league_id, season_id, division_id),
-    FOREIGN KEY (league_id, season_id) REFERENCES league_seasons(league_id, season_id),
-    FOREIGN KEY (division_id) REFERENCES divisions(division_id)
+    PRIMARY KEY (client_id, league_id, season_id, division_id),
+    FOREIGN KEY (client_id, league_id, season_id) REFERENCES league_seasons(client_id, league_id, season_id),
+    FOREIGN KEY (client_id, division_id) REFERENCES divisions(client_id, division_id)
 );
 
 -- Division active in a tournament
 CREATE TABLE IF NOT EXISTS tournament_divisions (
+    client_id TEXT NOT NULL,
     tournament_id TEXT NOT NULL,
     division_id TEXT NOT NULL,
     display_order INTEGER,
     created_at INTEGER NOT NULL,
-    PRIMARY KEY (tournament_id, division_id),
-    FOREIGN KEY (tournament_id) REFERENCES tournaments(tournament_id),
-    FOREIGN KEY (division_id) REFERENCES divisions(division_id)
+    PRIMARY KEY (client_id, tournament_id, division_id),
+    FOREIGN KEY (client_id, tournament_id) REFERENCES tournaments(client_id, tournament_id),
+    FOREIGN KEY (client_id, division_id) REFERENCES divisions(client_id, division_id)
 );
 
 -- Team competing in a context = THE ROSTER
 CREATE TABLE IF NOT EXISTS team_registrations (
-    registration_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    registration_id TEXT NOT NULL,
 
     -- Team metadata (inline - no separate teams table)
     team_name TEXT NOT NULL,
@@ -254,17 +323,21 @@ CREATE TABLE IF NOT EXISTS team_registrations (
     registered_at INTEGER NOT NULL,
     withdrawn_at INTEGER,            -- NULL if still active
 
+    PRIMARY KEY (client_id, registration_id),
+
     CHECK (
         (league_id IS NOT NULL AND season_id IS NOT NULL AND tournament_id IS NULL)
         OR (league_id IS NULL AND season_id IS NULL AND tournament_id IS NOT NULL)
     ),
 
-    FOREIGN KEY (division_id) REFERENCES divisions(division_id)
+    FOREIGN KEY (client_id, division_id) REFERENCES divisions(client_id, division_id),
+    FOREIGN KEY (client_id) REFERENCES clients(client_id)
 );
 
 -- Player on a team's roster for a period
 CREATE TABLE IF NOT EXISTS roster_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id TEXT NOT NULL,
     registration_id TEXT NOT NULL,
     player_id INTEGER NOT NULL,
 
@@ -277,13 +350,14 @@ CREATE TABLE IF NOT EXISTS roster_entries (
     added_at INTEGER NOT NULL,
     removed_at INTEGER,              -- NULL if still on roster
 
-    FOREIGN KEY (registration_id) REFERENCES team_registrations(registration_id),
-    FOREIGN KEY (player_id) REFERENCES players(player_id)
+    FOREIGN KEY (client_id, registration_id) REFERENCES team_registrations(client_id, registration_id),
+    FOREIGN KEY (client_id, player_id) REFERENCES players(client_id, player_id)
 );
 
 -- Players available to sub
 CREATE TABLE IF NOT EXISTS spare_players (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id TEXT NOT NULL,
     player_id INTEGER NOT NULL,
     league_id TEXT NOT NULL,
     season_id TEXT NOT NULL,
@@ -295,9 +369,9 @@ CREATE TABLE IF NOT EXISTS spare_players (
     is_active INTEGER DEFAULT 1,
     created_at INTEGER NOT NULL,
 
-    FOREIGN KEY (player_id) REFERENCES players(player_id),
-    FOREIGN KEY (league_id) REFERENCES leagues(league_id),
-    FOREIGN KEY (season_id) REFERENCES seasons(season_id)
+    FOREIGN KEY (client_id, player_id) REFERENCES players(client_id, player_id),
+    FOREIGN KEY (client_id, league_id) REFERENCES leagues(client_id, league_id),
+    FOREIGN KEY (client_id, season_id) REFERENCES seasons(client_id, season_id)
 );
 
 -- =============================================================================
@@ -305,7 +379,8 @@ CREATE TABLE IF NOT EXISTS spare_players (
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS playoff_brackets (
-    bracket_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    bracket_id TEXT NOT NULL,
     league_id TEXT NOT NULL,
     season_id TEXT NOT NULL,
     division_id TEXT,                -- NULL if league-wide
@@ -320,12 +395,14 @@ CREATE TABLE IF NOT EXISTS playoff_brackets (
 
     created_at INTEGER NOT NULL,
 
-    FOREIGN KEY (league_id) REFERENCES leagues(league_id),
-    FOREIGN KEY (season_id) REFERENCES seasons(season_id)
+    PRIMARY KEY (client_id, bracket_id),
+    FOREIGN KEY (client_id, league_id) REFERENCES leagues(client_id, league_id),
+    FOREIGN KEY (client_id, season_id) REFERENCES seasons(client_id, season_id)
 );
 
 CREATE TABLE IF NOT EXISTS playoff_series (
-    series_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    series_id TEXT NOT NULL,
     bracket_id TEXT NOT NULL,
 
     round INTEGER NOT NULL,          -- 1 = first round, 2 = semi, etc.
@@ -341,7 +418,8 @@ CREATE TABLE IF NOT EXISTS playoff_series (
     started_at INTEGER,
     completed_at INTEGER,
 
-    FOREIGN KEY (bracket_id) REFERENCES playoff_brackets(bracket_id)
+    PRIMARY KEY (client_id, series_id),
+    FOREIGN KEY (client_id, bracket_id) REFERENCES playoff_brackets(client_id, bracket_id)
 );
 
 -- =============================================================================
@@ -349,7 +427,8 @@ CREATE TABLE IF NOT EXISTS playoff_series (
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS games (
-    game_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    game_id TEXT NOT NULL,
 
     -- Venue
     rink_id TEXT NOT NULL,
@@ -381,24 +460,27 @@ CREATE TABLE IF NOT EXISTS games (
 
     created_at INTEGER NOT NULL,
 
-    -- Prevent duplicate games at same sheet/time
-    UNIQUE (sheet_id, start_time),
+    PRIMARY KEY (client_id, game_id),
 
-    FOREIGN KEY (rink_id) REFERENCES rinks(rink_id),
-    FOREIGN KEY (sheet_id) REFERENCES rink_sheets(sheet_id),
-    FOREIGN KEY (home_registration_id) REFERENCES team_registrations(registration_id),
-    FOREIGN KEY (away_registration_id) REFERENCES team_registrations(registration_id),
-    FOREIGN KEY (series_id) REFERENCES playoff_series(series_id)
+    -- Prevent duplicate games at same sheet/time
+    UNIQUE (client_id, sheet_id, start_time),
+
+    FOREIGN KEY (client_id, rink_id) REFERENCES rinks(client_id, rink_id),
+    FOREIGN KEY (client_id, rink_id, sheet_id) REFERENCES rink_sheets(client_id, rink_id, sheet_id),
+    FOREIGN KEY (client_id, home_registration_id) REFERENCES team_registrations(client_id, registration_id),
+    FOREIGN KEY (client_id, away_registration_id) REFERENCES team_registrations(client_id, registration_id),
+    FOREIGN KEY (client_id, series_id) REFERENCES playoff_series(client_id, series_id)
 );
 
 -- Officials assigned to games
 CREATE TABLE IF NOT EXISTS game_officials (
+    client_id TEXT NOT NULL,
     game_id TEXT NOT NULL,
     official_id TEXT NOT NULL,
     role TEXT NOT NULL,              -- "referee", "linesman", "scorekeeper"
-    PRIMARY KEY (game_id, official_id),
-    FOREIGN KEY (game_id) REFERENCES games(game_id),
-    FOREIGN KEY (official_id) REFERENCES officials(official_id)
+    PRIMARY KEY (client_id, game_id, official_id),
+    FOREIGN KEY (client_id, game_id) REFERENCES games(client_id, game_id),
+    FOREIGN KEY (client_id, official_id) REFERENCES officials(client_id, official_id)
 );
 
 -- =============================================================================
@@ -407,6 +489,7 @@ CREATE TABLE IF NOT EXISTS game_officials (
 
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id TEXT NOT NULL,
     game_id TEXT NOT NULL,
     event_type TEXT NOT NULL,
 
@@ -426,8 +509,8 @@ CREATE TABLE IF NOT EXISTS events (
 
     created_at INTEGER NOT NULL,
 
-    FOREIGN KEY (game_id) REFERENCES games(game_id),
-    FOREIGN KEY (player_id) REFERENCES players(player_id)
+    FOREIGN KEY (client_id, game_id) REFERENCES games(client_id, game_id),
+    FOREIGN KEY (client_id, player_id) REFERENCES players(client_id, player_id)
 );
 
 -- =============================================================================
@@ -435,31 +518,36 @@ CREATE TABLE IF NOT EXISTS events (
 -- =============================================================================
 
 CREATE TABLE IF NOT EXISTS devices (
+    client_id TEXT,                  -- NULL until claimed by a client
     device_id TEXT PRIMARY KEY,
     rink_id TEXT,
     sheet_name TEXT,
     device_name TEXT,
     is_assigned INTEGER DEFAULT 0,
+    claim_code TEXT,                 -- 6-char code displayed on device for claiming
+    claim_code_expires_at INTEGER,   -- Expiry timestamp for claim code
     first_seen_at INTEGER NOT NULL,
     last_seen_at INTEGER NOT NULL,
     notes TEXT,
-    FOREIGN KEY (rink_id) REFERENCES rinks(rink_id)
+    FOREIGN KEY (client_id, rink_id) REFERENCES rinks(client_id, rink_id)
 );
 
 -- Legacy team_rosters table for backwards compatibility with NHL loader
 CREATE TABLE IF NOT EXISTS team_rosters (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id TEXT NOT NULL,
     player_id INTEGER NOT NULL,
     team_abbrev TEXT NOT NULL,
     roster_status TEXT NOT NULL,
     added_at INTEGER NOT NULL,
     removed_at INTEGER,
-    UNIQUE(player_id, team_abbrev, added_at),
-    FOREIGN KEY (player_id) REFERENCES players(player_id)
+    UNIQUE(client_id, player_id, team_abbrev, added_at),
+    FOREIGN KEY (client_id, player_id) REFERENCES players(client_id, player_id)
 );
 
 CREATE TABLE IF NOT EXISTS received_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id TEXT NOT NULL,
     game_id TEXT NOT NULL,
     device_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
@@ -469,7 +557,7 @@ CREATE TABLE IF NOT EXISTS received_events (
     ts_local TEXT NOT NULL,
     payload TEXT NOT NULL,
     received_at INTEGER NOT NULL,
-    FOREIGN KEY (game_id) REFERENCES games(game_id)
+    FOREIGN KEY (client_id, game_id) REFERENCES games(client_id, game_id)
 );
 
 CREATE TABLE IF NOT EXISTS heartbeats (
@@ -486,10 +574,12 @@ CREATE TABLE IF NOT EXISTS heartbeats (
 );
 
 CREATE TABLE IF NOT EXISTS schedule_versions (
-    rink_id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    rink_id TEXT NOT NULL,
     version TEXT NOT NULL,
     updated_at INTEGER NOT NULL,
-    FOREIGN KEY (rink_id) REFERENCES rinks(rink_id)
+    PRIMARY KEY (client_id, rink_id),
+    FOREIGN KEY (client_id, rink_id) REFERENCES rinks(client_id, rink_id)
 );
 """
 
@@ -498,49 +588,77 @@ CREATE TABLE IF NOT EXISTS schedule_versions (
 # =============================================================================
 
 INDEXES = """
+-- Client-based indexes for all root entities
+CREATE INDEX IF NOT EXISTS idx_leagues_client ON leagues(client_id);
+CREATE INDEX IF NOT EXISTS idx_seasons_client ON seasons(client_id);
+CREATE INDEX IF NOT EXISTS idx_divisions_client ON divisions(client_id);
+CREATE INDEX IF NOT EXISTS idx_tournaments_client ON tournaments(client_id);
+CREATE INDEX IF NOT EXISTS idx_players_client ON players(client_id);
+CREATE INDEX IF NOT EXISTS idx_rinks_client ON rinks(client_id);
+CREATE INDEX IF NOT EXISTS idx_officials_client ON officials(client_id);
+
 -- Divisions
-CREATE INDEX IF NOT EXISTS idx_divisions_parent ON divisions(parent_division_id);
+CREATE INDEX IF NOT EXISTS idx_divisions_parent ON divisions(client_id, parent_division_id);
 
 -- Rink sheets
-CREATE INDEX IF NOT EXISTS idx_rink_sheets_rink ON rink_sheets(rink_id);
+CREATE INDEX IF NOT EXISTS idx_rink_sheets_rink ON rink_sheets(client_id, rink_id);
 
 -- Rule set infractions
-CREATE INDEX IF NOT EXISTS idx_infractions_rule_set ON rule_set_infractions(rule_set_id);
+CREATE INDEX IF NOT EXISTS idx_infractions_rule_set ON rule_set_infractions(client_id, rule_set_id);
 
 -- Team registrations
-CREATE INDEX IF NOT EXISTS idx_team_reg_league_season ON team_registrations(league_id, season_id);
-CREATE INDEX IF NOT EXISTS idx_team_reg_tournament ON team_registrations(tournament_id);
-CREATE INDEX IF NOT EXISTS idx_team_reg_division ON team_registrations(division_id);
+CREATE INDEX IF NOT EXISTS idx_team_reg_client ON team_registrations(client_id);
+CREATE INDEX IF NOT EXISTS idx_team_reg_league_season ON team_registrations(client_id, league_id, season_id);
+CREATE INDEX IF NOT EXISTS idx_team_reg_tournament ON team_registrations(client_id, tournament_id);
+CREATE INDEX IF NOT EXISTS idx_team_reg_division ON team_registrations(client_id, division_id);
 
 -- Roster entries
-CREATE INDEX IF NOT EXISTS idx_roster_registration ON roster_entries(registration_id);
-CREATE INDEX IF NOT EXISTS idx_roster_player ON roster_entries(player_id);
+CREATE INDEX IF NOT EXISTS idx_roster_client ON roster_entries(client_id);
+CREATE INDEX IF NOT EXISTS idx_roster_registration ON roster_entries(client_id, registration_id);
+CREATE INDEX IF NOT EXISTS idx_roster_player ON roster_entries(client_id, player_id);
 
 -- Spare players
-CREATE INDEX IF NOT EXISTS idx_spare_league_season ON spare_players(league_id, season_id);
+CREATE INDEX IF NOT EXISTS idx_spare_client ON spare_players(client_id);
+CREATE INDEX IF NOT EXISTS idx_spare_league_season ON spare_players(client_id, league_id, season_id);
 
 -- Games
-CREATE INDEX IF NOT EXISTS idx_games_schedule ON games(scheduled_start);
-CREATE INDEX IF NOT EXISTS idx_games_registrations ON games(home_registration_id, away_registration_id);
-CREATE INDEX IF NOT EXISTS idx_games_rink ON games(rink_id);
+CREATE INDEX IF NOT EXISTS idx_games_client ON games(client_id);
+CREATE INDEX IF NOT EXISTS idx_games_schedule ON games(client_id, scheduled_start);
+CREATE INDEX IF NOT EXISTS idx_games_registrations ON games(client_id, home_registration_id, away_registration_id);
+CREATE INDEX IF NOT EXISTS idx_games_rink ON games(client_id, rink_id);
 
 -- Events
-CREATE INDEX IF NOT EXISTS idx_events_game ON events(game_id);
-CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
-CREATE INDEX IF NOT EXISTS idx_events_player ON events(player_id);
+CREATE INDEX IF NOT EXISTS idx_events_client ON events(client_id);
+CREATE INDEX IF NOT EXISTS idx_events_game ON events(client_id, game_id);
+CREATE INDEX IF NOT EXISTS idx_events_type ON events(client_id, event_type);
+CREATE INDEX IF NOT EXISTS idx_events_player ON events(client_id, player_id);
 
 -- Received events
-CREATE INDEX IF NOT EXISTS idx_received_events_game ON received_events(game_id);
+CREATE INDEX IF NOT EXISTS idx_received_events_client ON received_events(client_id);
+CREATE INDEX IF NOT EXISTS idx_received_events_game ON received_events(client_id, game_id);
 CREATE INDEX IF NOT EXISTS idx_received_events_event_id ON received_events(event_id);
 
 -- Heartbeats
 CREATE INDEX IF NOT EXISTS idx_heartbeats_device ON heartbeats(device_id, received_at DESC);
 
 -- Playoff brackets
-CREATE INDEX IF NOT EXISTS idx_brackets_league_season ON playoff_brackets(league_id, season_id);
+CREATE INDEX IF NOT EXISTS idx_brackets_client ON playoff_brackets(client_id);
+CREATE INDEX IF NOT EXISTS idx_brackets_league_season ON playoff_brackets(client_id, league_id, season_id);
 
 -- Playoff series
-CREATE INDEX IF NOT EXISTS idx_series_bracket ON playoff_series(bracket_id);
+CREATE INDEX IF NOT EXISTS idx_series_client ON playoff_series(client_id);
+CREATE INDEX IF NOT EXISTS idx_series_bracket ON playoff_series(client_id, bracket_id);
+
+-- Devices
+CREATE INDEX IF NOT EXISTS idx_devices_client ON devices(client_id);
+
+-- Users
+CREATE INDEX IF NOT EXISTS idx_users_client ON users(client_id);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+-- Sessions
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_active_client ON sessions(active_client_id);
 """
 
 # =============================================================================
@@ -716,16 +834,17 @@ def _seed_rule_sets(conn: sqlite3.Connection) -> None:
         conn.execute(
             """
             INSERT INTO rule_sets (
-                rule_set_id, name, description,
+                client_id, rule_set_id, name, description,
                 num_periods, period_length_min, intermission_length_min,
                 overtime_length_min, overtime_type,
                 icing_rule, offside_rule, body_checking,
                 points_win, points_loss, points_tie, points_otl,
                 max_roster_size, min_players_to_start, max_players_dressed,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                None,  # NULL client_id = system-wide default
                 rule_set["rule_set_id"],
                 rule_set["name"],
                 rule_set["description"],
@@ -754,12 +873,12 @@ def _seed_rule_sets(conn: sqlite3.Connection) -> None:
             conn.execute(
                 """
                 INSERT INTO rule_set_infractions (
-                    rule_set_id, code, name, default_severity, default_duration_min,
+                    client_id, rule_set_id, code, name, default_severity, default_duration_min,
                     allows_minor, allows_major, allows_misconduct, allows_match,
                     display_order
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (rule_set["rule_set_id"], *infraction),
+                (None, rule_set["rule_set_id"], *infraction),  # NULL client_id for system defaults
             )
 
 

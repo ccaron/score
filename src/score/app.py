@@ -4,6 +4,8 @@ import logging
 import logging.handlers
 import multiprocessing
 import os
+import random
+import string
 import time
 import warnings
 from contextlib import asynccontextmanager
@@ -38,6 +40,17 @@ DEVICE_ID = get_device_id(persist_path=AppConfig.DEVICE_ID_PATH)
 RINK_ID = AppConfig.RINK_ID  # Fallback, will be overridden by cloud config
 DEVICE_CONFIG = None  # Will hold full device config from cloud
 
+# Claim code for device claiming
+CLAIM_CODE = None
+
+
+def generate_claim_code():
+    """Generate a 6-character claim code (e.g., 'ABC123')."""
+    # Use 3 letters + 3 digits for easy reading
+    letters = ''.join(random.choices(string.ascii_uppercase, k=3))
+    digits = ''.join(random.choices(string.digits, k=3))
+    return f"{letters}-{digits}"
+
 
 def fetch_device_config():
     """
@@ -45,14 +58,22 @@ def fetch_device_config():
 
     Returns device config including rink_id assignment.
     Falls back to env var RINK_ID if cloud is unavailable.
+    Sends claim code for device claiming.
     """
-    global DEVICE_CONFIG, RINK_ID
+    global DEVICE_CONFIG, RINK_ID, CLAIM_CODE
 
     logger.info(f"Fetching config for device: {DEVICE_ID}")
 
+    # Generate claim code if not already set
+    if CLAIM_CODE is None:
+        CLAIM_CODE = generate_claim_code()
+        logger.info(f"Generated claim code: {CLAIM_CODE}")
+
     try:
+        # Send claim code as query parameter
         response = requests.get(
             f"{CLOUD_API_URL}/v1/devices/{DEVICE_ID}/config",
+            params={"claim_code": CLAIM_CODE},
             timeout=10
         )
         response.raise_for_status()
@@ -60,6 +81,12 @@ def fetch_device_config():
 
         DEVICE_CONFIG = config
         logger.info(f"Device config: {config}")
+
+        # Check if device is claimed
+        if config.get("is_claimed"):
+            logger.info("Device has been claimed by a client!")
+            # Clear claim code since we're claimed
+            CLAIM_CODE = None
 
         if config.get("is_assigned"):
             # Use rink_id from cloud
@@ -149,7 +176,9 @@ class GameState:
             "current_time": time.strftime("%H:%M"),
             "device_id": format_device_id_for_display(DEVICE_ID),
             "device_assigned": DEVICE_CONFIG.get("is_assigned") if DEVICE_CONFIG else False,
+            "device_claimed": DEVICE_CONFIG.get("is_claimed") if DEVICE_CONFIG else False,
             "sheet_name": DEVICE_CONFIG.get("sheet_name") if DEVICE_CONFIG else None,
+            "claim_code": CLAIM_CODE,  # Show claim code if device is unclaimed
             "home_score": self.home_score,
             "away_score": self.away_score,
             "goals": self.goals,
@@ -377,18 +406,31 @@ async def game_loop():
         else:
             state.pusher_status = "unknown"
 
-        # Periodically retry fetching device config if unassigned
+        # Periodically check device config (to detect assignment changes or unclaiming)
         if current_time - last_config_check >= config_check_interval:
             last_config_check = current_time
 
-            # Retry if config is None or device is not assigned
-            if DEVICE_CONFIG is None or not DEVICE_CONFIG.get("is_assigned"):
-                logger.debug("Device unassigned, retrying config fetch...")
-                new_config = fetch_device_config()
+            # Always check for config updates
+            logger.debug("Checking for device config updates...")
+            old_config = DEVICE_CONFIG
+            new_config = fetch_device_config()
 
-                # If config changed (e.g., device was just assigned), broadcast immediately
-                if new_config and new_config.get("is_assigned"):
+            # Check if status changed
+            if new_config:
+                old_assigned = old_config.get("is_assigned") if old_config else False
+                old_claimed = old_config.get("is_claimed") if old_config else False
+                new_assigned = new_config.get("is_assigned")
+                new_claimed = new_config.get("is_claimed")
+
+                # Detect changes
+                if new_assigned and not old_assigned:
                     logger.info("Device config updated - device is now assigned!")
+                    await broadcast_state()
+                elif new_claimed and not old_claimed:
+                    logger.info("Device config updated - device is now claimed!")
+                    await broadcast_state()
+                elif not new_claimed and old_claimed:
+                    logger.info("Device config updated - device has been unclaimed!")
                     await broadcast_state()
 
         if state.running and state.seconds > 0:

@@ -582,6 +582,7 @@ button {
     background: #166628;
 }
 
+.btn-remove,
 .btn-remove-team,
 .btn-remove-player {
     background: #dc3545;
@@ -593,6 +594,7 @@ button {
     line-height: 1;
 }
 
+.btn-remove:hover,
 .btn-remove-team:hover,
 .btn-remove-player:hover {
     background: #c82333;
@@ -897,6 +899,43 @@ button {
 
 #scheduleForm .sheets-container strong:first-child {
     margin-top: 0;
+}
+
+/* Unassigned Devices List */
+.unassigned-devices-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 10px;
+    margin-top: 8px;
+}
+
+.unassigned-device {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 12px;
+    background: #fafafa;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    transition: all 0.15s ease;
+}
+
+.unassigned-device:hover {
+    background: #f0f0f0;
+    border-color: #4a9eff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.unassigned-device .device-id {
+    font-size: 13px;
+    font-weight: 600;
+    color: #333;
+}
+
+.unassigned-device .device-meta {
+    font-size: 11px;
+    color: #666;
+    font-family: 'SF Mono', 'Menlo', 'Courier New', monospace;
 }
 
 .days-of-week-container {

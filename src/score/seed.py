@@ -13,6 +13,16 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger("score.seed")
 
+# ---------- Default Client ----------
+
+DEFAULT_CLIENT_ID = "default"
+DEFAULT_CLIENT = {
+    "client_id": DEFAULT_CLIENT_ID,
+    "name": "Default Client",
+    "slug": "default",
+    "contact_email": "admin@example.com",
+}
+
 # ---------- Sample Data ----------
 
 SAMPLE_LEAGUES = [
@@ -100,16 +110,44 @@ POSITIONS = ["C", "LW", "RW", "D", "D", "G"]  # Weighted for realistic distribut
 
 # ---------- Seeding Functions ----------
 
-def seed_leagues(conn: sqlite3.Connection) -> int:
+def seed_client(conn: sqlite3.Connection, client_id: str = DEFAULT_CLIENT_ID) -> int:
+    """Seed the default client or create a specific client."""
+    now = int(time.time())
+    client = DEFAULT_CLIENT if client_id == DEFAULT_CLIENT_ID else {
+        "client_id": client_id,
+        "name": f"Client {client_id}",
+        "slug": client_id,
+        "contact_email": f"admin@{client_id}.example.com",
+    }
+
+    try:
+        conn.execute("""
+            INSERT INTO clients (client_id, name, slug, contact_email, is_active, created_at)
+            VALUES (?, ?, ?, ?, 1, ?)
+        """, (
+            client["client_id"],
+            client["name"],
+            client["slug"],
+            client["contact_email"],
+            now,
+        ))
+        logger.info(f"Created client: {client['name']} ({client['client_id']})")
+        return 1
+    except sqlite3.IntegrityError:
+        return 0  # Already exists
+
+
+def seed_leagues(conn: sqlite3.Connection, client_id: str = DEFAULT_CLIENT_ID) -> int:
     """Seed sample leagues."""
     now = int(time.time())
     count = 0
     for league in SAMPLE_LEAGUES:
         try:
             conn.execute("""
-                INSERT INTO leagues (league_id, name, league_type, description, website, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO leagues (client_id, league_id, name, league_type, description, website, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
+                client_id,
                 league["league_id"],
                 league["name"],
                 league.get("league_type"),
@@ -124,16 +162,17 @@ def seed_leagues(conn: sqlite3.Connection) -> int:
     return count
 
 
-def seed_seasons(conn: sqlite3.Connection) -> int:
+def seed_seasons(conn: sqlite3.Connection, client_id: str = DEFAULT_CLIENT_ID) -> int:
     """Seed sample seasons."""
     now = int(time.time())
     count = 0
     for season in SAMPLE_SEASONS:
         try:
             conn.execute("""
-                INSERT INTO seasons (season_id, name, start_date, end_date, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO seasons (client_id, season_id, name, start_date, end_date, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
             """, (
+                client_id,
                 season["season_id"],
                 season["name"],
                 season["start_date"],
@@ -147,16 +186,17 @@ def seed_seasons(conn: sqlite3.Connection) -> int:
     return count
 
 
-def seed_divisions(conn: sqlite3.Connection) -> int:
+def seed_divisions(conn: sqlite3.Connection, client_id: str = DEFAULT_CLIENT_ID) -> int:
     """Seed sample divisions."""
     now = int(time.time())
     count = 0
     for div in SAMPLE_DIVISIONS:
         try:
             conn.execute("""
-                INSERT INTO divisions (division_id, name, division_type, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO divisions (client_id, division_id, name, division_type, created_at)
+                VALUES (?, ?, ?, ?, ?)
             """, (
+                client_id,
                 div["division_id"],
                 div["name"],
                 div.get("division_type"),
@@ -169,7 +209,7 @@ def seed_divisions(conn: sqlite3.Connection) -> int:
     return count
 
 
-def seed_rinks(conn: sqlite3.Connection) -> int:
+def seed_rinks(conn: sqlite3.Connection, client_id: str = DEFAULT_CLIENT_ID) -> int:
     """Seed sample rinks and their sheets."""
     now = int(time.time())
     rink_count = 0
@@ -178,9 +218,10 @@ def seed_rinks(conn: sqlite3.Connection) -> int:
     for rink in SAMPLE_RINKS:
         try:
             conn.execute("""
-                INSERT INTO rinks (rink_id, name, address, city, province_state, postal_code, country, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO rinks (client_id, rink_id, name, address, city, province_state, postal_code, country, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
+                client_id,
                 rink["rink_id"],
                 rink["name"],
                 rink.get("address"),
@@ -199,11 +240,12 @@ def seed_rinks(conn: sqlite3.Connection) -> int:
     for sheet in SAMPLE_RINK_SHEETS:
         try:
             conn.execute("""
-                INSERT INTO rink_sheets (sheet_id, rink_id, name, surface_type, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO rink_sheets (client_id, rink_id, sheet_id, name, surface_type, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
             """, (
-                sheet["sheet_id"],
+                client_id,
                 sheet["rink_id"],
+                sheet["sheet_id"],
                 sheet["name"],
                 sheet.get("surface_type"),
                 now,
@@ -216,7 +258,7 @@ def seed_rinks(conn: sqlite3.Connection) -> int:
     return rink_count
 
 
-def seed_players(conn: sqlite3.Connection, count: int = 120) -> int:
+def seed_players(conn: sqlite3.Connection, count: int = 120, client_id: str = DEFAULT_CLIENT_ID) -> int:
     """Seed sample players with random names."""
     now = int(time.time())
     created = 0
@@ -231,9 +273,10 @@ def seed_players(conn: sqlite3.Connection, count: int = 120) -> int:
 
         try:
             conn.execute("""
-                INSERT INTO players (player_id, first_name, last_name, full_name, shoots_catches, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO players (client_id, player_id, first_name, last_name, full_name, shoots_catches, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
+                client_id,
                 1001 + i,
                 first,
                 last,
@@ -256,25 +299,25 @@ def seed_players(conn: sqlite3.Connection, count: int = 120) -> int:
     return created
 
 
-def seed_league_seasons(conn: sqlite3.Connection) -> int:
+def seed_league_seasons(conn: sqlite3.Connection, client_id: str = DEFAULT_CLIENT_ID) -> int:
     """Link leagues to seasons with rule sets."""
     now = int(time.time())
     count = 0
 
     # TSPC uses adult-rec rules for all seasons
     links = [
-        ("tspc", "fall-2025", "adult-rec"),
-        ("tspc", "winter-2026", "adult-rec"),
-        ("tspc", "spring-2026", "adult-rec"),
-        ("tspc", "summer-2026", "adult-rec"),
+        (client_id, "tspc", "fall-2025", "adult-rec"),
+        (client_id, "tspc", "winter-2026", "adult-rec"),
+        (client_id, "tspc", "spring-2026", "adult-rec"),
+        (client_id, "tspc", "summer-2026", "adult-rec"),
     ]
 
-    for league_id, season_id, rule_set_id in links:
+    for cid, league_id, season_id, rule_set_id in links:
         try:
             conn.execute("""
-                INSERT INTO league_seasons (league_id, season_id, rule_set_id, is_active, created_at)
-                VALUES (?, ?, ?, 1, ?)
-            """, (league_id, season_id, rule_set_id, now))
+                INSERT INTO league_seasons (client_id, league_id, season_id, rule_set_id, is_active, created_at)
+                VALUES (?, ?, ?, ?, 1, ?)
+            """, (cid, league_id, season_id, rule_set_id, now))
             count += 1
         except sqlite3.IntegrityError:
             pass
@@ -282,7 +325,7 @@ def seed_league_seasons(conn: sqlite3.Connection) -> int:
     return count
 
 
-def seed_league_season_divisions(conn: sqlite3.Connection) -> int:
+def seed_league_season_divisions(conn: sqlite3.Connection, client_id: str = DEFAULT_CLIENT_ID) -> int:
     """Link divisions to league-seasons."""
     now = int(time.time())
     count = 0
@@ -302,9 +345,9 @@ def seed_league_season_divisions(conn: sqlite3.Connection) -> int:
         for division_id, display_order in divisions:
             try:
                 conn.execute("""
-                    INSERT INTO league_season_divisions (league_id, season_id, division_id, display_order, created_at)
-                    VALUES (?, ?, ?, ?, ?)
-                """, ("tspc", season_id, division_id, display_order, now))
+                    INSERT INTO league_season_divisions (client_id, league_id, season_id, division_id, display_order, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (client_id, "tspc", season_id, division_id, display_order, now))
                 count += 1
             except sqlite3.IntegrityError:
                 pass
@@ -312,7 +355,7 @@ def seed_league_season_divisions(conn: sqlite3.Connection) -> int:
     return count
 
 
-def seed_registrations(conn: sqlite3.Connection) -> int:
+def seed_registrations(conn: sqlite3.Connection, client_id: str = DEFAULT_CLIENT_ID) -> int:
     """Register teams in leagues for the current season."""
     now = int(time.time())
     count = 0
@@ -337,13 +380,13 @@ def seed_registrations(conn: sqlite3.Connection) -> int:
         try:
             conn.execute("""
                 INSERT INTO team_registrations (
-                    registration_id, team_name, abbreviation,
+                    client_id, registration_id, team_name, abbreviation,
                     league_id, season_id, division_id,
                     organizer_name, organizer_email,
                     registered_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (reg_id, team_name, abbrev, league_id, season_id, division_id, org_name, org_email, now))
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (client_id, reg_id, team_name, abbrev, league_id, season_id, division_id, org_name, org_email, now))
             logger.info(f"Registered team: {team_name} ({abbrev}) in {division_id}")
             count += 1
         except sqlite3.IntegrityError:
@@ -352,7 +395,7 @@ def seed_registrations(conn: sqlite3.Connection) -> int:
     return count
 
 
-def seed_rosters(conn: sqlite3.Connection) -> int:
+def seed_rosters(conn: sqlite3.Connection, client_id: str = DEFAULT_CLIENT_ID) -> int:
     """Add players to team rosters.
 
     Creates realistic rosters with some players registered on multiple teams
@@ -363,11 +406,13 @@ def seed_rosters(conn: sqlite3.Connection) -> int:
 
     # Get all registrations grouped by division
     registrations = conn.execute("""
-        SELECT registration_id, division_id, team_name FROM team_registrations
-    """).fetchall()
+        SELECT registration_id, division_id, team_name FROM team_registrations WHERE client_id = ?
+    """, (client_id,)).fetchall()
 
     # Get all players with names
-    players = conn.execute("SELECT player_id, full_name FROM players ORDER BY player_id").fetchall()
+    players = conn.execute("""
+        SELECT player_id, full_name FROM players WHERE client_id = ? ORDER BY player_id
+    """, (client_id,)).fetchall()
 
     if not players or not registrations:
         return 0
@@ -411,9 +456,9 @@ def seed_rosters(conn: sqlite3.Connection) -> int:
 
                 try:
                     conn.execute("""
-                        INSERT INTO roster_entries (registration_id, player_id, jersey_number, position, roster_status, added_at)
-                        VALUES (?, ?, ?, ?, 'active', ?)
-                    """, (reg1, player_id, jersey1, position, now))
+                        INSERT INTO roster_entries (client_id, registration_id, player_id, jersey_number, position, roster_status, added_at)
+                        VALUES (?, ?, ?, ?, ?, 'active', ?)
+                    """, (client_id, reg1, player_id, jersey1, position, now))
                     count += 1
                     multi_team_count += 1
                 except sqlite3.IntegrityError:
@@ -421,9 +466,9 @@ def seed_rosters(conn: sqlite3.Connection) -> int:
 
                 try:
                     conn.execute("""
-                        INSERT INTO roster_entries (registration_id, player_id, jersey_number, position, roster_status, added_at)
-                        VALUES (?, ?, ?, ?, 'active', ?)
-                    """, (reg2, player_id, jersey2, position, now))
+                        INSERT INTO roster_entries (client_id, registration_id, player_id, jersey_number, position, roster_status, added_at)
+                        VALUES (?, ?, ?, ?, ?, 'active', ?)
+                    """, (client_id, reg2, player_id, jersey2, position, now))
                     count += 1
                 except sqlite3.IntegrityError:
                     pass
@@ -446,9 +491,9 @@ def seed_rosters(conn: sqlite3.Connection) -> int:
 
             try:
                 conn.execute("""
-                    INSERT INTO roster_entries (registration_id, player_id, jersey_number, position, roster_status, added_at)
-                    VALUES (?, ?, ?, ?, 'active', ?)
-                """, (reg_id, player_id, jersey_num, position, now))
+                    INSERT INTO roster_entries (client_id, registration_id, player_id, jersey_number, position, roster_status, added_at)
+                    VALUES (?, ?, ?, ?, ?, 'active', ?)
+                """, (client_id, reg_id, player_id, jersey_num, position, now))
                 count += 1
                 team_roster_counts[reg_id] += 1
             except sqlite3.IntegrityError:
@@ -467,13 +512,15 @@ def seed_rosters(conn: sqlite3.Connection) -> int:
     return count
 
 
-def seed_games(conn: sqlite3.Connection, game_count: int = 8) -> int:
+def seed_games(conn: sqlite3.Connection, game_count: int = 8, client_id: str = DEFAULT_CLIENT_ID) -> int:
     """Create sample games for today and tomorrow."""
     now = int(time.time())
     count = 0
 
     # Get rinks and sheets
-    sheets = conn.execute("SELECT sheet_id, rink_id, name FROM rink_sheets").fetchall()
+    sheets = conn.execute("""
+        SELECT sheet_id, rink_id, name FROM rink_sheets WHERE client_id = ?
+    """, (client_id,)).fetchall()
     if not sheets:
         return 0
 
@@ -481,7 +528,8 @@ def seed_games(conn: sqlite3.Connection, game_count: int = 8) -> int:
     regs = conn.execute("""
         SELECT registration_id, team_name, abbreviation
         FROM team_registrations
-    """).fetchall()
+        WHERE client_id = ?
+    """, (client_id,)).fetchall()
     if len(regs) < 2:
         return 0
 
@@ -532,12 +580,13 @@ def seed_games(conn: sqlite3.Connection, game_count: int = 8) -> int:
             try:
                 conn.execute("""
                     INSERT INTO games (
-                        game_id, rink_id, sheet_id, home_registration_id, away_registration_id,
+                        client_id, game_id, rink_id, sheet_id, home_registration_id, away_registration_id,
                         home_team, away_team, home_abbrev, away_abbrev,
                         scheduled_start, start_time, period_length_min, num_periods, game_type, created_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 3, 'regular', ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 3, 'regular', ?)
                 """, (
+                    client_id,
                     game_id,
                     sheet["rink_id"],
                     sheet["sheet_id"],
@@ -593,23 +642,27 @@ def clear_all(conn: sqlite3.Connection) -> dict:
     return counts
 
 
-def seed_all(db_path: str, player_count: int = 120, game_count: int = 8) -> dict:
+def seed_all(db_path: str, player_count: int = 120, game_count: int = 8, client_id: str = DEFAULT_CLIENT_ID) -> dict:
     """Seed all sample data in dependency order."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
     results = {}
 
-    results["leagues"] = seed_leagues(conn)
-    results["seasons"] = seed_seasons(conn)
-    results["divisions"] = seed_divisions(conn)
-    results["rinks"] = seed_rinks(conn)
-    results["players"] = seed_players(conn, player_count)
-    results["league_seasons"] = seed_league_seasons(conn)
-    results["league_season_divisions"] = seed_league_season_divisions(conn)
-    results["registrations"] = seed_registrations(conn)
-    results["rosters"] = seed_rosters(conn)
-    results["games"] = seed_games(conn, game_count)
+    # Seed client first
+    results["client"] = seed_client(conn, client_id)
+
+    # Seed all entities with client context
+    results["leagues"] = seed_leagues(conn, client_id)
+    results["seasons"] = seed_seasons(conn, client_id)
+    results["divisions"] = seed_divisions(conn, client_id)
+    results["rinks"] = seed_rinks(conn, client_id)
+    results["players"] = seed_players(conn, player_count, client_id)
+    results["league_seasons"] = seed_league_seasons(conn, client_id)
+    results["league_season_divisions"] = seed_league_season_divisions(conn, client_id)
+    results["registrations"] = seed_registrations(conn, client_id)
+    results["rosters"] = seed_rosters(conn, client_id)
+    results["games"] = seed_games(conn, game_count, client_id)
 
     conn.commit()
     conn.close()
