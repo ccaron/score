@@ -440,7 +440,7 @@ async def system_dashboard(request: Request):
         # Actions
         actions = ""
         if device["client_id"]:
-            actions = f'<button class="btn-unassign" onclick="unclaimDevice(\'{device["device_id"]}\')" style="font-size: 11px; padding: 3px 8px;">Unclaim</button>'
+            actions = f'<button class="btn-unassign" onclick="unclaimDevice(\'{device["device_id"]}\')">Unclaim</button>'
 
         # Device display name
         device_display = device["device_name"] if device["device_name"] else device["device_id"]

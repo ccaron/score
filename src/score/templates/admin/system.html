@@ -65,11 +65,11 @@
                         {% endif %}
                     </td>
                     <td class="timestamp">{{ client.created_date }}</td>
-                    <td>
+                    <td class="actions">
                         {% if client.is_active %}
-                        <button class="btn-unassign" onclick="toggleClientStatus('{{ client.client_id }}', 0)" style="font-size: 11px; padding: 3px 8px;">Deactivate</button>
+                        <button class="btn-unassign" onclick="toggleClientStatus('{{ client.client_id }}', 0)">Deactivate</button>
                         {% else %}
-                        <button class="btn-save" onclick="toggleClientStatus('{{ client.client_id }}', 1)" style="font-size: 11px; padding: 3px 8px;">Reactivate</button>
+                        <button class="btn-save" onclick="toggleClientStatus('{{ client.client_id }}', 1)">Reactivate</button>
                         {% endif %}
                     </td>
                 </tr>
@@ -146,12 +146,12 @@
                     </td>
                     <td class="timestamp">{{ user.last_login }}</td>
                     <td class="timestamp">{{ user.created_date }}</td>
-                    <td>
-                        <button class="btn-save" onclick="showResetPassword('{{ user.user_id }}', '{{ user.email }}')" style="font-size: 11px; padding: 3px 8px; margin-right: 4px;">Reset Password</button>
+                    <td class="actions">
+                        <button class="btn-save" onclick="showResetPassword('{{ user.user_id }}', '{{ user.email }}')">Reset Password</button>
                         {% if user.is_active %}
-                        <button class="btn-unassign" onclick="toggleUserStatus('{{ user.user_id }}', 0)" style="font-size: 11px; padding: 3px 8px;">Deactivate</button>
+                        <button class="btn-unassign" onclick="toggleUserStatus('{{ user.user_id }}', 0)">Deactivate</button>
                         {% else %}
-                        <button class="btn-save" onclick="toggleUserStatus('{{ user.user_id }}', 1)" style="font-size: 11px; padding: 3px 8px;">Reactivate</button>
+                        <button class="btn-save" onclick="toggleUserStatus('{{ user.user_id }}', 1)">Reactivate</button>
                         {% endif %}
                     </td>
                 </tr>
@@ -215,7 +215,7 @@
                     <td>{{ device.status_badge|safe }}</td>
                     <td class="timestamp">{{ device.first_seen }}</td>
                     <td class="timestamp">{{ device.last_seen }}</td>
-                    <td>{{ device.actions|safe }}</td>
+                    <td class="actions">{{ device.actions|safe }}</td>
                 </tr>
                 {% endfor %}
             {% else %}
