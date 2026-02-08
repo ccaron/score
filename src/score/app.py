@@ -899,15 +899,27 @@ def main():
                 pusher_process.kill()
                 pusher_process.join()
 
-        # Give the queue listener a moment to process any remaining log messages
-        time.sleep(0.2)
+        # Give the queue handler in the child process time to flush
+        # and the queue listener a moment to receive final messages
+        time.sleep(0.3)
 
-        # Stop the queue listener (this drains remaining items)
+        # Stop the queue listener first (this drains remaining items)
+        # The listener will wait for its internal queue to empty
         queue_listener.stop()
+        logger.info("Queue listener stopped")
 
-        # Cancel the join thread to avoid blocking, then close the queue
-        log_queue.cancel_join_thread()
+        # Now close and join the queue properly to release semaphores
+        # Don't use cancel_join_thread() - let the feeder thread finish naturally
         log_queue.close()
+
+        # Join the queue's internal feeder thread with a timeout
+        # This ensures semaphores are properly released
+        try:
+            log_queue.join_thread()
+        except Exception as e:
+            # If join fails (shouldn't happen), cancel as fallback
+            logger.warning(f"Queue join_thread failed: {e}, canceling...")
+            log_queue.cancel_join_thread()
 
         logger.info("Shutdown complete")
 
@@ -941,6 +953,10 @@ def push_events(log_queue):
         pusher.run()
     except KeyboardInterrupt:
         logging.info("Shutting down gracefully...")
+    finally:
+        # Clean up logging to ensure queue is flushed
+        root_logger.removeHandler(queue_handler)
+        queue_handler.close()
 
 
 # ---------- Run ----------
