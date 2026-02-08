@@ -1,0 +1,149 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Stats{% endblock %}
+
+{% block content %}
+<h1>League Statistics</h1>
+
+<p class="hint">Player and team statistics computed from game events. Type in column headers to filter.</p>
+
+<!-- Leaderboards -->
+<div class="content">
+    <h2>Player Statistics</h2>
+    {% if not points_leaders %}
+    <p style="color: #666; font-size: 13px;">No statistics found</p>
+    {% else %}
+    <table id="statsTable">
+        <thead>
+            <tr>
+                <th>League</th>
+                <th>Season</th>
+                <th>Division</th>
+                <th>Team</th>
+                <th>Player</th>
+                <th>#</th>
+                <th class="sortable" onclick="sortTable(6)" style="cursor: pointer;">Goals</th>
+                <th class="sortable" onclick="sortTable(7)" style="cursor: pointer;">Assists</th>
+                <th class="sortable" onclick="sortTable(8)" style="cursor: pointer;">Points ▼</th>
+            </tr>
+            <tr class="filter-row">
+                <td><input type="text" id="filterLeague" placeholder="Filter..." onkeyup="filterStatsTable()"></td>
+                <td><input type="text" id="filterSeason" placeholder="Filter..." onkeyup="filterStatsTable()"></td>
+                <td><input type="text" id="filterDivision" placeholder="Filter..." onkeyup="filterStatsTable()"></td>
+                <td><input type="text" id="filterTeam" placeholder="Filter..." onkeyup="filterStatsTable()"></td>
+                <td><input type="text" id="filterPlayer" placeholder="Filter..." onkeyup="filterStatsTable()"></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+            </tr>
+        </thead>
+        <tbody>
+            {% for p in points_leaders %}
+            <tr>
+                <td>{{ p.league_name or "-" }}</td>
+                <td>{{ p.season_name or "-" }}</td>
+                <td>{{ p.division_name or "-" }}</td>
+                <td>{{ p.team_abbrev or "-" }}</td>
+                <td>{{ p.full_name or "Unknown Player" }}</td>
+                <td>{{ p.jersey_number or "-" }}</td>
+                <td>{{ p.goals }}</td>
+                <td>{{ p.assists }}</td>
+                <td><strong>{{ p.points }}</strong></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</div>
+
+<!-- Team Standings -->
+<div class="content">
+    <h2>Team Standings</h2>
+    <p style="color: #666; font-size: 13px;">Coming soon</p>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+let sortColumn = 8;  // Default sort by Points (column 8)
+let sortAscending = false;  // Default descending
+
+function filterStatsTable() {
+    const filters = {
+        league: document.getElementById('filterLeague').value.toLowerCase(),
+        season: document.getElementById('filterSeason').value.toLowerCase(),
+        division: document.getElementById('filterDivision').value.toLowerCase(),
+        team: document.getElementById('filterTeam').value.toLowerCase(),
+        player: document.getElementById('filterPlayer').value.toLowerCase()
+    };
+
+    const tbody = document.querySelector('#statsTable tbody');
+    const rows = tbody.getElementsByTagName('tr');
+
+    for (let i = 0; i < rows.length; i++) {
+        const cells = rows[i].getElementsByTagName('td');
+        if (cells.length < 9) continue;
+
+        const league = cells[0].textContent.toLowerCase();
+        const season = cells[1].textContent.toLowerCase();
+        const division = cells[2].textContent.toLowerCase();
+        const team = cells[3].textContent.toLowerCase();
+        const player = cells[4].textContent.toLowerCase();
+
+        const match =
+            league.includes(filters.league) &&
+            season.includes(filters.season) &&
+            division.includes(filters.division) &&
+            team.includes(filters.team) &&
+            player.includes(filters.player);
+
+        rows[i].style.display = match ? '' : 'none';
+    }
+}
+
+function sortTable(column) {
+    const table = document.getElementById('statsTable');
+    const tbody = table.getElementsByTagName('tbody')[0];
+    const rows = Array.from(tbody.getElementsByTagName('tr'));
+
+    // Toggle direction if clicking same column
+    if (sortColumn === column) {
+        sortAscending = !sortAscending;
+    } else {
+        sortColumn = column;
+        sortAscending = false;  // New column defaults to descending
+    }
+
+    // Sort rows
+    rows.sort((a, b) => {
+        let aVal = a.getElementsByTagName('td')[column].textContent.trim();
+        let bVal = b.getElementsByTagName('td')[column].textContent.trim();
+
+        // Convert to numbers for numeric columns (jersey, goals, assists, points)
+        // Column 5 = jersey, columns 6-8 = stats
+        if (column === 5 || column >= 6) {
+            aVal = parseInt(aVal) || 0;
+            bVal = parseInt(bVal) || 0;
+        }
+
+        if (aVal === bVal) return 0;
+        if (sortAscending) {
+            return aVal > bVal ? 1 : -1;
+        } else {
+            return aVal < bVal ? 1 : -1;
+        }
+    });
+
+    // Re-append rows in sorted order
+    rows.forEach(row => tbody.appendChild(row));
+
+    // Update header indicators
+    const headers = table.getElementsByTagName('th');
+    for (let i = 6; i < headers.length; i++) {  // Only update sortable columns (6-8: Goals, Assists, Points)
+        const arrow = i === column ? (sortAscending ? ' ▲' : ' ▼') : '';
+        headers[i].textContent = headers[i].textContent.replace(/ [▲▼]/, '') + arrow;
+    }
+}
+</script>
+{% endblock %}

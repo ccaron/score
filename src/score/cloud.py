@@ -350,8 +350,6 @@ async def switch_client(request: Request, client_id: str = Form("")):
 @app.get("/admin/system")
 async def system_dashboard(request: Request):
     """System dashboard for super admins."""
-    from fastapi.responses import HTMLResponse
-
     session = require_auth(request)
 
     # Only super admins can access system dashboard
@@ -361,14 +359,14 @@ async def system_dashboard(request: Request):
     db = get_db()
 
     # Fetch all clients
-    clients = db.execute("""
+    clients_raw = db.execute("""
         SELECT client_id, name, slug, contact_email, is_active, created_at
         FROM clients
         ORDER BY name
     """).fetchall()
 
     # Fetch all users
-    users = db.execute("""
+    users_raw = db.execute("""
         SELECT u.user_id, u.email, u.role, u.client_id, u.is_active, u.last_login_at, u.created_at,
                c.name as client_name
         FROM users u
@@ -377,7 +375,7 @@ async def system_dashboard(request: Request):
     """).fetchall()
 
     # Fetch all devices
-    devices = db.execute("""
+    devices_raw = db.execute("""
         SELECT d.device_id, d.client_id, d.rink_id, d.sheet_name, d.device_name,
                d.is_assigned, d.claim_code, d.first_seen_at, d.last_seen_at,
                c.name as client_name, r.name as rink_name
@@ -387,80 +385,43 @@ async def system_dashboard(request: Request):
         ORDER BY d.last_seen_at DESC
     """).fetchall()
 
-    # Fetch all rinks for assignment dropdowns
-    rinks = db.execute("""
-        SELECT r.client_id, r.rink_id, r.name, c.name as client_name
-        FROM rinks r
-        JOIN clients c ON r.client_id = c.client_id
-        ORDER BY c.name, r.name
-    """).fetchall()
-
     db.close()
 
-    # Build client rows HTML
-    client_rows = []
-    for client in clients:
-        status_badge = '<span class="status-badge active">Active</span>' if client["is_active"] else '<span class="status-badge inactive">Inactive</span>'
-        created_date = datetime.fromtimestamp(client["created_at"]).strftime("%Y-%m-%d")
+    # Prepare clients for template
+    clients = []
+    for client in clients_raw:
+        clients.append({
+            "client_id": client["client_id"],
+            "name": client["name"],
+            "slug": client["slug"],
+            "contact_email": client["contact_email"],
+            "is_active": client["is_active"],
+            "created_date": datetime.fromtimestamp(client["created_at"]).strftime("%Y-%m-%d")
+        })
 
-        # Deactivate/Reactivate button
-        if client["is_active"]:
-            action_button = f'<button class="btn-unassign" onclick="toggleClientStatus(\'{client["client_id"]}\', 0)" style="font-size: 11px; padding: 3px 8px;">Deactivate</button>'
-        else:
-            action_button = f'<button class="btn-save" onclick="toggleClientStatus(\'{client["client_id"]}\', 1)" style="font-size: 11px; padding: 3px 8px;">Reactivate</button>'
-
-        client_rows.append(f"""
-            <tr>
-                <td class="nowrap">{client["client_id"]}</td>
-                <td><strong>{client["name"]}</strong></td>
-                <td>{client["slug"]}</td>
-                <td>{client["contact_email"] or "-"}</td>
-                <td>{status_badge}</td>
-                <td class="timestamp">{created_date}</td>
-                <td>{action_button}</td>
-            </tr>
-        """)
-
-    # Build user rows HTML
-    user_rows = []
-    for user in users:
-        status_badge = '<span class="status-badge active">Active</span>' if user["is_active"] else '<span class="status-badge inactive">Inactive</span>'
-        created_date = datetime.fromtimestamp(user["created_at"]).strftime("%Y-%m-%d")
-        last_login = datetime.fromtimestamp(user["last_login_at"]).strftime("%Y-%m-%d %H:%M") if user["last_login_at"] else "Never"
-        client_name = user["client_name"] or "(Super Admin)"
-
+    # Prepare users for template
+    users = []
+    for user in users_raw:
         role_badge_color = {
             "super_admin": "background: #e3f2fd; color: #1565c0;",
             "admin": "background: #e8f5e9; color: #2e7d32;",
             "viewer": "background: #fff3e0; color: #e65100;"
         }.get(user["role"], "")
 
-        # Action buttons
-        reset_button = f'<button class="btn-save" onclick="showResetPassword(\'{user["user_id"]}\', \'{user["email"]}\')" style="font-size: 11px; padding: 3px 8px; margin-right: 4px;">Reset Password</button>'
+        users.append({
+            "user_id": user["user_id"],
+            "email": user["email"],
+            "role": user["role"],
+            "client_name": user["client_name"] or "(Super Admin)",
+            "is_active": user["is_active"],
+            "last_login": datetime.fromtimestamp(user["last_login_at"]).strftime("%Y-%m-%d %H:%M") if user["last_login_at"] else "Never",
+            "created_date": datetime.fromtimestamp(user["created_at"]).strftime("%Y-%m-%d"),
+            "role_badge_color": role_badge_color
+        })
 
-        if user["is_active"]:
-            toggle_button = f'<button class="btn-unassign" onclick="toggleUserStatus(\'{user["user_id"]}\', 0)" style="font-size: 11px; padding: 3px 8px;">Deactivate</button>'
-        else:
-            toggle_button = f'<button class="btn-save" onclick="toggleUserStatus(\'{user["user_id"]}\', 1)" style="font-size: 11px; padding: 3px 8px;">Reactivate</button>'
-
-        user_rows.append(f"""
-            <tr>
-                <td>{user["email"]}</td>
-                <td><span class="badge" style="{role_badge_color}">{user["role"]}</span></td>
-                <td>{client_name}</td>
-                <td>{status_badge}</td>
-                <td class="timestamp">{last_login}</td>
-                <td class="timestamp">{created_date}</td>
-                <td>
-                    {reset_button}
-                    {toggle_button}
-                </td>
-            </tr>
-        """)
-
-    # Build device rows HTML
-    device_rows = []
-    for device in devices:
+    # Prepare devices for template
+    devices = []
+    for device in devices_raw:
         first_seen = datetime.fromtimestamp(device["first_seen_at"]).strftime("%Y-%m-%d")
         last_seen = datetime.fromtimestamp(device["last_seen_at"]).strftime("%Y-%m-%d %H:%M")
         client_name = device["client_name"] or "<span style='color: #999;'>Unclaimed</span>"
@@ -479,321 +440,30 @@ async def system_dashboard(request: Request):
         # Actions
         actions = ""
         if device["client_id"]:
-            # Claimed device - allow unclaiming
             actions = f'<button class="btn-unassign" onclick="unclaimDevice(\'{device["device_id"]}\')" style="font-size: 11px; padding: 3px 8px;">Unclaim</button>'
 
         # Device display name
         device_display = device["device_name"] if device["device_name"] else device["device_id"]
         device_id_subtitle = f'<br><small style="color: #666; font-size: 11px;">{device["device_id"]}</small>' if device["device_name"] else ""
 
-        device_rows.append(f"""
-            <tr>
-                <td class="nowrap">{device_display}{device_id_subtitle}</td>
-                <td>{client_name}</td>
-                <td>{assignment_info}</td>
-                <td>{status_badge}</td>
-                <td class="timestamp">{first_seen}</td>
-                <td class="timestamp">{last_seen}</td>
-                <td>{actions}</td>
-            </tr>
-        """)
+        devices.append({
+            "device_display": f'{device_display}{device_id_subtitle}',
+            "client_name": client_name,
+            "assignment_info": assignment_info,
+            "status_badge": status_badge,
+            "first_seen": first_seen,
+            "last_seen": last_seen,
+            "actions": actions
+        })
 
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>score-cloud | System Dashboard</title>
-    <link rel="stylesheet" href="/static/admin.css">
-</head>
-<body>
-    {admin_nav("system", session)}
-    <div class="container wide">
-        <h1>System Dashboard</h1>
-
-        <!-- Clients Section -->
-        <div class="content">
-            <h2>Clients</h2>
-            <p class="hint">Manage multi-tenant clients in the system</p>
-
-            <!-- Add Client Form -->
-            <form method="POST" action="/admin/clients" style="margin-bottom: 20px; padding: 12px; background: #f8f9fa; border-radius: 4px;">
-                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 10px;">
-                    <div class="form-group">
-                        <label>Name <span class="required">*</span></label>
-                        <input type="text" id="clientName" name="name" required placeholder="My Client">
-                        <small style="font-size: 10px; color: #666;">Display name</small>
-                    </div>
-                    <div class="form-group">
-                        <label>Client ID <span class="required">*</span></label>
-                        <input type="text" id="clientId" name="client_id" required placeholder="my-client" readonly style="background: #f5f5f5;">
-                        <small style="font-size: 10px; color: #666;">Auto-generated</small>
-                    </div>
-                    <div class="form-group">
-                        <label>Slug <span class="required">*</span></label>
-                        <input type="text" id="clientSlug" name="slug" required placeholder="my-client" readonly style="background: #f5f5f5;">
-                        <small style="font-size: 10px; color: #666;">Auto-generated</small>
-                    </div>
-                    <div class="form-group">
-                        <label>Contact Email</label>
-                        <input type="email" name="contact_email" placeholder="admin@example.com">
-                        <small style="font-size: 10px; color: #666;">Optional</small>
-                    </div>
-                </div>
-                <button type="submit" class="btn-save">Create Client</button>
-            </form>
-
-            <table>
-                <thead>
-                    <tr>
-                        <th>Client ID</th>
-                        <th>Name</th>
-                        <th>Slug</th>
-                        <th>Contact Email</th>
-                        <th>Status</th>
-                        <th>Created</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {''.join(client_rows) if client_rows else '<tr><td colspan="7" style="text-align: center; color: #666;">No clients found</td></tr>'}
-                </tbody>
-            </table>
-        </div>
-
-        <!-- Users Section -->
-        <div class="content" style="margin-top: 20px;">
-            <h2>Users</h2>
-            <p class="hint">User accounts and their access levels</p>
-
-            <!-- Add User Form -->
-            <form method="POST" action="/admin/users" style="margin-bottom: 20px; padding: 12px; background: #f8f9fa; border-radius: 4px;">
-                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 10px;">
-                    <div class="form-group">
-                        <label>Email <span class="required">*</span></label>
-                        <input type="email" name="email" required placeholder="user@example.com">
-                    </div>
-                    <div class="form-group">
-                        <label>Password <span class="required">*</span></label>
-                        <input type="password" name="password" required placeholder="Password">
-                    </div>
-                    <div class="form-group">
-                        <label>Role <span class="required">*</span></label>
-                        <select name="role" required>
-                            <option value="admin">Admin</option>
-                            <option value="viewer">Viewer</option>
-                            <option value="super_admin">Super Admin</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Client</label>
-                        <select name="client_id">
-                            <option value="">(Super Admin - no client)</option>
-                            {''.join([f'<option value="{c["client_id"]}">{c["name"]}</option>' for c in clients])}
-                        </select>
-                    </div>
-                </div>
-                <button type="submit" class="btn-save">Create User</button>
-            </form>
-
-            <table>
-                <thead>
-                    <tr>
-                        <th>Email</th>
-                        <th>Role</th>
-                        <th>Client</th>
-                        <th>Status</th>
-                        <th>Last Login</th>
-                        <th>Created</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {''.join(user_rows) if user_rows else '<tr><td colspan="7" style="text-align: center; color: #666;">No users found</td></tr>'}
-                </tbody>
-            </table>
-        </div>
-
-        <!-- Devices Section -->
-        <div class="content" style="margin-top: 20px;">
-            <h2>Devices</h2>
-            <p class="hint">Monitor and manage all devices across clients</p>
-
-            <!-- Claim Device Form (Super Admin) -->
-            <form method="POST" action="/admin/devices/claim" style="margin-bottom: 20px; padding: 12px; background: #f3e5f5; border-radius: 4px; border: 1px solid #6a1b9a;">
-                <div style="display: flex; gap: 10px; align-items: flex-end;">
-                    <div class="form-group" style="margin: 0; flex: 0 0 200px;">
-                        <label style="font-weight: 600; color: #6a1b9a;">Claim Code <span class="required">*</span></label>
-                        <input type="text" name="claim_code" required placeholder="ABC-123" maxlength="7" style="text-transform: uppercase; font-family: monospace; font-size: 14px; padding: 8px 12px;">
-                    </div>
-                    <div class="form-group" style="margin: 0; flex: 0 0 250px;">
-                        <label style="font-weight: 600; color: #6a1b9a;">For Client <span class="required">*</span></label>
-                        <select name="target_client_id" required style="padding: 8px 12px; font-size: 14px;">
-                            <option value="">Select client...</option>
-                            {''.join([f'<option value="{c["client_id"]}">{c["name"]}</option>' for c in clients])}
-                        </select>
-                    </div>
-                    <div class="form-group" style="margin: 0; flex: 0 0 200px;">
-                        <label style="font-weight: 600; color: #6a1b9a;">Device Name (optional)</label>
-                        <input type="text" name="device_name" placeholder="e.g., Sheet A" style="font-size: 14px; padding: 8px 12px;">
-                    </div>
-                    <button type="submit" class="btn-save">Claim Device</button>
-                    <span style="color: #666; font-size: 12px;">Claim device on behalf of a client</span>
-                </div>
-            </form>
-
-            <table>
-                <thead>
-                    <tr>
-                        <th>Device</th>
-                        <th>Client</th>
-                        <th>Assignment / Claim Code</th>
-                        <th>Status</th>
-                        <th>First Seen</th>
-                        <th>Last Seen</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {''.join(device_rows) if device_rows else '<tr><td colspan="7" style="text-align: center; color: #666;">No devices found</td></tr>'}
-                </tbody>
-            </table>
-        </div>
-    </div>
-
-    <!-- Password Reset Modal -->
-    <div id="resetPasswordModal" class="modal" style="display: none;">
-        <div class="modal-content" style="max-width: 400px;">
-            <div class="modal-header">
-                <h2>Reset Password</h2>
-                <span class="modal-close" onclick="closeResetPassword()">&times;</span>
-            </div>
-            <form method="POST" action="/admin/reset-password" style="padding: 12px;">
-                <input type="hidden" id="resetUserId" name="user_id">
-                <div class="form-group">
-                    <label>User</label>
-                    <input type="text" id="resetUserEmail" readonly style="background: #f5f5f5; font-weight: 500;">
-                </div>
-                <div class="form-group">
-                    <label>New Password <span class="required">*</span></label>
-                    <input type="password" name="new_password" required placeholder="Enter new password" autocomplete="new-password">
-                    <small style="font-size: 11px; color: #666;">Minimum 6 characters recommended</small>
-                </div>
-                <div class="form-actions">
-                    <button type="button" onclick="closeResetPassword()" style="background: #6c757d; color: white; padding: 6px 12px; border: none; border-radius: 3px; cursor: pointer; font-size: 12px;">Cancel</button>
-                    <button type="submit" class="btn-save" style="padding: 6px 12px; font-size: 12px;">Reset Password</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <script>
-        // Auto-generate client_id and slug from name
-        const nameInput = document.getElementById('clientName');
-        const clientIdInput = document.getElementById('clientId');
-        const slugInput = document.getElementById('clientSlug');
-
-        if (nameInput && clientIdInput && slugInput) {{
-            nameInput.addEventListener('input', function() {{
-                const name = this.value;
-                // Create slug: lowercase, replace spaces with hyphens, remove special chars
-                const slug = name
-                    .toLowerCase()
-                    .trim()
-                    .replace(/[^a-z0-9\\s-]/g, '')  // Remove special characters
-                    .replace(/\\s+/g, '-')           // Replace spaces with hyphens
-                    .replace(/-+/g, '-');            // Replace multiple hyphens with single
-
-                clientIdInput.value = slug;
-                slugInput.value = slug;
-            }});
-        }}
-
-        // Password reset modal functions
-        function showResetPassword(userId, email) {{
-            document.getElementById('resetUserId').value = userId;
-            document.getElementById('resetUserEmail').value = email;
-            document.getElementById('resetPasswordModal').style.display = 'flex';
-        }}
-
-        function closeResetPassword() {{
-            document.getElementById('resetPasswordModal').style.display = 'none';
-            document.getElementById('resetUserId').value = '';
-            document.getElementById('resetUserEmail').value = '';
-        }}
-
-        // Close modal when clicking outside
-        document.getElementById('resetPasswordModal').addEventListener('click', function(e) {{
-            if (e.target === this) {{
-                closeResetPassword();
-            }}
-        }});
-
-        // Toggle client status (deactivate/reactivate)
-        function toggleClientStatus(clientId, isActive) {{
-            const action = isActive ? 'reactivate' : 'deactivate';
-            if (confirm(`Are you sure you want to ${{action}} this client?`)) {{
-                const form = document.createElement('form');
-                form.method = 'POST';
-                form.action = '/admin/toggle-client-status';
-
-                const clientIdInput = document.createElement('input');
-                clientIdInput.type = 'hidden';
-                clientIdInput.name = 'client_id';
-                clientIdInput.value = clientId;
-
-                const isActiveInput = document.createElement('input');
-                isActiveInput.type = 'hidden';
-                isActiveInput.name = 'is_active';
-                isActiveInput.value = isActive;
-
-                form.appendChild(clientIdInput);
-                form.appendChild(isActiveInput);
-                document.body.appendChild(form);
-                form.submit();
-            }}
-        }}
-
-        // Toggle user status (deactivate/reactivate)
-        function toggleUserStatus(userId, isActive) {{
-            const action = isActive ? 'reactivate' : 'deactivate';
-            if (confirm(`Are you sure you want to ${{action}} this user?`)) {{
-                const form = document.createElement('form');
-                form.method = 'POST';
-                form.action = '/admin/toggle-user-status';
-
-                const userIdInput = document.createElement('input');
-                userIdInput.type = 'hidden';
-                userIdInput.name = 'user_id';
-                userIdInput.value = userId;
-
-                const isActiveInput = document.createElement('input');
-                isActiveInput.type = 'hidden';
-                isActiveInput.name = 'is_active';
-                isActiveInput.value = isActive;
-
-                form.appendChild(userIdInput);
-                form.appendChild(isActiveInput);
-                document.body.appendChild(form);
-                form.submit();
-            }}
-        }}
-
-        // Unclaim device
-        function unclaimDevice(deviceId) {{
-            if (confirm('Are you sure you want to unclaim this device? It will generate a new claim code.')) {{
-                const form = document.createElement('form');
-                form.method = 'POST';
-                form.action = `/admin/devices/${{deviceId}}/unclaim`;
-
-                document.body.appendChild(form);
-                form.submit();
-            }}
-        }}
-    </script>
-</body>
-</html>
-"""
-    return HTMLResponse(content=html)
+    return templates.TemplateResponse("admin/system.html", {
+        "request": request,
+        "nav_html": admin_nav("system", session),
+        "wide": True,
+        "clients": clients,
+        "users": users,
+        "devices": devices
+    })
 
 
 @app.post("/admin/clients")
@@ -1343,6 +1013,7 @@ async def post_heartbeat(request: HeartbeatRequest):
 
 @app.post("/admin/rinks")
 async def create_rink(
+    request: Request,
     name: str = Body(...),
     address: Optional[str] = Body(None),
     city: Optional[str] = Body(None),
@@ -1357,19 +1028,29 @@ async def create_rink(
 
     Auto-generates rink_id from name using slugify.
     """
+    # Require authentication
+    session = require_auth(request)
+    client_id = auth.get_current_client(session)
+
     # Auto-generate rink_id from name
     rink_id = slugify(name)
 
-    logger.info(f"Creating rink {rink_id} from name '{name}'")
+    logger.info(f"Creating rink {rink_id} from name '{name}' for client {client_id}")
 
     db = get_db()
     current_time = int(time.time())
 
-    # Check if rink already exists
-    existing = db.execute(
-        "SELECT rink_id FROM rinks WHERE rink_id = ?",
-        (rink_id,)
-    ).fetchone()
+    # Check if rink already exists for this client
+    if client_id:
+        existing = db.execute(
+            "SELECT rink_id FROM rinks WHERE client_id = ? AND rink_id = ?",
+            (client_id, rink_id)
+        ).fetchone()
+    else:
+        existing = db.execute(
+            "SELECT rink_id FROM rinks WHERE rink_id = ?",
+            (rink_id,)
+        ).fetchone()
 
     if existing:
         db.close()
@@ -1380,9 +1061,9 @@ async def create_rink(
 
     # Insert rink
     db.execute("""
-        INSERT INTO rinks (rink_id, name, address, city, province_state, postal_code, country, phone, website, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (rink_id, name, address, city, province_state, postal_code, country, phone, website, current_time))
+        INSERT INTO rinks (client_id, rink_id, name, address, city, province_state, postal_code, country, phone, website, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (client_id, rink_id, name, address, city, province_state, postal_code, country, phone, website, current_time))
 
     db.commit()
     db.close()
@@ -5367,7 +5048,7 @@ async def list_rinks_admin(request: Request, format: Optional[str] = Query(None)
             "unassigned_devices": [dict(d) for d in unassigned_devices]
         }
 
-    # Generate HTML view
+    # Generate dynamic HTML components
     import datetime
 
     def format_timestamp(ts):
@@ -5496,366 +5177,14 @@ async def list_rinks_admin(request: Request, format: Optional[str] = Query(None)
         </div>
         '''
 
-    html = f'''
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>score-cloud | Venues</title>
-        <link rel="stylesheet" href="/static/admin.css">
-        <style>
-            .assign-select {{
-                max-width: 200px;
-                font-size: 0.9em;
-            }}
-        </style>
-        <script>
-            // Tree state management
-            const TREE_STATE_KEY = 'venues_tree_expanded_nodes';
-
-            function getExpandedNodes() {{
-                const stored = localStorage.getItem(TREE_STATE_KEY);
-                return stored ? JSON.parse(stored) : [];
-            }}
-
-            function saveExpandedNodes(expandedNodes) {{
-                localStorage.setItem(TREE_STATE_KEY, JSON.stringify(expandedNodes));
-            }}
-
-            function getNodeKey(node) {{
-                const type = node.getAttribute('data-type');
-                const id = node.getAttribute('data-id');
-                return `${{type}}:${{id}}`;
-            }}
-
-            // Tree navigation
-            function toggleNode(header) {{
-                const node = header.parentElement;
-                const children = node.querySelector('.node-children');
-                const icon = header.querySelector('.toggle-icon');
-                const nodeKey = getNodeKey(node);
-                let expandedNodes = getExpandedNodes();
-
-                if (children.style.display === 'none') {{
-                    children.style.display = 'block';
-                    icon.textContent = '▼';
-                    if (!expandedNodes.includes(nodeKey)) {{
-                        expandedNodes.push(nodeKey);
-                    }}
-                }} else {{
-                    children.style.display = 'none';
-                    icon.textContent = '▶';
-                    expandedNodes = expandedNodes.filter(k => k !== nodeKey);
-                }}
-
-                saveExpandedNodes(expandedNodes);
-            }}
-
-            // Restore tree state on page load
-            function restoreTreeState() {{
-                const expandedNodes = getExpandedNodes();
-                expandedNodes.forEach(nodeKey => {{
-                    const [type, id] = nodeKey.split(':');
-                    const node = document.querySelector(`.tree-node[data-type="${{type}}"][data-id="${{id}}"]`);
-                    if (node) {{
-                        const children = node.querySelector('.node-children');
-                        const icon = node.querySelector('.toggle-icon');
-                        if (children && icon) {{
-                            children.style.display = 'block';
-                            icon.textContent = '▼';
-                        }}
-                    }}
-                }});
-            }}
-
-            document.addEventListener('DOMContentLoaded', restoreTreeState);
-
-            // Modal management
-            let currentModalType = null;
-            let currentContext = {{}};
-
-            function openModal(type, ...context) {{
-                currentModalType = type;
-                const modal = document.getElementById('entityModal');
-                const title = document.getElementById('modalTitle');
-                const form = document.getElementById('entityForm');
-                const fields = document.getElementById('modalFields');
-
-                form.reset();
-
-                if (type === 'venue') {{
-                    title.textContent = 'Add Venue';
-                    fields.innerHTML = `
-                        <div class="form-group">
-                            <label>Name <span class="required">*</span></label>
-                            <input type="text" name="name" required placeholder="e.g., Sharks Ice at San Jose">
-                        </div>
-                        <div class="form-group">
-                            <label>Address</label>
-                            <input type="text" name="address" placeholder="e.g., 1500 S 10th St">
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label>City</label>
-                                <input type="text" name="city" placeholder="e.g., San Jose">
-                            </div>
-                            <div class="form-group">
-                                <label>State/Province</label>
-                                <input type="text" name="province_state" placeholder="e.g., CA">
-                            </div>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label>Postal Code</label>
-                                <input type="text" name="postal_code" placeholder="e.g., 95112">
-                            </div>
-                            <div class="form-group">
-                                <label>Country</label>
-                                <input type="text" name="country" placeholder="e.g., USA">
-                            </div>
-                        </div>
-                        <div class="form-row">
-                            <div class="form-group">
-                                <label>Phone</label>
-                                <input type="tel" name="phone" placeholder="e.g., 555-1234">
-                            </div>
-                            <div class="form-group">
-                                <label>Website</label>
-                                <input type="url" name="website" placeholder="e.g., https://venue.com">
-                            </div>
-                        </div>
-                    `;
-                }} else if (type === 'sheet') {{
-                    currentContext = {{rink_id: context[0]}};
-                    title.textContent = 'Add Sheet to Venue';
-                    fields.innerHTML = `
-                        <div class="form-group">
-                            <label>Name <span class="required">*</span></label>
-                            <input type="text" name="name" required placeholder="e.g., Sheet A">
-                        </div>
-                        <div class="form-group">
-                            <label>Surface Type</label>
-                            <select name="surface_type">
-                                <option value="">--</option>
-                                <option value="NHL">NHL</option>
-                                <option value="Olympic">Olympic</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label>Capacity</label>
-                            <input type="number" name="capacity" min="0" placeholder="e.g., 500">
-                        </div>
-                    `;
-                }}
-
-                modal.style.display = 'flex';
-            }}
-
-            function closeModal() {{
-                document.getElementById('entityModal').style.display = 'none';
-                currentModalType = null;
-                currentContext = {{}};
-            }}
-
-            // Form submission
-            document.addEventListener('DOMContentLoaded', function() {{
-                document.getElementById('entityForm').addEventListener('submit', async function(e) {{
-                    e.preventDefault();
-
-                    const formData = new FormData(e.target);
-                    let endpoint = '';
-                    let body = {{}};
-
-                    if (currentModalType === 'venue') {{
-                        endpoint = '/admin/rinks';
-                        body = {{
-                            name: formData.get('name'),
-                            address: formData.get('address') || null,
-                            city: formData.get('city') || null,
-                            province_state: formData.get('province_state') || null,
-                            postal_code: formData.get('postal_code') || null,
-                            country: formData.get('country') || null,
-                            phone: formData.get('phone') || null,
-                            website: formData.get('website') || null
-                        }};
-                    }} else if (currentModalType === 'sheet') {{
-                        endpoint = '/admin/rink-sheets';
-                        body = {{
-                            rink_id: currentContext.rink_id,
-                            name: formData.get('name'),
-                            surface_type: formData.get('surface_type') || null,
-                            capacity: formData.get('capacity') ? parseInt(formData.get('capacity')) : null
-                        }};
-                    }}
-
-                    try {{
-                        const response = await fetch(endpoint, {{
-                            method: 'POST',
-                            headers: {{'Content-Type': 'application/json'}},
-                            body: JSON.stringify(body)
-                        }});
-
-                        if (response.ok) {{
-                            showMessage('Created successfully', 'success');
-                            closeModal();
-
-                            // Ensure the parent venue stays expanded after reload
-                            if (currentModalType === 'sheet' && currentContext.rink_id) {{
-                                let expandedNodes = getExpandedNodes();
-                                const nodeKey = `venue:${{currentContext.rink_id}}`;
-                                if (!expandedNodes.includes(nodeKey)) {{
-                                    expandedNodes.push(nodeKey);
-                                    saveExpandedNodes(expandedNodes);
-                                }}
-                            }}
-
-                            setTimeout(() => location.reload(), 1000);
-                        }} else {{
-                            const error = await response.json();
-                            showMessage(error.detail || 'Failed to create', 'error');
-                        }}
-                    }} catch (error) {{
-                        console.error('Network error:', error);
-                        showMessage('Network error: ' + error.message, 'error');
-                    }}
-                }});
-            }});
-
-            function showMessage(text, type) {{
-                const msg = document.getElementById('message');
-                msg.textContent = text;
-                msg.className = `message ${{type}}`;
-                msg.style.display = 'block';
-                setTimeout(() => {{ msg.style.display = 'none'; }}, 5000);
-            }}
-
-            // Device assignment
-            async function assignDevice(deviceId, rinkId, sheetName) {{
-                if (!deviceId) return;
-
-                try {{
-                    const response = await fetch(`/admin/devices/${{deviceId}}`, {{
-                        method: 'PUT',
-                        headers: {{'Content-Type': 'application/json'}},
-                        body: JSON.stringify({{
-                            rink_id: rinkId,
-                            sheet_name: sheetName
-                        }})
-                    }});
-
-                    if (response.ok) {{
-                        showMessage(`Device ${{deviceId}} assigned`, 'success');
-                        setTimeout(() => location.reload(), 1000);
-                    }} else {{
-                        const error = await response.json();
-                        showMessage(error.detail || 'Failed to assign', 'error');
-                    }}
-                }} catch (error) {{
-                    showMessage('Network error', 'error');
-                }}
-            }}
-
-            async function unassignDevice(deviceId, rinkId, sheetName) {{
-                if (!confirm(`Unassign device ${{deviceId}}?`)) return;
-
-                try {{
-                    const response = await fetch(`/admin/devices/${{deviceId}}/assignment`, {{
-                        method: 'DELETE'
-                    }});
-
-                    if (response.ok) {{
-                        showMessage(`Device ${{deviceId}} unassigned`, 'success');
-                        setTimeout(() => location.reload(), 1000);
-                    }} else {{
-                        const error = await response.json();
-                        showMessage(error.detail || 'Failed to unassign', 'error');
-                    }}
-                }} catch (error) {{
-                    showMessage('Network error', 'error');
-                }}
-            }}
-
-            async function deleteSheet(sheetId, sheetName) {{
-                if (!confirm(`Delete sheet "${{sheetName}}"? This cannot be undone.`)) return;
-
-                try {{
-                    const response = await fetch(`/admin/rink-sheets/${{sheetId}}`, {{
-                        method: 'DELETE'
-                    }});
-
-                    if (response.ok) {{
-                        showMessage(`Sheet "${{sheetName}}" deleted`, 'success');
-                        setTimeout(() => location.reload(), 1000);
-                    }} else {{
-                        const error = await response.json();
-                        showMessage(error.detail || 'Failed to delete sheet', 'error');
-                    }}
-                }} catch (error) {{
-                    showMessage('Network error', 'error');
-                }}
-            }}
-
-            // Close modal on outside click
-            document.addEventListener('click', function(e) {{
-                const modal = document.getElementById('entityModal');
-                if (e.target === modal) {{
-                    closeModal();
-                }}
-            }});
-        </script>
-    </head>
-    <body>
-        {admin_nav("venues", session)}
-        <div class="container wide">
-            <h1>Venues</h1>
-
-            <div id="message" class="message"></div>
-
-            <!-- Claim Device Section -->
-            {claim_form_html}
-
-            <!-- Unassigned Devices Section -->
-            <div class="content">
-                <h2>Unassigned Devices</h2>
-                <p class="hint">Devices claimed but not yet assigned to a sheet (last 7 days)</p>
-                <div class="unassigned-devices-list">
-                    {unassigned_html}
-                </div>
-            </div>
-
-            <!-- Add Venue Button -->
-            <div style="margin: 20px 0;">
-                <button class="btn-add" onclick="openModal('venue')">+ Add Venue</button>
-            </div>
-
-            <!-- Tree view -->
-            <div class="content">
-                <div class="tree-container">
-                    {tree_html}
-                </div>
-            </div>
-        </div>
-
-        <!-- Modal -->
-        <div id="entityModal" class="modal" style="display: none;">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h2 id="modalTitle">Add Entity</h2>
-                    <span class="modal-close" onclick="closeModal()">&times;</span>
-                </div>
-                <form id="entityForm">
-                    <div id="modalFields"></div>
-                    <div class="form-actions">
-                        <button type="button" onclick="closeModal()">Cancel</button>
-                        <button type="submit" class="btn-save">Create</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    </body>
-    </html>
-    '''
-    return HTMLResponse(content=html)
+    return templates.TemplateResponse("admin/venues.html", {
+        "request": request,
+        "nav_html": admin_nav("venues", session),
+        "wide": True,
+        "tree_html": tree_html,
+        "unassigned_html": unassigned_html,
+        "claim_form_html": claim_form_html
+    })
 
 
 
@@ -6726,149 +6055,12 @@ async def stats_page(
             "standings": standings
         }
 
-    # Generate HTML
-    html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>score-cloud | Stats</title>
-    <link rel="stylesheet" href="/static/admin.css">
-</head>
-<body>
-    {admin_nav("stats", session)}
-    <div class="container wide">
-        <h1>League Statistics</h1>
-
-        <p class="hint">Player and team statistics computed from game events. Type in column headers to filter.</p>
-
-        <!-- Leaderboards -->
-        <div class="content">
-            <h2>Player Statistics</h2>
-            {'<p style="color: #666; font-size: 13px;">No statistics found</p>' if not points_leaders else f'''
-            <table id="statsTable">
-                <thead>
-                    <tr>
-                        <th>League</th>
-                        <th>Season</th>
-                        <th>Division</th>
-                        <th>Team</th>
-                        <th>Player</th>
-                        <th>#</th>
-                        <th class="sortable" onclick="sortTable(6)" style="cursor: pointer;">Goals</th>
-                        <th class="sortable" onclick="sortTable(7)" style="cursor: pointer;">Assists</th>
-                        <th class="sortable" onclick="sortTable(8)" style="cursor: pointer;">Points ▼</th>
-                    </tr>
-                    <tr class="filter-row">
-                        <td><input type="text" id="filterLeague" placeholder="Filter..." onkeyup="filterStatsTable()"></td>
-                        <td><input type="text" id="filterSeason" placeholder="Filter..." onkeyup="filterStatsTable()"></td>
-                        <td><input type="text" id="filterDivision" placeholder="Filter..." onkeyup="filterStatsTable()"></td>
-                        <td><input type="text" id="filterTeam" placeholder="Filter..." onkeyup="filterStatsTable()"></td>
-                        <td><input type="text" id="filterPlayer" placeholder="Filter..." onkeyup="filterStatsTable()"></td>
-                        <td></td>
-                        <td></td>
-                        <td></td>
-                        <td></td>
-                    </tr>
-                </thead>
-                <tbody>
-                    {''.join(f'<tr><td>{p["league_name"] or "-"}</td><td>{p["season_name"] or "-"}</td><td>{p["division_name"] or "-"}</td><td>{p["team_abbrev"] or "-"}</td><td>{p["full_name"] or "Unknown Player"}</td><td>{p["jersey_number"] or "-"}</td><td>{p["goals"]}</td><td>{p["assists"]}</td><td><strong>{p["points"]}</strong></td></tr>' for p in points_leaders)}
-                </tbody>
-            </table>
-            '''}
-        </div>
-
-        <!-- Team Standings -->
-        <div class="content">
-            <h2>Team Standings</h2>
-            <p style="color: #666; font-size: 13px;">Coming soon</p>
-        </div>
-    </div>
-
-    <script>
-    let sortColumn = 8;  // Default sort by Points (column 8)
-    let sortAscending = false;  // Default descending
-
-    function filterStatsTable() {{
-        const filters = {{
-            league: document.getElementById('filterLeague').value.toLowerCase(),
-            season: document.getElementById('filterSeason').value.toLowerCase(),
-            division: document.getElementById('filterDivision').value.toLowerCase(),
-            team: document.getElementById('filterTeam').value.toLowerCase(),
-            player: document.getElementById('filterPlayer').value.toLowerCase()
-        }};
-
-        const tbody = document.querySelector('#statsTable tbody');
-        const rows = tbody.getElementsByTagName('tr');
-
-        for (let i = 0; i < rows.length; i++) {{
-            const cells = rows[i].getElementsByTagName('td');
-            if (cells.length < 9) continue;
-
-            const league = cells[0].textContent.toLowerCase();
-            const season = cells[1].textContent.toLowerCase();
-            const division = cells[2].textContent.toLowerCase();
-            const team = cells[3].textContent.toLowerCase();
-            const player = cells[4].textContent.toLowerCase();
-
-            const match =
-                league.includes(filters.league) &&
-                season.includes(filters.season) &&
-                division.includes(filters.division) &&
-                team.includes(filters.team) &&
-                player.includes(filters.player);
-
-            rows[i].style.display = match ? '' : 'none';
-        }}
-    }}
-
-    function sortTable(column) {{
-        const table = document.getElementById('statsTable');
-        const tbody = table.getElementsByTagName('tbody')[0];
-        const rows = Array.from(tbody.getElementsByTagName('tr'));
-
-        // Toggle direction if clicking same column
-        if (sortColumn === column) {{
-            sortAscending = !sortAscending;
-        }} else {{
-            sortColumn = column;
-            sortAscending = false;  // New column defaults to descending
-        }}
-
-        // Sort rows
-        rows.sort((a, b) => {{
-            let aVal = a.getElementsByTagName('td')[column].textContent.trim();
-            let bVal = b.getElementsByTagName('td')[column].textContent.trim();
-
-            // Convert to numbers for numeric columns (jersey, goals, assists, points)
-            // Column 5 = jersey, columns 6-8 = stats
-            if (column === 5 || column >= 6) {{
-                aVal = parseInt(aVal) || 0;
-                bVal = parseInt(bVal) || 0;
-            }}
-
-            if (aVal === bVal) return 0;
-            if (sortAscending) {{
-                return aVal > bVal ? 1 : -1;
-            }} else {{
-                return aVal < bVal ? 1 : -1;
-            }}
-        }});
-
-        // Re-append rows in sorted order
-        rows.forEach(row => tbody.appendChild(row));
-
-        // Update header indicators
-        const headers = table.getElementsByTagName('th');
-        for (let i = 6; i < headers.length; i++) {{  // Only update sortable columns (6-8: Goals, Assists, Points)
-            const arrow = i === column ? (sortAscending ? ' ▲' : ' ▼') : '';
-            headers[i].textContent = headers[i].textContent.replace(/ [▲▼]/, '') + arrow;
-        }}
-    }}
-    </script>
-</body>
-</html>"""
-
-    return HTMLResponse(content=html)
+    return templates.TemplateResponse("admin/stats.html", {
+        "request": request,
+        "nav_html": admin_nav("stats", session),
+        "wide": True,
+        "points_leaders": points_leaders
+    })
 
 
 def main():

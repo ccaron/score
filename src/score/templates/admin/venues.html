@@ -1,0 +1,356 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Venues{% endblock %}
+
+{% block extra_head %}
+<style>
+    .assign-select {
+        max-width: 200px;
+        font-size: 0.9em;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<h1>Venues</h1>
+
+<div id="message" class="message"></div>
+
+<!-- Claim Device Section -->
+{{ claim_form_html|safe }}
+
+<!-- Unassigned Devices Section -->
+<div class="content">
+    <h2>Unassigned Devices</h2>
+    <p class="hint">Devices claimed but not yet assigned to a sheet (last 7 days)</p>
+    <div class="unassigned-devices-list">
+        {{ unassigned_html|safe }}
+    </div>
+</div>
+
+<!-- Add Venue Button -->
+<div style="margin: 20px 0;">
+    <button class="btn-add" onclick="openModal('venue')">+ Add Venue</button>
+</div>
+
+<!-- Tree view -->
+<div class="content">
+    <div class="tree-container">
+        {{ tree_html|safe }}
+    </div>
+</div>
+
+<!-- Modal -->
+<div id="entityModal" class="modal" style="display: none;">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2 id="modalTitle">Add Entity</h2>
+            <span class="modal-close" onclick="closeModal()">&times;</span>
+        </div>
+        <form id="entityForm">
+            <div id="modalFields"></div>
+            <div class="form-actions">
+                <button type="button" onclick="closeModal()">Cancel</button>
+                <button type="submit" class="btn-save">Create</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+    // Tree state management
+    const TREE_STATE_KEY = 'venues_tree_expanded_nodes';
+
+    function getExpandedNodes() {
+        const stored = localStorage.getItem(TREE_STATE_KEY);
+        return stored ? JSON.parse(stored) : [];
+    }
+
+    function saveExpandedNodes(expandedNodes) {
+        localStorage.setItem(TREE_STATE_KEY, JSON.stringify(expandedNodes));
+    }
+
+    function getNodeKey(node) {
+        const type = node.getAttribute('data-type');
+        const id = node.getAttribute('data-id');
+        return `${type}:${id}`;
+    }
+
+    // Tree navigation
+    function toggleNode(header) {
+        const node = header.parentElement;
+        const children = node.querySelector('.node-children');
+        const icon = header.querySelector('.toggle-icon');
+        const nodeKey = getNodeKey(node);
+        let expandedNodes = getExpandedNodes();
+
+        if (children.style.display === 'none') {
+            children.style.display = 'block';
+            icon.textContent = '▼';
+            if (!expandedNodes.includes(nodeKey)) {
+                expandedNodes.push(nodeKey);
+            }
+        } else {
+            children.style.display = 'none';
+            icon.textContent = '▶';
+            expandedNodes = expandedNodes.filter(k => k !== nodeKey);
+        }
+
+        saveExpandedNodes(expandedNodes);
+    }
+
+    // Restore tree state on page load
+    function restoreTreeState() {
+        const expandedNodes = getExpandedNodes();
+        expandedNodes.forEach(nodeKey => {
+            const [type, id] = nodeKey.split(':');
+            const node = document.querySelector(`.tree-node[data-type="${type}"][data-id="${id}"]`);
+            if (node) {
+                const children = node.querySelector('.node-children');
+                const icon = node.querySelector('.toggle-icon');
+                if (children && icon) {
+                    children.style.display = 'block';
+                    icon.textContent = '▼';
+                }
+            }
+        });
+    }
+
+    document.addEventListener('DOMContentLoaded', restoreTreeState);
+
+    // Modal management
+    let currentModalType = null;
+    let currentContext = {};
+
+    function openModal(type, ...context) {
+        currentModalType = type;
+        const modal = document.getElementById('entityModal');
+        const title = document.getElementById('modalTitle');
+        const form = document.getElementById('entityForm');
+        const fields = document.getElementById('modalFields');
+
+        form.reset();
+
+        if (type === 'venue') {
+            title.textContent = 'Add Venue';
+            fields.innerHTML = `
+                <div class="form-group">
+                    <label>Name <span class="required">*</span></label>
+                    <input type="text" name="name" required placeholder="e.g., Sharks Ice at San Jose">
+                </div>
+                <div class="form-group">
+                    <label>Address</label>
+                    <input type="text" name="address" placeholder="e.g., 1500 S 10th St">
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>City</label>
+                        <input type="text" name="city" placeholder="e.g., San Jose">
+                    </div>
+                    <div class="form-group">
+                        <label>State/Province</label>
+                        <input type="text" name="province_state" placeholder="e.g., CA">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Postal Code</label>
+                        <input type="text" name="postal_code" placeholder="e.g., 95112">
+                    </div>
+                    <div class="form-group">
+                        <label>Country</label>
+                        <input type="text" name="country" placeholder="e.g., USA">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>Phone</label>
+                        <input type="tel" name="phone" placeholder="e.g., 555-1234">
+                    </div>
+                    <div class="form-group">
+                        <label>Website</label>
+                        <input type="url" name="website" placeholder="e.g., https://venue.com">
+                    </div>
+                </div>
+            `;
+        } else if (type === 'sheet') {
+            currentContext = {rink_id: context[0]};
+            title.textContent = 'Add Sheet to Venue';
+            fields.innerHTML = `
+                <div class="form-group">
+                    <label>Name <span class="required">*</span></label>
+                    <input type="text" name="name" required placeholder="e.g., Sheet A">
+                </div>
+                <div class="form-group">
+                    <label>Surface Type</label>
+                    <select name="surface_type">
+                        <option value="">--</option>
+                        <option value="NHL">NHL</option>
+                        <option value="Olympic">Olympic</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Capacity</label>
+                    <input type="number" name="capacity" min="0" placeholder="e.g., 500">
+                </div>
+            `;
+        }
+
+        modal.style.display = 'flex';
+    }
+
+    function closeModal() {
+        document.getElementById('entityModal').style.display = 'none';
+        currentModalType = null;
+        currentContext = {};
+    }
+
+    // Form submission
+    document.addEventListener('DOMContentLoaded', function() {
+        document.getElementById('entityForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const formData = new FormData(e.target);
+            let endpoint = '';
+            let body = {};
+
+            if (currentModalType === 'venue') {
+                endpoint = '/admin/rinks';
+                body = {
+                    name: formData.get('name'),
+                    address: formData.get('address') || null,
+                    city: formData.get('city') || null,
+                    province_state: formData.get('province_state') || null,
+                    postal_code: formData.get('postal_code') || null,
+                    country: formData.get('country') || null,
+                    phone: formData.get('phone') || null,
+                    website: formData.get('website') || null
+                };
+            } else if (currentModalType === 'sheet') {
+                endpoint = '/admin/rink-sheets';
+                body = {
+                    rink_id: currentContext.rink_id,
+                    name: formData.get('name'),
+                    surface_type: formData.get('surface_type') || null,
+                    capacity: formData.get('capacity') ? parseInt(formData.get('capacity')) : null
+                };
+            }
+
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(body)
+                });
+
+                if (response.ok) {
+                    showMessage('Created successfully', 'success');
+                    closeModal();
+
+                    // Ensure the parent venue stays expanded after reload
+                    if (currentModalType === 'sheet' && currentContext.rink_id) {
+                        let expandedNodes = getExpandedNodes();
+                        const nodeKey = `venue:${currentContext.rink_id}`;
+                        if (!expandedNodes.includes(nodeKey)) {
+                            expandedNodes.push(nodeKey);
+                            saveExpandedNodes(expandedNodes);
+                        }
+                    }
+
+                    setTimeout(() => location.reload(), 1000);
+                } else {
+                    const error = await response.json();
+                    showMessage(error.detail || 'Failed to create', 'error');
+                }
+            } catch (error) {
+                console.error('Network error:', error);
+                showMessage('Network error: ' + error.message, 'error');
+            }
+        });
+    });
+
+    function showMessage(text, type) {
+        const msg = document.getElementById('message');
+        msg.textContent = text;
+        msg.className = `message ${type}`;
+        msg.style.display = 'block';
+        setTimeout(() => { msg.style.display = 'none'; }, 5000);
+    }
+
+    // Device assignment
+    async function assignDevice(deviceId, rinkId, sheetName) {
+        if (!deviceId) return;
+
+        try {
+            const response = await fetch(`/admin/devices/${deviceId}`, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    rink_id: rinkId,
+                    sheet_name: sheetName
+                })
+            });
+
+            if (response.ok) {
+                showMessage(`Device ${deviceId} assigned`, 'success');
+                setTimeout(() => location.reload(), 1000);
+            } else {
+                const error = await response.json();
+                showMessage(error.detail || 'Failed to assign', 'error');
+            }
+        } catch (error) {
+            showMessage('Network error', 'error');
+        }
+    }
+
+    async function unassignDevice(deviceId, rinkId, sheetName) {
+        if (!confirm(`Unassign device ${deviceId}?`)) return;
+
+        try {
+            const response = await fetch(`/admin/devices/${deviceId}/assignment`, {
+                method: 'DELETE'
+            });
+
+            if (response.ok) {
+                showMessage(`Device ${deviceId} unassigned`, 'success');
+                setTimeout(() => location.reload(), 1000);
+            } else {
+                const error = await response.json();
+                showMessage(error.detail || 'Failed to unassign', 'error');
+            }
+        } catch (error) {
+            showMessage('Network error', 'error');
+        }
+    }
+
+    async function deleteSheet(sheetId, sheetName) {
+        if (!confirm(`Delete sheet "${sheetName}"? This cannot be undone.`)) return;
+
+        try {
+            const response = await fetch(`/admin/rink-sheets/${sheetId}`, {
+                method: 'DELETE'
+            });
+
+            if (response.ok) {
+                showMessage(`Sheet "${sheetName}" deleted`, 'success');
+                setTimeout(() => location.reload(), 1000);
+            } else {
+                const error = await response.json();
+                showMessage(error.detail || 'Failed to delete sheet', 'error');
+            }
+        } catch (error) {
+            showMessage('Network error', 'error');
+        }
+    }
+
+    // Close modal on outside click
+    document.addEventListener('click', function(e) {
+        const modal = document.getElementById('entityModal');
+        if (e.target === modal) {
+            closeModal();
+        }
+    });
+</script>
+{% endblock %}

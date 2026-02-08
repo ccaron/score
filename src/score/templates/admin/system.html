@@ -1,0 +1,360 @@
+{% extends "admin/base.html" %}
+
+{% block title %}System Dashboard{% endblock %}
+
+{% block content %}
+<h1>System Dashboard</h1>
+
+<!-- Clients Section -->
+<div class="content">
+    <h2>Clients</h2>
+    <p class="hint">Manage multi-tenant clients in the system</p>
+
+    <!-- Add Client Form -->
+    <form method="POST" action="/admin/clients" style="margin-bottom: 20px; padding: 12px; background: #f8f9fa; border-radius: 4px;">
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 10px;">
+            <div class="form-group">
+                <label>Name <span class="required">*</span></label>
+                <input type="text" id="clientName" name="name" required placeholder="My Client">
+                <small style="font-size: 10px; color: #666;">Display name</small>
+            </div>
+            <div class="form-group">
+                <label>Client ID <span class="required">*</span></label>
+                <input type="text" id="clientId" name="client_id" required placeholder="my-client" readonly style="background: #f5f5f5;">
+                <small style="font-size: 10px; color: #666;">Auto-generated</small>
+            </div>
+            <div class="form-group">
+                <label>Slug <span class="required">*</span></label>
+                <input type="text" id="clientSlug" name="slug" required placeholder="my-client" readonly style="background: #f5f5f5;">
+                <small style="font-size: 10px; color: #666;">Auto-generated</small>
+            </div>
+            <div class="form-group">
+                <label>Contact Email</label>
+                <input type="email" name="contact_email" placeholder="admin@example.com">
+                <small style="font-size: 10px; color: #666;">Optional</small>
+            </div>
+        </div>
+        <button type="submit" class="btn-save">Create Client</button>
+    </form>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Client ID</th>
+                <th>Name</th>
+                <th>Slug</th>
+                <th>Contact Email</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% if clients %}
+                {% for client in clients %}
+                <tr>
+                    <td class="nowrap">{{ client.client_id }}</td>
+                    <td><strong>{{ client.name }}</strong></td>
+                    <td>{{ client.slug }}</td>
+                    <td>{{ client.contact_email or "-" }}</td>
+                    <td>
+                        {% if client.is_active %}
+                        <span class="status-badge active">Active</span>
+                        {% else %}
+                        <span class="status-badge inactive">Inactive</span>
+                        {% endif %}
+                    </td>
+                    <td class="timestamp">{{ client.created_date }}</td>
+                    <td>
+                        {% if client.is_active %}
+                        <button class="btn-unassign" onclick="toggleClientStatus('{{ client.client_id }}', 0)" style="font-size: 11px; padding: 3px 8px;">Deactivate</button>
+                        {% else %}
+                        <button class="btn-save" onclick="toggleClientStatus('{{ client.client_id }}', 1)" style="font-size: 11px; padding: 3px 8px;">Reactivate</button>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            {% else %}
+                <tr><td colspan="7" style="text-align: center; color: #666;">No clients found</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Users Section -->
+<div class="content" style="margin-top: 20px;">
+    <h2>Users</h2>
+    <p class="hint">User accounts and their access levels</p>
+
+    <!-- Add User Form -->
+    <form method="POST" action="/admin/users" style="margin-bottom: 20px; padding: 12px; background: #f8f9fa; border-radius: 4px;">
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 10px;">
+            <div class="form-group">
+                <label>Email <span class="required">*</span></label>
+                <input type="email" name="email" required placeholder="user@example.com">
+            </div>
+            <div class="form-group">
+                <label>Password <span class="required">*</span></label>
+                <input type="password" name="password" required placeholder="Password">
+            </div>
+            <div class="form-group">
+                <label>Role <span class="required">*</span></label>
+                <select name="role" required>
+                    <option value="admin">Admin</option>
+                    <option value="viewer">Viewer</option>
+                    <option value="super_admin">Super Admin</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Client</label>
+                <select name="client_id">
+                    <option value="">(Super Admin - no client)</option>
+                    {% for client in clients %}
+                    <option value="{{ client.client_id }}">{{ client.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+        <button type="submit" class="btn-save">Create User</button>
+    </form>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Client</th>
+                <th>Status</th>
+                <th>Last Login</th>
+                <th>Created</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% if users %}
+                {% for user in users %}
+                <tr>
+                    <td>{{ user.email }}</td>
+                    <td><span class="badge" style="{{ user.role_badge_color }}">{{ user.role }}</span></td>
+                    <td>{{ user.client_name }}</td>
+                    <td>
+                        {% if user.is_active %}
+                        <span class="status-badge active">Active</span>
+                        {% else %}
+                        <span class="status-badge inactive">Inactive</span>
+                        {% endif %}
+                    </td>
+                    <td class="timestamp">{{ user.last_login }}</td>
+                    <td class="timestamp">{{ user.created_date }}</td>
+                    <td>
+                        <button class="btn-save" onclick="showResetPassword('{{ user.user_id }}', '{{ user.email }}')" style="font-size: 11px; padding: 3px 8px; margin-right: 4px;">Reset Password</button>
+                        {% if user.is_active %}
+                        <button class="btn-unassign" onclick="toggleUserStatus('{{ user.user_id }}', 0)" style="font-size: 11px; padding: 3px 8px;">Deactivate</button>
+                        {% else %}
+                        <button class="btn-save" onclick="toggleUserStatus('{{ user.user_id }}', 1)" style="font-size: 11px; padding: 3px 8px;">Reactivate</button>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            {% else %}
+                <tr><td colspan="7" style="text-align: center; color: #666;">No users found</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Devices Section -->
+<div class="content" style="margin-top: 20px;">
+    <h2>Devices</h2>
+    <p class="hint">Monitor and manage all devices across clients</p>
+
+    <!-- Claim Device Form (Super Admin) -->
+    <form method="POST" action="/admin/devices/claim" style="margin-bottom: 20px; padding: 12px; background: #f3e5f5; border-radius: 4px; border: 1px solid #6a1b9a;">
+        <div style="display: flex; gap: 10px; align-items: flex-end;">
+            <div class="form-group" style="margin: 0; flex: 0 0 200px;">
+                <label style="font-weight: 600; color: #6a1b9a;">Claim Code <span class="required">*</span></label>
+                <input type="text" name="claim_code" required placeholder="ABC-123" maxlength="7" style="text-transform: uppercase; font-family: monospace; font-size: 14px; padding: 8px 12px;">
+            </div>
+            <div class="form-group" style="margin: 0; flex: 0 0 250px;">
+                <label style="font-weight: 600; color: #6a1b9a;">For Client <span class="required">*</span></label>
+                <select name="target_client_id" required style="padding: 8px 12px; font-size: 14px;">
+                    <option value="">Select client...</option>
+                    {% for client in clients %}
+                    <option value="{{ client.client_id }}">{{ client.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group" style="margin: 0; flex: 0 0 200px;">
+                <label style="font-weight: 600; color: #6a1b9a;">Device Name (optional)</label>
+                <input type="text" name="device_name" placeholder="e.g., Sheet A" style="font-size: 14px; padding: 8px 12px;">
+            </div>
+            <button type="submit" class="btn-save">Claim Device</button>
+            <span style="color: #666; font-size: 12px;">Claim device on behalf of a client</span>
+        </div>
+    </form>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Device</th>
+                <th>Client</th>
+                <th>Assignment / Claim Code</th>
+                <th>Status</th>
+                <th>First Seen</th>
+                <th>Last Seen</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% if devices %}
+                {% for device in devices %}
+                <tr>
+                    <td class="nowrap">{{ device.device_display|safe }}</td>
+                    <td>{{ device.client_name|safe }}</td>
+                    <td>{{ device.assignment_info|safe }}</td>
+                    <td>{{ device.status_badge|safe }}</td>
+                    <td class="timestamp">{{ device.first_seen }}</td>
+                    <td class="timestamp">{{ device.last_seen }}</td>
+                    <td>{{ device.actions|safe }}</td>
+                </tr>
+                {% endfor %}
+            {% else %}
+                <tr><td colspan="7" style="text-align: center; color: #666;">No devices found</td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Password Reset Modal -->
+<div id="resetPasswordModal" class="modal" style="display: none;">
+    <div class="modal-content" style="max-width: 400px;">
+        <div class="modal-header">
+            <h2>Reset Password</h2>
+            <span class="modal-close" onclick="closeResetPassword()">&times;</span>
+        </div>
+        <form method="POST" action="/admin/reset-password" style="padding: 12px;">
+            <input type="hidden" id="resetUserId" name="user_id">
+            <div class="form-group">
+                <label>User</label>
+                <input type="text" id="resetUserEmail" readonly style="background: #f5f5f5; font-weight: 500;">
+            </div>
+            <div class="form-group">
+                <label>New Password <span class="required">*</span></label>
+                <input type="password" name="new_password" required placeholder="Enter new password" autocomplete="new-password">
+                <small style="font-size: 11px; color: #666;">Minimum 6 characters recommended</small>
+            </div>
+            <div class="form-actions">
+                <button type="button" onclick="closeResetPassword()" style="background: #6c757d; color: white; padding: 6px 12px; border: none; border-radius: 3px; cursor: pointer; font-size: 12px;">Cancel</button>
+                <button type="submit" class="btn-save" style="padding: 6px 12px; font-size: 12px;">Reset Password</button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+// Auto-generate client_id and slug from name
+const nameInput = document.getElementById('clientName');
+const clientIdInput = document.getElementById('clientId');
+const slugInput = document.getElementById('clientSlug');
+
+if (nameInput && clientIdInput && slugInput) {
+    nameInput.addEventListener('input', function() {
+        const name = this.value;
+        // Create slug: lowercase, replace spaces with hyphens, remove special chars
+        const slug = name
+            .toLowerCase()
+            .trim()
+            .replace(/[^a-z0-9\s-]/g, '')  // Remove special characters
+            .replace(/\s+/g, '-')           // Replace spaces with hyphens
+            .replace(/-+/g, '-');            // Replace multiple hyphens with single
+
+        clientIdInput.value = slug;
+        slugInput.value = slug;
+    });
+}
+
+// Password reset modal functions
+function showResetPassword(userId, email) {
+    document.getElementById('resetUserId').value = userId;
+    document.getElementById('resetUserEmail').value = email;
+    document.getElementById('resetPasswordModal').style.display = 'flex';
+}
+
+function closeResetPassword() {
+    document.getElementById('resetPasswordModal').style.display = 'none';
+    document.getElementById('resetUserId').value = '';
+    document.getElementById('resetUserEmail').value = '';
+}
+
+// Close modal when clicking outside
+document.getElementById('resetPasswordModal').addEventListener('click', function(e) {
+    if (e.target === this) {
+        closeResetPassword();
+    }
+});
+
+// Toggle client status (deactivate/reactivate)
+function toggleClientStatus(clientId, isActive) {
+    const action = isActive ? 'reactivate' : 'deactivate';
+    if (confirm(`Are you sure you want to ${action} this client?`)) {
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = '/admin/toggle-client-status';
+
+        const clientIdInput = document.createElement('input');
+        clientIdInput.type = 'hidden';
+        clientIdInput.name = 'client_id';
+        clientIdInput.value = clientId;
+
+        const isActiveInput = document.createElement('input');
+        isActiveInput.type = 'hidden';
+        isActiveInput.name = 'is_active';
+        isActiveInput.value = isActive;
+
+        form.appendChild(clientIdInput);
+        form.appendChild(isActiveInput);
+        document.body.appendChild(form);
+        form.submit();
+    }
+}
+
+// Toggle user status (deactivate/reactivate)
+function toggleUserStatus(userId, isActive) {
+    const action = isActive ? 'reactivate' : 'deactivate';
+    if (confirm(`Are you sure you want to ${action} this user?`)) {
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = '/admin/toggle-user-status';
+
+        const userIdInput = document.createElement('input');
+        userIdInput.type = 'hidden';
+        userIdInput.name = 'user_id';
+        userIdInput.value = userId;
+
+        const isActiveInput = document.createElement('input');
+        isActiveInput.type = 'hidden';
+        isActiveInput.name = 'is_active';
+        isActiveInput.value = isActive;
+
+        form.appendChild(userIdInput);
+        form.appendChild(isActiveInput);
+        document.body.appendChild(form);
+        form.submit();
+    }
+}
+
+// Unclaim device
+function unclaimDevice(deviceId) {
+    if (confirm('Are you sure you want to unclaim this device? It will generate a new claim code.')) {
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = `/admin/devices/${deviceId}/unclaim`;
+
+        document.body.appendChild(form);
+        form.submit();
+    }
+}
+</script>
+{% endblock %}
