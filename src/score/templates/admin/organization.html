@@ -1,0 +1,373 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Leagues{% endblock %}
+
+{% block extra_head %}
+<style>
+    /* Organization-specific styles */
+    .weight-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 12px;
+        margin-top: 8px;
+    }
+    .weight-item {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+    .weight-item label {
+        font-size: 12px;
+        font-weight: 500;
+    }
+    .weight-item input {
+        padding: 6px;
+        font-size: 13px;
+    }
+    .weight-item small {
+        font-size: 11px;
+        color: #666;
+    }
+    .btn-schedule {
+        padding: 4px 10px;
+        background: #007bff;
+        color: white;
+        border: none;
+        border-radius: 3px;
+        font-size: 12px;
+        cursor: pointer;
+        margin-left: 8px;
+    }
+    .btn-schedule:hover {
+        background: #0056b3;
+    }
+    .btn-remove-team {
+        padding: 2px 8px;
+        background: #dc3545;
+        color: white;
+        border: none;
+        border-radius: 3px;
+        font-size: 14px;
+        cursor: pointer;
+        margin-left: 8px;
+        line-height: 1;
+    }
+    .btn-remove-team:hover {
+        background: #c82333;
+    }
+    .btn-remove-player {
+        padding: 2px 6px;
+        background: #dc3545;
+        color: white;
+        border: none;
+        border-radius: 3px;
+        font-size: 12px;
+        cursor: pointer;
+        margin-left: auto;
+    }
+    .btn-remove-player:hover {
+        background: #c82333;
+    }
+    .schedule-games-table {
+        width: 100%;
+        font-size: 12px;
+        border-collapse: collapse;
+        margin-top: 8px;
+    }
+    .schedule-games-table th,
+    .schedule-games-table td {
+        padding: 6px 8px;
+        text-align: left;
+        border-bottom: 1px solid #e0e0e0;
+    }
+    .schedule-games-table th {
+        background: #f8f9fa;
+        font-weight: 600;
+    }
+    .schedule-games-table .status {
+        padding: 2px 8px;
+        border-radius: 3px;
+        font-size: 11px;
+        font-weight: 500;
+    }
+    .schedule-games-table .status.scheduled {
+        background: #e0e0e0;
+        color: #666;
+    }
+    .schedule-games-table .status.running {
+        background: #28a745;
+        color: white;
+    }
+    .schedule-games-table .status.final {
+        background: #007bff;
+        color: white;
+    }
+    .role-badge {
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-size: 10px;
+        font-weight: 600;
+        margin-left: 4px;
+    }
+    .role-badge.captain {
+        background: #ffc107;
+        color: #000;
+    }
+    .role-badge.alternate {
+        background: #6c757d;
+        color: white;
+    }
+    .preview-section {
+        margin-bottom: 20px;
+    }
+    .fairness-report {
+        font-size: 12px;
+        line-height: 1.6;
+    }
+    .games-preview {
+        font-size: 12px;
+    }
+    .btn-regenerate {
+        padding: 8px 16px;
+        background: #6c757d;
+        color: white;
+        border: none;
+        border-radius: 3px;
+        cursor: pointer;
+        font-size: 13px;
+    }
+    .btn-regenerate:hover {
+        background: #5a6268;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<h1>Leagues</h1>
+
+<!-- Message area -->
+<div id="message" class="message"></div>
+
+<!-- Seed section -->
+<div style="margin-bottom: 20px; padding: 12px; background: #f5f5f5; border-radius: 4px; display: flex; align-items: center; gap: 12px;">
+    <span style="color: #666; font-size: 13px; font-weight: 500;">Data:</span>
+    <button onclick="seedLeagueData()" style="padding: 6px 12px; font-size: 13px; background: #1a1a2e; color: white; border: none; border-radius: 3px; cursor: pointer;">Seed League Data</button>
+    <button onclick="clearAllData()" style="padding: 6px 12px; font-size: 13px; background: #dc3545; color: white; border: none; border-radius: 3px; cursor: pointer;">Clear All Data</button>
+</div>
+
+<!-- Action buttons -->
+<div style="margin-bottom: 20px;">
+    <button class="btn-add" onclick="openModal('league')">+ Add League</button>
+</div>
+
+<!-- Tree view -->
+<div class="content">
+    <div class="tree-container">
+        {{ tree_html|safe }}
+    </div>
+</div>
+
+<!-- Modal -->
+<div id="entityModal" class="modal" style="display: none;">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2 id="modalTitle">Add Entity</h2>
+            <span class="modal-close" onclick="closeModal()">&times;</span>
+        </div>
+        <form id="entityForm">
+            <div id="modalFields"></div>
+            <div class="form-actions">
+                <button type="button" onclick="closeModal()">Cancel</button>
+                <button type="submit" class="btn-save">Create</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Schedule Modal (truncated for now - will add full version) -->
+<div id="scheduleModal" class="modal" style="display: none;">
+    <div class="modal-content" style="max-width: 900px; max-height: 90vh; overflow-y: auto;">
+        <div class="modal-header">
+            <h2 id="scheduleModalTitle">Generate Schedule</h2>
+            <span class="modal-close" onclick="closeScheduleModal()">&times;</span>
+        </div>
+
+        <!-- Schedule form and preview content will be generated by JavaScript -->
+        <div id="scheduleFormContainer"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_scripts %}
+<script>
+// Global data from server
+const PLAYER_DATA = {{ player_data_json_str|safe }};
+const TEAM_DATA = {{ team_data_json_str|safe }};
+const ACTIVE_TEAMS_BY_DIVISION = {{ active_teams_by_division_str|safe }};
+
+// Tree state management
+const TREE_STATE_KEY = 'org_tree_expanded_nodes';
+
+function getExpandedNodes() {
+    const stored = localStorage.getItem(TREE_STATE_KEY);
+    return stored ? JSON.parse(stored) : [];
+}
+
+function saveExpandedNodes(expandedNodes) {
+    localStorage.setItem(TREE_STATE_KEY, JSON.stringify(expandedNodes));
+}
+
+function getNodeKey(node) {
+    const type = node.getAttribute('data-type');
+    const id = node.getAttribute('data-id');
+    return `${type}:${id}`;
+}
+
+// Tree navigation
+function toggleNode(header) {
+    const node = header.parentElement;
+    const children = node.querySelector('.node-children');
+    const icon = header.querySelector('.toggle-icon');
+    const nodeKey = getNodeKey(node);
+    let expandedNodes = getExpandedNodes();
+
+    if (children.style.display === 'none') {
+        children.style.display = 'block';
+        icon.textContent = '▼';
+        if (!expandedNodes.includes(nodeKey)) {
+            expandedNodes.push(nodeKey);
+        }
+    } else {
+        children.style.display = 'none';
+        icon.textContent = '▶';
+        expandedNodes = expandedNodes.filter(k => k !== nodeKey);
+    }
+
+    saveExpandedNodes(expandedNodes);
+}
+
+// Restore tree state on page load
+function restoreTreeState() {
+    const expandedNodes = getExpandedNodes();
+    expandedNodes.forEach(nodeKey => {
+        const [type, id] = nodeKey.split(':');
+        const node = document.querySelector(`.tree-node[data-type="${type}"][data-id="${id}"]`);
+        if (node) {
+            const children = node.querySelector('.node-children');
+            const icon = node.querySelector('.toggle-icon');
+            if (children && icon) {
+                children.style.display = 'block';
+                icon.textContent = '▼';
+            }
+        }
+    });
+
+    // Restore scroll position
+    const scrollPos = localStorage.getItem('org_tree_scroll_pos');
+    if (scrollPos) {
+        window.scrollTo(0, parseInt(scrollPos));
+        localStorage.removeItem('org_tree_scroll_pos');
+    }
+}
+
+// Save scroll position before reload
+function saveScrollPosition() {
+    localStorage.setItem('org_tree_scroll_pos', window.scrollY);
+}
+
+document.addEventListener('DOMContentLoaded', restoreTreeState);
+
+// Placeholder functions - will add full implementation
+function openModal(type, ...context) {
+    showMessage('Modal opening for: ' + type, 'info');
+    // Full implementation to be added
+}
+
+function closeModal() {
+    document.getElementById('entityModal').style.display = 'none';
+}
+
+function openMultiDivisionScheduleModal(leagueId, seasonId, seasonName, divisions) {
+    showMessage('Schedule modal for: ' + seasonName, 'info');
+    // Full implementation to be added
+}
+
+function closeScheduleModal() {
+    document.getElementById('scheduleModal').style.display = 'none';
+}
+
+function removeTeam(registrationId, teamName) {
+    if (confirm(`Remove ${teamName} from this division?`)) {
+        showMessage('Remove team: ' + teamName, 'info');
+        // Full implementation to be added
+    }
+}
+
+function removePlayer(rosterId, playerName) {
+    if (confirm(`Remove ${playerName} from roster?`)) {
+        showMessage('Remove player: ' + playerName, 'info');
+        // Full implementation to be added
+    }
+}
+
+function filterDivisionGames(divisionId, registrationId) {
+    const table = document.getElementById(`games_${divisionId}`);
+    if (!table) return;
+
+    const rows = table.querySelectorAll('tbody tr');
+    rows.forEach(row => {
+        if (!registrationId) {
+            row.style.display = '';
+        } else {
+            const homeReg = row.getAttribute('data-home-reg');
+            const awayReg = row.getAttribute('data-away-reg');
+            row.style.display = (homeReg === registrationId || awayReg === registrationId) ? '' : 'none';
+        }
+    });
+}
+
+function seedLeagueData() {
+    if (confirm('Seed sample league data? This will create leagues, seasons, divisions, teams, and players.')) {
+        saveScrollPosition();
+        fetch('/admin/seed', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({seed_all: true})
+        })
+        .then(r => r.json())
+        .then(data => {
+            showMessage('Data seeded successfully', 'success');
+            setTimeout(() => location.reload(), 1000);
+        })
+        .catch(err => showMessage('Error: ' + err.message, 'error'));
+    }
+}
+
+function clearAllData() {
+    if (confirm('⚠️ Clear ALL data? This will delete leagues, seasons, teams, players, games. Cannot be undone!')) {
+        if (confirm('Are you ABSOLUTELY sure? This is permanent!')) {
+            saveScrollPosition();
+            fetch('/admin/seed/clear', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({clear_all: true})
+            })
+            .then(r => r.json())
+            .then(data => {
+                showMessage('All data cleared', 'success');
+                setTimeout(() => location.reload(), 1000);
+            })
+            .catch(err => showMessage('Error: ' + err.message, 'error'));
+        }
+    }
+}
+
+function showMessage(text, type) {
+    const msg = document.getElementById('message');
+    msg.textContent = text;
+    msg.className = `message ${type}`;
+    msg.style.display = 'block';
+    setTimeout(() => { msg.style.display = 'none'; }, 5000);
+}
+</script>
+{% endblock %}
