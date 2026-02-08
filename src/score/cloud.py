@@ -659,6 +659,7 @@ async def toggle_user_status(
 
 @app.get("/v1/rinks/{rink_id}/schedule", response_model=ScheduleResponse)
 async def get_schedule(
+    request: Request,
     rink_id: str = FastAPIPath(..., description="Rink ID"),
     date: Optional[str] = Query(None, description="Date in YYYY-MM-DD format (defaults to today)")
 ):
@@ -666,6 +667,7 @@ async def get_schedule(
     Download game schedule for a specific rink.
 
     Returns schedule_version and games for the specified date (defaults to today).
+    Supports ETag/If-None-Match for efficient caching.
     """
     logger.info(f"Schedule request for rink_id={rink_id}, date={date}")
 
@@ -684,6 +686,13 @@ async def get_schedule(
     ).fetchone()
 
     schedule_version = version_row["version"] if version_row else datetime.now(timezone.utc).isoformat()
+
+    # Check If-None-Match header for conditional request
+    if_none_match = request.headers.get("If-None-Match")
+    if if_none_match and if_none_match == f'"{schedule_version}"':
+        logger.debug(f"Schedule not modified (version={schedule_version}), returning 304")
+        db.close()
+        return Response(status_code=304)
 
     # Default to today if no date specified (use local timezone, not UTC)
     if date is None:
@@ -734,9 +743,16 @@ async def get_schedule(
 
     logger.info(f"Returning {len(games_list)} games for {rink_id} on {date}")
 
-    return ScheduleResponse(
+    # Return response with ETag header
+    response_data = ScheduleResponse(
         schedule_version=schedule_version,
         games=games_list
+    )
+
+    return Response(
+        content=response_data.model_dump_json(),
+        media_type="application/json",
+        headers={"ETag": f'"{schedule_version}"'}
     )
 
 
@@ -999,13 +1015,35 @@ async def post_heartbeat(request: HeartbeatRequest):
     ))
 
     db.commit()
+
+    # Get device's rink assignment
+    device = db.execute(
+        "SELECT rink_id FROM devices WHERE device_id = ?",
+        (request.device_id,)
+    ).fetchone()
+
+    check_schedule = False
+    schedule_version = None
+
+    if device and device["rink_id"]:
+        rink_id = device["rink_id"]
+        # Get current schedule version for the device's rink
+        version_row = db.execute(
+            "SELECT version FROM schedule_versions WHERE rink_id = ?",
+            (rink_id,)
+        ).fetchone()
+        if version_row:
+            schedule_version = version_row["version"]
+
     db.close()
 
     server_time = datetime.now(timezone.utc).isoformat()
 
     return HeartbeatResponse(
         status="ok",
-        server_time=server_time
+        server_time=server_time,
+        check_schedule=check_schedule,  # Can be enhanced later to track schedule changes
+        schedule_version=schedule_version
     )
 
 

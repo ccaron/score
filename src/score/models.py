@@ -90,9 +90,12 @@ class HeartbeatRequest(BaseModel):
 
 
 class HeartbeatResponse(BaseModel):
-    """Device heartbeat response."""
+    """Device heartbeat response with optional action hints."""
     status: str
     server_time: str
+    # Action hints for the device
+    check_schedule: bool = False    # True if schedule may have changed
+    schedule_version: Optional[str] = None  # Current schedule version for comparison
 
 
 # ---------- Device Configuration Models ----------

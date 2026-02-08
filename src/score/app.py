@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
-import requests
+import httpx
 from fastapi import FastAPI, WebSocket, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -43,6 +43,22 @@ DEVICE_CONFIG = None  # Will hold full device config from cloud
 # Claim code for device claiming
 CLAIM_CODE = None
 
+# Schedule caching for ETag support
+CACHED_SCHEDULE_VERSION: Optional[str] = None
+CACHED_GAMES: list = []
+
+# Shared HTTP client for async requests
+http_client: Optional[httpx.AsyncClient] = None
+
+
+def get_http_client() -> httpx.AsyncClient:
+    """Get or create shared HTTP client."""
+    global http_client
+    if http_client is None:
+        http_client = httpx.AsyncClient(timeout=10.0)
+    return http_client
+
+
 
 def generate_claim_code():
     """Generate a 6-character claim code (e.g., 'ABC123')."""
@@ -52,9 +68,9 @@ def generate_claim_code():
     return f"{letters}-{digits}"
 
 
-def fetch_device_config():
+async def fetch_device_config():
     """
-    Fetch device configuration from cloud API.
+    Fetch device configuration from cloud API (async).
 
     Returns device config including rink_id assignment.
     Falls back to env var RINK_ID if cloud is unavailable.
@@ -70,11 +86,11 @@ def fetch_device_config():
         logger.info(f"Generated claim code: {CLAIM_CODE}")
 
     try:
+        client = get_http_client()
         # Send claim code as query parameter
-        response = requests.get(
+        response = await client.get(
             f"{CLOUD_API_URL}/v1/devices/{DEVICE_ID}/config",
             params={"claim_code": CLAIM_CODE},
-            timeout=10
         )
         response.raise_for_status()
         config = response.json()
@@ -100,7 +116,7 @@ def fetch_device_config():
 
         return config
 
-    except requests.exceptions.RequestException as e:
+    except httpx.RequestError as e:
         # Use warning level since this is expected if cloud isn't ready yet
         logger.warning(f"Could not connect to cloud API: {type(e).__name__}")
         logger.debug(f"Connection error details: {e}")
@@ -139,6 +155,26 @@ class GameState:
         self.away_roster = []        # List of player_ids
         self.roster_details = {}     # Map: player_id -> player info dict
         self.roster_loaded = False   # Flag for roster availability
+        # Broadcast optimization
+        self._last_broadcast_hash: str = ""
+
+    def state_hash(self) -> str:
+        """Generate hash of broadcastable state for change detection."""
+        import hashlib
+        relevant = {
+            "seconds": self.seconds,
+            "running": self.running,
+            "mode": self.mode,
+            "home_score": self.home_score,
+            "away_score": self.away_score,
+            "goals": self.goals,
+            "home_shots": self.home_shots,
+            "away_shots": self.away_shots,
+            "pusher_status": self.pusher_status,
+            "assignment_status": self.assignment_status,
+            "schedule_status": self.schedule_status,
+        }
+        return hashlib.md5(json.dumps(relevant, sort_keys=True).encode()).hexdigest()
 
     def add_event(self, event_type, payload=None):
         # Determine game_id: use mode if it's a game, otherwise None (for clock mode)
@@ -200,17 +236,45 @@ pusher_process = None
 
 
 # ---------- Cloud API Client ----------
-def fetch_games_from_cloud():
-    """Fetch today's games from the score-cloud API."""
+async def fetch_games_from_cloud():
+    """Fetch today's games from the score-cloud API (async) with ETag caching."""
+    global CACHED_SCHEDULE_VERSION, CACHED_GAMES
+
     try:
-        response = requests.get(
+        client = get_http_client()
+
+        # Add If-None-Match header if we have a cached version
+        headers = {}
+        if CACHED_SCHEDULE_VERSION:
+            headers["If-None-Match"] = f'"{CACHED_SCHEDULE_VERSION}"'
+
+        response = await client.get(
             f"{CLOUD_API_URL}/v1/rinks/{RINK_ID}/schedule",
-            timeout=5
+            headers=headers,
         )
+
+        # Handle 304 Not Modified response
+        if response.status_code == 304:
+            logger.debug("Schedule not modified, using cached games")
+            # Update status based on cached games
+            if DEVICE_CONFIG and DEVICE_CONFIG.get("is_assigned"):
+                if CACHED_GAMES:
+                    state.schedule_status = "healthy"
+                else:
+                    state.schedule_status = "dead"
+            else:
+                state.schedule_status = "unknown"
+            return CACHED_GAMES
+
         response.raise_for_status()
         data = response.json()
         games = data.get("games", [])
-        logger.info(f"Fetched {len(games)} games from cloud API")
+
+        # Update cache
+        CACHED_SCHEDULE_VERSION = data.get("schedule_version")
+        CACHED_GAMES = games
+
+        logger.info(f"Fetched {len(games)} games from cloud API (version={CACHED_SCHEDULE_VERSION})")
 
         # Only update schedule status if device is assigned
         if DEVICE_CONFIG and DEVICE_CONFIG.get("is_assigned"):
@@ -229,19 +293,20 @@ def fetch_games_from_cloud():
             state.schedule_status = "dead"
         else:
             state.schedule_status = "unknown"
-        return []
+        # Return cached games if available, otherwise empty list
+        return CACHED_GAMES if CACHED_GAMES else []
 
-def fetch_and_initialize_roster(game_id: str):
+async def fetch_and_initialize_roster(game_id: str):
     """
-    Fetch roster from cloud and create ROSTER_INITIALIZED events.
+    Fetch roster from cloud and create ROSTER_INITIALIZED events (async).
 
     This should be called when switching to a game mode.
     Returns True if successful, False otherwise.
     """
     try:
-        response = requests.get(
+        client = get_http_client()
+        response = await client.get(
             f"{CLOUD_API_URL}/v1/games/{game_id}/roster",
-            timeout=5
         )
         response.raise_for_status()
         roster_data = response.json()
@@ -341,7 +406,21 @@ def load_game_state(game_id: str):
     return result["num_events"]
 
 # ---------- Broadcast ----------
-async def broadcast_state():
+async def broadcast_state(force: bool = False):
+    """
+    Broadcast state to all connected WebSocket clients.
+
+    Args:
+        force: If True, broadcast even if state hasn't changed
+    """
+    # Check if state has changed (unless forced)
+    if not force:
+        current_hash = state.state_hash()
+        if current_hash == state._last_broadcast_hash:
+            # State hasn't changed, skip broadcast
+            return
+        state._last_broadcast_hash = current_hash
+
     state_dict = state.to_dict()
     logger.debug(f"Broadcasting state: mode={state_dict['mode']}, scores={state_dict['home_score']}-{state_dict['away_score']}")
     data = json.dumps({"state": state_dict})
@@ -383,7 +462,7 @@ async def game_loop():
             # Only check if device is assigned
             if DEVICE_CONFIG and DEVICE_CONFIG.get("is_assigned"):
                 try:
-                    games = fetch_games_from_cloud()
+                    games = await fetch_games_from_cloud()
                     if games:
                         state.schedule_status = "healthy"  # Games available
                     else:
@@ -413,7 +492,7 @@ async def game_loop():
             # Always check for config updates
             logger.debug("Checking for device config updates...")
             old_config = DEVICE_CONFIG
-            new_config = fetch_device_config()
+            new_config = await fetch_device_config()
 
             # Check if status changed
             if new_config:
@@ -450,7 +529,7 @@ async def lifespan(_app: FastAPI):
     logger.info(f"Device ID: {DEVICE_ID}")
 
     # Fetch device configuration from cloud
-    config = fetch_device_config()
+    config = await fetch_device_config()
     if config is None:
         logger.warning("Cloud API not available - will retry automatically every 30 seconds")
         logger.info(f"Using fallback rink: {RINK_ID}")
@@ -480,6 +559,12 @@ async def lifespan(_app: FastAPI):
             await task
         except asyncio.CancelledError:
             pass
+
+        # Close HTTP client
+        global http_client
+        if http_client:
+            await http_client.aclose()
+            logger.info("HTTP client closed")
 
 app = FastAPI(lifespan=lifespan)
 
@@ -627,6 +712,95 @@ async def cancel_goal(request: dict):
     return {"status": "ok", "goal": goal}
 
 
+@app.post("/edit_goal")
+async def edit_goal(request: dict):
+    """Edit goal attribution (scorer, assists, time)."""
+    goal_id = request.get("goal_id")
+
+    if state.mode == "clock":
+        return {"status": "error", "message": "Cannot edit goal in clock mode"}
+
+    if not goal_id:
+        return {"status": "error", "message": "goal_id is required"}
+
+    # Find the goal
+    goal = next((g for g in state.goals if g["id"] == goal_id), None)
+    if not goal:
+        return {"status": "error", "message": "Goal not found"}
+
+    # Determine which team's roster to validate against
+    team = goal["team"]
+    roster = state.home_roster if team == "home" else state.away_roster
+
+    # Helper function to validate player ID
+    def validate_player(player_id, field_name):
+        if player_id is None:
+            return None  # Clearing is always allowed
+
+        # Convert to string for comparison (roster may have int or string IDs)
+        player_id_str = str(player_id)
+
+        # If roster is not loaded, skip validation
+        if not state.roster_loaded:
+            return None
+
+        # Check if player is in roster (handle both string and int comparisons)
+        # Roster may contain strings or ints depending on how it was loaded
+        in_roster = any(str(p) == player_id_str for p in roster)
+
+        if not in_roster:
+            return {"status": "error", "message": f"Player {player_id} not on {team} roster for {field_name}"}
+        return None
+
+    # Get new values from request (use get to check if field was provided)
+    new_time = request.get("time")
+    new_scorer_id = request.get("scorer_id")
+    new_assist1_id = request.get("assist1_id")
+    new_assist2_id = request.get("assist2_id")
+
+    # Validate all provided player IDs (only if they were included in request)
+    if "scorer_id" in request:
+        error = validate_player(new_scorer_id, "scorer")
+        if error:
+            return error
+
+    if "assist1_id" in request:
+        error = validate_player(new_assist1_id, "assist1")
+        if error:
+            return error
+
+    if "assist2_id" in request:
+        error = validate_player(new_assist2_id, "assist2")
+        if error:
+            return error
+
+    # Build payload with only changed fields
+    payload = {"goal_id": goal_id}
+
+    if "time" in request:
+        payload["time"] = new_time
+        goal["time"] = new_time
+
+    if "scorer_id" in request:
+        payload["scorer_id"] = str(new_scorer_id) if new_scorer_id else None
+        goal["scorer_id"] = str(new_scorer_id) if new_scorer_id else None
+
+    if "assist1_id" in request:
+        payload["assist1_id"] = str(new_assist1_id) if new_assist1_id else None
+        goal["assist1_id"] = str(new_assist1_id) if new_assist1_id else None
+
+    if "assist2_id" in request:
+        payload["assist2_id"] = str(new_assist2_id) if new_assist2_id else None
+        goal["assist2_id"] = str(new_assist2_id) if new_assist2_id else None
+
+    # Store the edit event
+    state.add_event("GOAL_EDIT", payload)
+
+    logger.info(f"Goal {goal_id} edited: {payload}")
+    await broadcast_state()
+    return {"status": "ok", "goal": goal}
+
+
 @app.post("/add_shot")
 async def add_shot(request: dict):
     """Add a shot for a team (anonymous - no player tracking)."""
@@ -703,7 +877,7 @@ async def get_games():
     # Only fetch games if device is assigned
     if not DEVICE_CONFIG or not DEVICE_CONFIG.get("is_assigned"):
         return {"games": []}
-    games = fetch_games_from_cloud()
+    games = await fetch_games_from_cloud()
     return {"games": games}
 
 
@@ -711,9 +885,9 @@ async def get_games():
 async def get_roster(game_id: str):
     """Get roster for a game from the cloud API."""
     try:
-        response = requests.get(
+        client = get_http_client()
+        response = await client.get(
             f"{CLOUD_API_URL}/v1/games/{game_id}/roster",
-            timeout=5
         )
         response.raise_for_status()
         return response.json()
@@ -753,7 +927,7 @@ async def select_mode(request: dict):
         logger.info("Switched to clock mode")
     else:
         # Switch to a game mode - fetch game details
-        games = fetch_games_from_cloud()
+        games = await fetch_games_from_cloud()
         logger.info(f"Fetched {len(games)} games from cloud API, looking for {new_mode}")
         logger.debug(f"Available games: {[g['game_id'] for g in games]}")
 
@@ -782,7 +956,7 @@ async def select_mode(request: dict):
             # Download roster if not already loaded
             if not state.roster_loaded:
                 logger.info(f"Roster not loaded, fetching from cloud...")
-                success = fetch_and_initialize_roster(new_mode)
+                success = await fetch_and_initialize_roster(new_mode)
                 if success:
                     # Reload state to pick up roster events
                     load_game_state(new_mode)
