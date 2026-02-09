@@ -78,7 +78,7 @@ State is reconstructed by **replaying events**:
 - Events stored in SQLite with timestamps
 - State replay logic in `src/score/state.py` shared between score-app and score-cloud
 - On app start, all events are replayed to restore current state
-- Supports multiple event types: `CLOCK_SET`, `GAME_STARTED`, `GAME_PAUSED`, `GOAL_HOME`, `GOAL_AWAY`, `SHOT_HOME`, `SHOT_AWAY`, `ROSTER_INITIALIZED`, `ROSTER_PLAYER_SCRATCHED`, `ROSTER_PLAYER_ACTIVATED`
+- Supports multiple event types: `CLOCK_SET`, `GAME_STARTED`, `GAME_PAUSED`, `GOAL_HOME`, `GOAL_AWAY`, `GOAL_EDIT`, `SHOT_HOME`, `SHOT_AWAY`, `ROSTER_INITIALIZED`, `ROSTER_PLAYER_SCRATCHED`, `ROSTER_PLAYER_ACTIVATED`
 
 ### Delivery System
 
@@ -124,6 +124,7 @@ Uses **queue-based logging** to coordinate output from multiple processes:
 Tests use pytest and are organized by feature:
 - `tests/test_cli.py` - Main app functionality
 - `tests/test_goals.py` - Goal scoring, cancellation, and attribution
+- `tests/test_goal_edit.py` - Goal editing functionality
 - `tests/test_state.py` - Event replay logic
 - `tests/test_replay_determinism.py` - Event replay determinism verification
 - `tests/test_event_pusher.py` - Event delivery
@@ -242,6 +243,7 @@ Events are replayed chronologically to compute current state. When clock is runn
 
 **Scoring:**
 - `GOAL_HOME`, `GOAL_AWAY` - Goals with value (+1 for goal, -1 for cancellation)
+- `GOAL_EDIT` - Edit goal attribution (scorer, assists, time)
 - `SHOT_HOME`, `SHOT_AWAY` - Shot tracking
 
 **Penalties:**

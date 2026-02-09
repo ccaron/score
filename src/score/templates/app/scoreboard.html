@@ -533,6 +533,36 @@ select option {
     border-color: rgba(239, 68, 68, 0.3);
 }
 
+.edit-goal-btn {
+    font-size: 0.85em;
+    padding: 0.3em 0.7em;
+    margin: 0;
+    margin-top: 0.3em;
+    background: rgba(52, 152, 219, 0.15);
+    border: 1px solid rgba(52, 152, 219, 0.3);
+    border-radius: 4px;
+    color: rgba(255, 255, 255, 0.85);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    align-self: flex-start;
+    margin-right: 0.5em;
+}
+
+.edit-goal-btn:hover {
+    background: rgba(52, 152, 219, 0.3);
+    border-color: rgba(52, 152, 219, 0.5);
+}
+
+.edit-goal-btn:active {
+    transform: scale(0.95);
+}
+
+.goal-item .button-group {
+    display: flex;
+    gap: 0.5em;
+    margin-top: 0.3em;
+}
+
 .score-btn {
     font-size: 1.5em;
     padding: 0.3em 0.8em;
@@ -679,6 +709,37 @@ select option {
         <div class="modal-buttons">
             <button onclick="submitGoal()">Record Goal</button>
             <button onclick="closeGoalModal()">Cancel</button>
+        </div>
+    </div>
+</div>
+
+<div class="modal" id="editGoalModal">
+    <div class="modal-content">
+        <h3>Edit Goal</h3>
+        <input type="hidden" id="editGoalId" />
+
+        <label for="editGoalTime">Time</label>
+        <input type="text" id="editGoalTime" placeholder="MM:SS" />
+
+        <label class="required" for="editGoalScorer">Scorer</label>
+        <select id="editGoalScorer">
+            <option value="">-- Select Scorer --</option>
+        </select>
+
+        <label for="editGoalAssist1">Primary Assist</label>
+        <select id="editGoalAssist1">
+            <option value="">-- Select Assist (or None) --</option>
+            <option value="none">Unassisted</option>
+        </select>
+
+        <label for="editGoalAssist2">Secondary Assist</label>
+        <select id="editGoalAssist2">
+            <option value="">-- None --</option>
+        </select>
+
+        <div class="modal-buttons">
+            <button onclick="submitEditGoal()">Save Changes</button>
+            <button onclick="closeEditGoalModal()">Cancel</button>
         </div>
     </div>
 </div>
@@ -974,6 +1035,109 @@ function cancelGoal(goalId) {
     });
 }
 
+function editGoal(goalId) {
+    // Get current state
+    const state = JSON.parse(document.getElementById('stateCache')?.textContent || '{}');
+
+    // Find the goal to edit
+    const goal = state.goals?.find(g => g.id === goalId);
+    if (!goal) {
+        alert('Goal not found');
+        return;
+    }
+
+    // Get team roster
+    const team = goal.team;
+    const roster = team === 'home' ? state.home_roster : state.away_roster;
+    const rosterDetails = state.roster_details;
+
+    // Populate dropdowns with roster
+    const scorerSelect = document.getElementById('editGoalScorer');
+    const assist1Select = document.getElementById('editGoalAssist1');
+    const assist2Select = document.getElementById('editGoalAssist2');
+
+    // Clear existing options (keep first/default option)
+    scorerSelect.options.length = 1;
+    assist1Select.options.length = 2; // Keep default + "Unassisted"
+    assist2Select.options.length = 1;
+
+    // Only populate roster if loaded
+    if (state.roster_loaded) {
+        // Sort roster by jersey number
+        const sortedRoster = roster
+            .map(id => rosterDetails[id])
+            .filter(p => p)
+            .sort((a, b) => (a.jersey_number || 999) - (b.jersey_number || 999));
+
+        sortedRoster.forEach(player => {
+            const optionText = `#${player.jersey_number || '?'} ${player.full_name}`;
+            scorerSelect.add(new Option(optionText, player.player_id));
+            assist1Select.add(new Option(optionText, player.player_id));
+            assist2Select.add(new Option(optionText, player.player_id));
+        });
+    }
+
+    // Set current values in form
+    document.getElementById('editGoalId').value = goalId;
+    document.getElementById('editGoalTime').value = goal.time || '';
+    document.getElementById('editGoalScorer').value = goal.scorer_id || '';
+    document.getElementById('editGoalAssist1').value = goal.assist1_id || '';
+    document.getElementById('editGoalAssist2').value = goal.assist2_id || '';
+
+    // Show modal
+    document.getElementById('editGoalModal').classList.add('active');
+    document.getElementById('editGoalTime').focus();
+}
+
+function closeEditGoalModal() {
+    document.getElementById('editGoalModal').classList.remove('active');
+}
+
+function submitEditGoal() {
+    const goalId = document.getElementById('editGoalId').value;
+    const time = document.getElementById('editGoalTime').value;
+    const scorer = document.getElementById('editGoalScorer').value;
+    const assist1 = document.getElementById('editGoalAssist1').value;
+    const assist2 = document.getElementById('editGoalAssist2').value;
+
+    // Build request with only fields that should be updated
+    const payload = { goal_id: goalId };
+
+    // Always include time if changed
+    if (time) {
+        payload.time = time;
+    }
+
+    // Include scorer if set (empty string means don't change)
+    if (scorer) {
+        payload.scorer_id = scorer;
+    }
+
+    // Include assist1 if set
+    if (assist1) {
+        payload.assist1_id = assist1 === 'none' ? null : assist1;
+    }
+
+    // Include assist2 if set
+    if (assist2) {
+        payload.assist2_id = assist2 || null;
+    }
+
+    // Submit edit
+    fetch('/edit_goal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    }).then(response => response.json())
+      .then(data => {
+          if (data.status === 'error') {
+              alert(`Error: ${data.message}`);
+          } else {
+              closeEditGoalModal();
+          }
+      });
+}
+
 function addShot(team) {
     fetch('/add_shot', {
         method: 'POST',
@@ -1039,9 +1203,12 @@ function renderGoalsList(goals, rosterDetails) {
             <div class="goal-item ${cancelledClass}">
                 <span class="goal-time">${goal.time}</span>
                 ${formatGoalDetails(goal)}
-                <button class="cancel-goal-btn" onclick="cancelGoal('${goal.id}')" ${disabledAttr}>
-                    ${goal.cancelled ? 'Cancelled' : 'Cancel'}
-                </button>
+                <div class="button-group">
+                    <button class="edit-goal-btn" onclick="editGoal('${goal.id}')">Edit</button>
+                    <button class="cancel-goal-btn" onclick="cancelGoal('${goal.id}')" ${disabledAttr}>
+                        ${goal.cancelled ? 'Cancelled' : 'Cancel'}
+                    </button>
+                </div>
             </div>
         `;
     }).join('');
@@ -1054,9 +1221,12 @@ function renderGoalsList(goals, rosterDetails) {
             <div class="goal-item ${cancelledClass}">
                 <span class="goal-time">${goal.time}</span>
                 ${formatGoalDetails(goal)}
-                <button class="cancel-goal-btn" onclick="cancelGoal('${goal.id}')" ${disabledAttr}>
-                    ${goal.cancelled ? 'Cancelled' : 'Cancel'}
-                </button>
+                <div class="button-group">
+                    <button class="edit-goal-btn" onclick="editGoal('${goal.id}')">Edit</button>
+                    <button class="cancel-goal-btn" onclick="cancelGoal('${goal.id}')" ${disabledAttr}>
+                        ${goal.cancelled ? 'Cancelled' : 'Cancel'}
+                    </button>
+                </div>
             </div>
         `;
     }).join('');
@@ -1103,10 +1273,13 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
         closeModal();
         closeGoalModal();
+        closeEditGoalModal();
     } else if (e.key === 'Enter' && document.getElementById('timeModal').classList.contains('active')) {
         applyTime();
     } else if (e.key === 'Enter' && document.getElementById('goalModal').classList.contains('active')) {
         submitGoal();
+    } else if (e.key === 'Enter' && document.getElementById('editGoalModal').classList.contains('active')) {
+        submitEditGoal();
     }
 });
 
@@ -1114,6 +1287,18 @@ document.addEventListener('keydown', (e) => {
 document.getElementById('timeModal').addEventListener('click', (e) => {
     if (e.target.id === 'timeModal') {
         closeModal();
+    }
+});
+
+document.getElementById('goalModal').addEventListener('click', (e) => {
+    if (e.target.id === 'goalModal') {
+        closeGoalModal();
+    }
+});
+
+document.getElementById('editGoalModal').addEventListener('click', (e) => {
+    if (e.target.id === 'editGoalModal') {
+        closeEditGoalModal();
     }
 });
 

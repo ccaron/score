@@ -35,8 +35,20 @@ run_container:
 	docker build -t game-engine .
 	docker run --rm -it --rm -p 8000:8000 game-engine
 
+# Run tests with optional filtering
+# Usage:
+#   make test                              # Run all tests
+#   make test FILTER=test_cli.py          # Run specific test file
+#   make test FILTER=test_goals.py::test_add_home_goal  # Run specific test
+#   make test FILTER="-k goal"            # Run tests matching keyword
+#   make test FILTER="-k goal -v"         # Run tests matching keyword with verbose output
+FILTER ?=
 test: .venv/.installed
-	uv run pytest tests/
+	@if [ -z "$(FILTER)" ]; then \
+		uv run pytest tests/; \
+	else \
+		uv run pytest $(FILTER); \
+	fi
 
 # Generate a schedule from a YAML config file
 # Usage: make schedule CONFIG=examples/schedule.yaml

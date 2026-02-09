@@ -236,6 +236,26 @@ def replay_events(events, current_time=None):
                             g["cancelled"] = True
                             break
                 logger.debug(f"Replayed GOAL_AWAY cancellation (value={goal_value}): away={away_score}")
+
+        elif event["type"] == "GOAL_EDIT":
+            # Goal edit event - modify goal attribution (scorer, assists, time)
+            goal_id = payload.get("goal_id")
+            if goal_id:
+                # Find the goal to edit
+                for g in goals:
+                    if g["id"] == goal_id:
+                        # Only update fields that are present in payload
+                        if "time" in payload:
+                            g["time"] = payload["time"]
+                        if "scorer_id" in payload:
+                            g["scorer_id"] = payload["scorer_id"]
+                        if "assist1_id" in payload:
+                            g["assist1_id"] = payload["assist1_id"]
+                        if "assist2_id" in payload:
+                            g["assist2_id"] = payload["assist2_id"]
+                        break
+                logger.debug(f"Replayed GOAL_EDIT: goal_id={goal_id}")
+
         elif event["type"] == "SCORE_HOME_INC":
             # Legacy support
             home_score += 1

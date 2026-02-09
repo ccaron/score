@@ -865,6 +865,11 @@ def init_schema(db_path: str, fresh_start: bool = False) -> None:
         conn.executescript(TABLES)
         conn.commit()
 
+        # Run migrations for schema updates
+        logger.info("Running schema migrations...")
+        _run_migrations(conn)
+        conn.commit()
+
         # Create indexes
         logger.info("Creating indexes...")
         conn.executescript(INDEXES)
@@ -881,6 +886,29 @@ def init_schema(db_path: str, fresh_start: bool = False) -> None:
 
     finally:
         conn.close()
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    """Run schema migrations to add missing columns to existing tables."""
+    # Check if devices table exists
+    table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='devices'"
+    ).fetchone()
+
+    if not table_exists:
+        return  # Table will be created by TABLES script
+
+    # Check if devices table has claim_code columns
+    columns = conn.execute("PRAGMA table_info(devices)").fetchall()
+    column_names = {col["name"] for col in columns}
+
+    if "claim_code" not in column_names:
+        logger.info("Adding claim_code column to devices table...")
+        conn.execute("ALTER TABLE devices ADD COLUMN claim_code TEXT")
+
+    if "claim_code_expires_at" not in column_names:
+        logger.info("Adding claim_code_expires_at column to devices table...")
+        conn.execute("ALTER TABLE devices ADD COLUMN claim_code_expires_at INTEGER")
 
 
 def _seed_rule_sets(conn: sqlite3.Connection) -> None:

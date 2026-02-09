@@ -134,6 +134,31 @@ def init_db():
 init_db()
 
 # ---------- Game state ----------
+class AdaptiveInterval:
+    """Adaptive polling interval that backs off when nothing changes."""
+
+    def __init__(self, base: int, max_interval: int, backoff: float = 1.5):
+        """Initialize adaptive interval.
+
+        Args:
+            base: Base interval in seconds (used when changes occur)
+            max_interval: Maximum interval in seconds (upper bound for backoff)
+            backoff: Multiplier for backing off (default 1.5 = 50% increase)
+        """
+        self.base = base
+        self.max = max_interval
+        self.backoff = backoff
+        self.current = base
+
+    def no_change(self):
+        """Signal that no change occurred - back off the interval."""
+        self.current = min(self.current * self.backoff, self.max)
+
+    def has_change(self):
+        """Signal that a change occurred - reset to base interval."""
+        self.current = self.base
+
+
 class GameState:
     def __init__(self):
         self.seconds = 20 * 60
@@ -443,7 +468,7 @@ async def game_loop():
     last_config_check = 0
     last_games_check = -60  # Start negative so first check happens immediately
     config_check_interval = 30  # Check every 30 seconds if unassigned
-    games_check_interval = 60  # Check for games every 60 seconds
+    adaptive_games_check = AdaptiveInterval(base=60, max_interval=300)  # 60s to 300s (5 min)
 
     while True:
         # Check device assignment status
@@ -456,13 +481,26 @@ async def game_loop():
 
         # Check schedule status (are games available for today?)
         current_time = int(time.time())
-        if current_time - last_games_check >= games_check_interval:
+        if current_time - last_games_check >= adaptive_games_check.current:
             last_games_check = current_time
 
             # Only check if device is assigned
             if DEVICE_CONFIG and DEVICE_CONFIG.get("is_assigned"):
                 try:
+                    # Track previous schedule version to detect changes
+                    previous_version = CACHED_SCHEDULE_VERSION
                     games = await fetch_games_from_cloud()
+
+                    # Adaptive polling: adjust interval based on whether schedule changed
+                    if CACHED_SCHEDULE_VERSION == previous_version and previous_version is not None:
+                        # Schedule unchanged (got 304 response) - back off
+                        adaptive_games_check.no_change()
+                        logger.debug(f"Schedule unchanged, backing off to {int(adaptive_games_check.current)}s interval")
+                    else:
+                        # Schedule changed - reset to base interval
+                        adaptive_games_check.has_change()
+                        logger.debug(f"Schedule changed, reset to {adaptive_games_check.base}s interval")
+
                     if games:
                         state.schedule_status = "healthy"  # Games available
                     else:
