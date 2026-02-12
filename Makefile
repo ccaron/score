@@ -55,3 +55,9 @@ test: .venv/.installed
 CONFIG ?= examples/schedule.yaml
 schedule: .venv/.installed
 	uv run score-schedule $(CONFIG)
+
+# Generate an HTML schedule from a YAML config file
+# Usage: make schedule-html CONFIG=examples/schedule.yaml OUTPUT=schedule.html
+OUTPUT ?= schedule.html
+schedule-html: .venv/.installed
+	uv run score-schedule $(CONFIG) --html $(OUTPUT)

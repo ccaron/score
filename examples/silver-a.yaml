@@ -1,0 +1,77 @@
+league_id: "beer"
+season_id: "2025-2026"
+
+# Venue
+rink_id: "tspc"
+sheets:
+  - sheet_id: "NHL"
+    name: "NHL"
+  - sheet_id: "Olympic"
+    name: "Olympic"
+
+# Solver settings (optimal settings for perfect schedule)
+solver:
+  timeout_seconds: 1_000_000      # Longer timeout for better optimization
+  # Constraint weights (higher = more important, 0 = disabled)
+  weight_time_slot: 100      # HIGHEST PRIORITY: Perfect 8/8 time slot split
+  weight_opponent: 100        # HIGH: Each pair plays exactly 2 times
+  weight_no_consecutive_opponent: 10  # HIGH: No same opponent in consecutive weeks
+  weight_bye_spread: 10      # HIGH: Spread byes across first/second half
+  weight_sheet: 1            # MEDIUM: Venue balance (7-9 range acceptable)
+  weight_home_away: 1        # LOW: Slight imbalance acceptable
+  weight_packing: 0          # Disabled: spread games throughout season
+  # Hard constraints
+  max_consecutive_byes: 1    # Never allow consecutive byes
+
+# Divisions with their teams
+divisions:
+  - division_id: "silver-a"
+    games_per_team: 16
+    teams:
+      - registration_id: "reg-team1-2025"
+        name: "1"
+        abbreviation: "1"
+      - registration_id: "reg-team2-2025"
+        name: "2"
+        abbreviation: "2"
+      - registration_id: "reg-team3-2025"
+        name: "3"
+        abbreviation: "3"
+      - registration_id: "reg-team4-2025"
+        name: "4"
+        abbreviation: "4"
+      - registration_id: "reg-team5-2025"
+        name: "5"
+        abbreviation: "5"
+      - registration_id: "reg-team6-2025"
+        name: "6"
+        abbreviation: "6"
+      - registration_id: "reg-team7-2025"
+        name: "7"
+        abbreviation: "7"
+      - registration_id: "reg-team8-2025"
+        name: "8"
+        abbreviation: "8"
+      - registration_id: "reg-team9-2025"
+        name: "9"
+        abbreviation: "9"
+
+# Schedule parameters
+game_settings:
+  period_length_min: 15
+  num_periods: 3
+  game_type: "regular"
+
+# Available time slots
+schedule:
+  # Days of the week this league plays
+  days_of_week: ["sunday"]
+
+  # Date range for the season
+  start_date: "2026-01-01"
+  end_date: "2026-05-08"
+
+  # Time slots per day (ordered early to late)
+  time_slots:
+    - "21:00"
+    - "22:30"

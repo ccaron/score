@@ -87,6 +87,7 @@ class SolverSettings:
     weight_opponent: int = 5       # Spread games across opponents
     weight_packing: int = 1        # Pack games into earlier dates
     weight_no_consecutive_opponent: int = 50  # Penalize same opponent in back-to-back weeks
+    weight_bye_spread: int = 0     # Spread byes across first/second half of season
     # Hard constraints
     max_consecutive_byes: int = 1  # Max consecutive weeks without a game (0 = disabled)
 
@@ -129,6 +130,8 @@ class FairnessReport:
     sheet_distribution: dict[str, dict[str, int]]  # team -> {sheet -> count}
     home_away_balance: dict[str, tuple[int, int]]  # team -> (home, away)
     opponent_distribution: dict[str, dict[str, int]]  # team -> {opponent -> count}
+    bye_weeks: dict[str, int] | None = None  # team -> number of bye weeks
+    bye_spread: dict[str, tuple[int, int]] | None = None  # team -> (first_half_byes, second_half_byes)
     # Ice utilization
     total_slots: int = 0
     used_slots: int = 0
@@ -279,6 +282,7 @@ def load_config(path: Path) -> ScheduleConfig:
         weight_opponent=solver_data.get("weight_opponent", 5),
         weight_packing=solver_data.get("weight_packing", 1),
         weight_no_consecutive_opponent=solver_data.get("weight_no_consecutive_opponent", 50),
+        weight_bye_spread=solver_data.get("weight_bye_spread", 0),
         max_consecutive_byes=solver_data.get("max_consecutive_byes", 1),
     )
 
@@ -649,6 +653,54 @@ def _add_fairness_objective(
                         model.add_bool_or([has_game_w1.negated(), has_game_w2.negated()]).only_enforce_if(both_weeks.negated())
                         consecutive_opponent_penalties.append(both_weeks)
 
+    # --- Bye Spread: Balance Byes Across First/Second Half ---
+    bye_spread_penalties = []
+    if weights.weight_bye_spread > 0:
+        # Group slots by date to find midpoint
+        slots_by_date: dict[date, list[GameSlot]] = {}
+        for s in slots:
+            if s.date not in slots_by_date:
+                slots_by_date[s.date] = []
+            slots_by_date[s.date].append(s)
+
+        sorted_dates = sorted(slots_by_date.keys())
+        midpoint_idx = len(sorted_dates) // 2
+        first_half_dates = sorted_dates[:midpoint_idx]
+        second_half_dates = sorted_dates[midpoint_idx:]
+
+        first_half_slots = [s for s in slots if s.date in first_half_dates]
+        second_half_slots = [s for s in slots if s.date in second_half_dates]
+
+        # For each team, penalize imbalance between first and second half byes
+        for t in config.all_teams:
+            team_matchups = [m for m in matchups
+                            if m.home_team.registration_id == t.registration_id
+                            or m.away_team.registration_id == t.registration_id]
+
+            # Games in first half
+            games_first_half = sum(
+                x[m.matchup_id, s.slot_id]
+                for m in team_matchups
+                for s in first_half_slots
+            )
+
+            # Games in second half
+            games_second_half = sum(
+                x[m.matchup_id, s.slot_id]
+                for m in team_matchups
+                for s in second_half_slots
+            )
+
+            # Byes = available dates - games played
+            byes_first_half = len(first_half_dates) - games_first_half
+            byes_second_half = len(second_half_dates) - games_second_half
+
+            # Penalize difference in byes between halves
+            bye_imbalance = model.new_int_var(0, len(sorted_dates), f"bye_spread_{t.registration_id}")
+            model.add(bye_imbalance >= byes_first_half - byes_second_half)
+            model.add(bye_imbalance >= byes_second_half - byes_first_half)
+            bye_spread_penalties.append(bye_imbalance)
+
     # Combine all penalties with their respective weights
     total_objective = (
         weights.weight_time_slot * sum(time_slot_penalties) +
@@ -656,7 +708,8 @@ def _add_fairness_objective(
         weights.weight_home_away * sum(home_away_penalties) +
         weights.weight_opponent * sum(opponent_penalties) +
         weights.weight_packing * packing_penalty +
-        weights.weight_no_consecutive_opponent * sum(consecutive_opponent_penalties)
+        weights.weight_no_consecutive_opponent * sum(consecutive_opponent_penalties) +
+        weights.weight_bye_spread * sum(bye_spread_penalties)
     )
 
     model.minimize(total_objective)
@@ -667,11 +720,16 @@ def _add_fairness_objective(
 class ScheduleProgressCallback(cp_model.CpSolverSolutionCallback):
     """Callback to show progress during solving."""
 
-    def __init__(self):
+    def __init__(self, x: dict, matchups: list[Matchup], slots: list[GameSlot], config: ScheduleConfig, html_output: Path = None):
         super().__init__()
         self.solution_count = 0
         self.start_time = None
         self.stopped_early = False
+        self.x = x
+        self.matchups = matchups
+        self.slots = slots
+        self.config = config
+        self.html_output = html_output
 
     def on_solution_callback(self):
         import time as time_module
@@ -685,6 +743,53 @@ class ScheduleProgressCallback(cp_model.CpSolverSolutionCallback):
         gap = 100 * (obj - bound) / obj if obj > 0 else 0
 
         print(f"  [{elapsed:5.1f}s] Solution #{self.solution_count}: objective={obj:.0f}, bound={bound:.0f}, gap={gap:.1f}%")
+
+        # Generate HTML for this solution if output path provided
+        if self.html_output:
+            try:
+                # Extract current solution
+                games = self._extract_current_solution()
+
+                # Generate fairness report
+                report = analyze_fairness(games, self.config)
+
+                # Write HTML (overwriting same file each time)
+                _write_html_schedule(games, self.config, report, self.html_output)
+                print(f"    → Updated {self.html_output}")
+            except Exception as e:
+                print(f"    Warning: Failed to generate HTML: {e}")
+
+    def _extract_current_solution(self) -> list[ScheduledGame]:
+        """Extract scheduled games from current solution."""
+        games = []
+
+        for m in self.matchups:
+            for s in self.slots:
+                if self.value(self.x[m.matchup_id, s.slot_id]):
+                    # This matchup is scheduled in this slot
+                    start_time = datetime.combine(s.date, s.time)
+                    game_id = str(uuid.uuid4())[:8]
+
+                    games.append(ScheduledGame(
+                        game_id=game_id,
+                        division_id=m.division_id,
+                        home_registration_id=m.home_team.registration_id,
+                        away_registration_id=m.away_team.registration_id,
+                        home_team=m.home_team.name,
+                        away_team=m.away_team.name,
+                        home_abbrev=m.home_team.abbreviation,
+                        away_abbrev=m.away_team.abbreviation,
+                        sheet_id=s.sheet_id,
+                        rink_id=self.config.rink_id,
+                        start_time=start_time,
+                        period_length_min=self.config.period_length_min,
+                        num_periods=self.config.num_periods,
+                        game_type=self.config.game_type,
+                    ))
+
+        # Sort by start time
+        games.sort(key=lambda g: g.start_time)
+        return games
 
     def stop(self):
         """Stop the search early."""
@@ -735,9 +840,13 @@ def _extract_solution(
 
 # --- Main Functions ---
 
-def generate_schedule(config: ScheduleConfig) -> list[ScheduledGame]:
+def generate_schedule(config: ScheduleConfig, html_output: Path = None) -> list[ScheduledGame]:
     """
     Generate a fair schedule using OR-Tools CP-SAT solver.
+
+    Args:
+        config: Schedule configuration
+        html_output: Optional path to write intermediate HTML solutions
 
     Returns list of scheduled games, or raises if no solution found.
     """
@@ -758,10 +867,13 @@ def generate_schedule(config: ScheduleConfig) -> list[ScheduledGame]:
     print(f"Total games to schedule: {total_games}")
     print(f"Available slots: {len(slots)}")
     print(f"Potential matchups: {len(matchups)}")
-    print(f"Solver timeout: {config.solver.timeout_seconds}s")
+    timeout_str = f"{config.solver.timeout_seconds}s" if config.solver.timeout_seconds > 0 else "none (infinite)"
+    print(f"Solver timeout: {timeout_str}")
     print(f"Weights: time_slot={config.solver.weight_time_slot}, sheet={config.solver.weight_sheet}, "
           f"home_away={config.solver.weight_home_away}, opponent={config.solver.weight_opponent}, "
-          f"packing={config.solver.weight_packing}")
+          f"packing={config.solver.weight_packing}, no_consecutive_opponent={config.solver.weight_no_consecutive_opponent}, "
+          f"bye_spread={config.solver.weight_bye_spread}")
+    print(f"Hard constraints: max_consecutive_byes={config.solver.max_consecutive_byes}")
 
     # 2. Create decision variables
     # x[m, s] = 1 if matchup m is assigned to slot s
@@ -783,10 +895,12 @@ def generate_schedule(config: ScheduleConfig) -> list[ScheduledGame]:
 
     # 5. Solve
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = config.solver.timeout_seconds
-
-    print("\nSolving (Ctrl+C to stop early and use best solution found)...")
-    callback = ScheduleProgressCallback()
+    if config.solver.timeout_seconds > 0:
+        solver.parameters.max_time_in_seconds = config.solver.timeout_seconds
+        print(f"\nSolving with {config.solver.timeout_seconds}s timeout (Ctrl+C to stop early and use best solution found)...")
+    else:
+        print("\nSolving with no timeout (Ctrl+C to stop and use best solution found)...")
+    callback = ScheduleProgressCallback(x, matchups, slots, config, html_output)
 
     # Handle Ctrl+C gracefully
     import signal
@@ -896,11 +1010,48 @@ def analyze_fairness(games: list[ScheduledGame], config: ScheduleConfig) -> Fair
     total_game_days = len(set(s.date for s in slots))
     used_game_days = len(games_by_date)
 
+    # Calculate bye weeks for each team
+    bye_weeks: dict[str, int] = {}
+    game_dates = set(s.date for s in slots)  # All available game dates
+
+    for team in config.all_teams:
+        # Find all dates where this team has a game
+        team_game_dates = set()
+        for game in games:
+            if game.home_team == team.name or game.away_team == team.name:
+                team_game_dates.add(game.start_time.date())
+
+        # Bye weeks = available game dates minus dates where team played
+        bye_weeks[team.name] = len(game_dates - team_game_dates)
+
+    # Calculate bye spread (first half vs second half)
+    bye_spread: dict[str, tuple[int, int]] = {}
+    sorted_game_dates = sorted(game_dates)
+    midpoint_idx = len(sorted_game_dates) // 2
+    first_half_dates = set(sorted_game_dates[:midpoint_idx])
+    second_half_dates = set(sorted_game_dates[midpoint_idx:])
+
+    for team in config.all_teams:
+        # Find all dates where this team has a game
+        team_game_dates = set()
+        for game in games:
+            if game.home_team == team.name or game.away_team == team.name:
+                team_game_dates.add(game.start_time.date())
+
+        # Byes in first half = first half dates - dates team played in first half
+        first_half_byes = len(first_half_dates - team_game_dates)
+        # Byes in second half = second half dates - dates team played in second half
+        second_half_byes = len(second_half_dates - team_game_dates)
+
+        bye_spread[team.name] = (first_half_byes, second_half_byes)
+
     return FairnessReport(
         time_slot_distribution=time_slot_dist,
         sheet_distribution=sheet_dist,
         home_away_balance=home_away,
         opponent_distribution=opponent_dist,
+        bye_weeks=bye_weeks,
+        bye_spread=bye_spread,
         total_slots=total_slots,
         used_slots=used_slots,
         total_game_days=total_game_days,
@@ -916,13 +1067,23 @@ def main():
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python -m score.scheduler <config.yaml>")
+        print("Usage: python -m score.scheduler <config.yaml> [--html output.html]")
         sys.exit(1)
 
     config_path = Path(sys.argv[1])
     if not config_path.exists():
         print(f"Error: Config file not found: {config_path}")
         sys.exit(1)
+
+    # Check for HTML output flag
+    html_output = None
+    if "--html" in sys.argv:
+        html_idx = sys.argv.index("--html")
+        if html_idx + 1 < len(sys.argv):
+            html_output = Path(sys.argv[html_idx + 1])
+        else:
+            print("Error: --html flag requires output filename")
+            sys.exit(1)
 
     print(f"Loading config from: {config_path}")
     config = load_config(config_path)
@@ -931,7 +1092,7 @@ def main():
     print(f"\nGenerating schedule for: {config.league_id} - {config.season_id}")
     print(f"Divisions: {div_names}")
 
-    games = generate_schedule(config)
+    games = generate_schedule(config, html_output)
     print(f"\nGenerated {len(games)} games")
 
     report = analyze_fairness(games, config)
@@ -939,6 +1100,891 @@ def main():
 
     # Print full schedule with unused slots
     _print_full_schedule(games, config)
+
+    # Generate HTML output if requested
+    if html_output:
+        _write_html_schedule(games, config, report, html_output)
+        print(f"\nHTML schedule written to: {html_output}")
+        print(f"Open in browser: file://{html_output.absolute()}")
+
+
+def _write_html_schedule(games: list[ScheduledGame], config: ScheduleConfig, report: FairnessReport, output_path: Path):
+    """Generate and write HTML schedule to file."""
+
+    # Toggle to show/hide the full schedule rendering
+    SHOW_SCHEDULE = True
+
+    # Group games by date
+    games_by_date: dict[date, list[ScheduledGame]] = {}
+    for game in games:
+        game_date = game.start_time.date()
+        if game_date not in games_by_date:
+            games_by_date[game_date] = []
+        games_by_date[game_date].append(game)
+
+    # Sort each day's games by time, then sheet
+    for date_games in games_by_date.values():
+        date_games.sort(key=lambda g: (g.start_time.time(), g.sheet_id))
+
+    sorted_dates = sorted(games_by_date.keys())
+
+    # Assign colors to divisions
+    division_colors = {
+        div.division_id: f"hsl({i * 137.5 % 360}, 65%, 85%)"
+        for i, div in enumerate(config.divisions)
+    }
+
+    # Build HTML
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Schedule: {config.league_id} - {config.season_id}</title>
+    <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f5f5;
+            padding: 20px;
+        }}
+
+        .container {{
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }}
+
+        h1 {{
+            color: #2c3e50;
+            margin-bottom: 10px;
+            font-size: 2em;
+        }}
+
+        h2 {{
+            color: #34495e;
+            margin: 30px 0 15px 0;
+            font-size: 1.5em;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 5px;
+        }}
+
+        h3 {{
+            color: #34495e;
+            margin: 20px 0 10px 0;
+            font-size: 1.2em;
+        }}
+
+        .subtitle {{
+            color: #7f8c8d;
+            font-size: 1.1em;
+            margin-bottom: 30px;
+        }}
+
+        .stats {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }}
+
+        .stat-box {{
+            background: #ecf0f1;
+            padding: 15px;
+            border-radius: 5px;
+            text-align: center;
+        }}
+
+        .stat-value {{
+            font-size: 2em;
+            font-weight: bold;
+            color: #2c3e50;
+        }}
+
+        .stat-label {{
+            color: #7f8c8d;
+            font-size: 0.9em;
+            margin-top: 5px;
+        }}
+
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }}
+
+        th, td {{
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }}
+
+        th {{
+            background: #34495e;
+            color: white;
+            font-weight: 600;
+        }}
+
+        tr:hover {{
+            background: #f8f9fa;
+        }}
+
+        .schedule-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }}
+
+        .date-section {{
+            margin: 0;
+            page-break-inside: avoid;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }}
+
+        .date-header {{
+            background: #3498db;
+            color: white;
+            padding: 12px 15px;
+            font-weight: 600;
+            font-size: 1em;
+        }}
+
+        .games-list {{
+            padding: 10px 0;
+        }}
+
+        .bye-section {{
+            padding: 10px 15px;
+            background: #f8f9fa;
+            border-top: 1px solid #e9ecef;
+            font-size: 0.85em;
+            color: #6c757d;
+        }}
+
+        .bye-label {{
+            font-weight: 600;
+            margin-bottom: 5px;
+        }}
+
+        .bye-teams {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }}
+
+        .bye-team {{
+            background: white;
+            border: 1px solid #dee2e6;
+            padding: 3px 8px;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }}
+
+        .bye-team.consecutive {{
+            background: #fff3cd;
+            border-color: #ffc107;
+            font-weight: 600;
+        }}
+
+        .game-line {{
+            display: grid;
+            grid-template-columns: 80px 100px 1fr;
+            gap: 15px;
+            align-items: center;
+            padding: 10px 15px;
+            border-bottom: 1px solid #f0f0f0;
+            transition: background 0.2s;
+        }}
+
+        .game-line:last-child {{
+            border-bottom: none;
+        }}
+
+        .game-line:hover {{
+            background: #f8f9fa;
+        }}
+
+        .game-line.unused {{
+            color: #999;
+            font-style: italic;
+        }}
+
+        .game-time {{
+            font-weight: 700;
+            color: #2c3e50;
+            font-size: 0.95em;
+        }}
+
+        .game-sheet {{
+            color: #7f8c8d;
+            font-size: 0.85em;
+        }}
+
+        .game-matchup {{
+            font-weight: 600;
+            font-size: 0.95em;
+            color: #2c3e50;
+        }}
+
+        .game-line.unused .game-matchup {{
+            color: #999;
+        }}
+
+        .games-grid {{
+            display: none;
+        }}
+
+        .game-card {{
+            display: none;
+        }}
+
+        .game-division {{
+            display: none;
+        }}
+
+        .unused-slot {{
+            background: #f8f9fa;
+            border-left-color: #dee2e6;
+            color: #6c757d;
+            font-style: italic;
+        }}
+
+        .legend {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin: 20px 0;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+        }}
+
+        .legend-item {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+
+        .legend-color {{
+            width: 30px;
+            height: 20px;
+            border-radius: 3px;
+        }}
+
+        .metrics-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }}
+
+        .metric-card {{
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }}
+
+        .metric-card h3 {{
+            margin-top: 0;
+            margin-bottom: 15px;
+            color: #2c3e50;
+            font-size: 1.1em;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 5px;
+        }}
+
+        .metric-card table {{
+            margin: 0;
+            font-size: 0.9em;
+        }}
+
+        .metric-card th {{
+            background: #34495e;
+            padding: 8px;
+        }}
+
+        .metric-card td {{
+            padding: 8px;
+        }}
+
+        .bar-chart {{
+            margin: 15px 0;
+        }}
+
+        .bar-row {{
+            display: flex;
+            align-items: center;
+            margin-bottom: 8px;
+            gap: 10px;
+        }}
+
+        .bar-label {{
+            min-width: 60px;
+            font-weight: 600;
+            font-size: 0.9em;
+        }}
+
+        .bar-container {{
+            flex: 1;
+            display: flex;
+            gap: 4px;
+            align-items: center;
+        }}
+
+        .bar {{
+            height: 24px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.85em;
+            font-weight: 600;
+            color: white;
+            transition: all 0.3s;
+            min-width: 30px;
+        }}
+
+        .bar:hover {{
+            opacity: 0.8;
+            transform: scaleY(1.1);
+        }}
+
+        .bar-home {{
+            background: #3498db;
+        }}
+
+        .bar-away {{
+            background: #e74c3c;
+        }}
+
+        .bar-timeslot {{
+            background: #2ecc71;
+        }}
+
+        .bar-balance {{
+            margin-left: 10px;
+            font-size: 0.9em;
+            color: #7f8c8d;
+        }}
+
+        .matchup-matrix {{
+            margin: 15px 0;
+            overflow-x: auto;
+        }}
+
+        .matchup-table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8em;
+        }}
+
+        .matchup-table th,
+        .matchup-table td {{
+            padding: 6px;
+            text-align: center;
+            border: 1px solid #ddd;
+        }}
+
+        .matchup-table th {{
+            background: #34495e;
+            color: white;
+            font-weight: 600;
+        }}
+
+        .matchup-table td {{
+            background: #fff;
+        }}
+
+        .matchup-table .empty-cell {{
+            background: #f8f9fa;
+            color: #ccc;
+        }}
+
+        .matchup-table .team-label {{
+            background: #ecf0f1;
+            font-weight: 600;
+            text-align: left;
+        }}
+
+        .matchup-perfect {{
+            font-size: 1.2em;
+            color: #27ae60;
+            text-align: center;
+            padding: 20px;
+        }}
+
+        .matchup-heatmap {{
+            margin: 15px 0;
+        }}
+
+        .matchup-heatmap-table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.8em;
+        }}
+
+        .matchup-heatmap-table th,
+        .matchup-heatmap-table td {{
+            padding: 8px;
+            text-align: center;
+            border: 1px solid #ddd;
+        }}
+
+        .matchup-heatmap-table th {{
+            background: #34495e;
+            color: white;
+            font-weight: 600;
+        }}
+
+        .matchup-heatmap-table .team-label {{
+            background: #ecf0f1;
+            font-weight: 600;
+        }}
+
+        .matchup-heatmap-table .empty-cell {{
+            background: #f8f9fa;
+        }}
+
+        .matchup-heatmap-table .matchup-perfect {{
+            background: #d4edda;
+            color: #155724;
+            font-weight: 600;
+        }}
+
+        .matchup-heatmap-table .matchup-low {{
+            background: #fff3cd;
+            color: #856404;
+            font-weight: 600;
+        }}
+
+        .matchup-heatmap-table .matchup-high {{
+            background: #f8d7da;
+            color: #721c24;
+            font-weight: 600;
+        }}
+
+        @media print {{
+            body {{
+                background: white;
+            }}
+            .container {{
+                box-shadow: none;
+            }}
+            .game-card:hover {{
+                transform: none;
+                box-shadow: none;
+            }}
+        }}
+
+        @media (max-width: 768px) {{
+            .schedule-grid {{
+                grid-template-columns: 1fr;
+            }}
+
+            .game-line {{
+                grid-template-columns: 70px 80px 1fr;
+                gap: 10px;
+            }}
+
+            .stats {{
+                grid-template-columns: 1fr;
+            }}
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Hockey Schedule</h1>
+        <div class="subtitle">{config.league_id} - {config.season_id}</div>
+
+        <div class="stats">
+            <div class="stat-box">
+                <div class="stat-value">{len(games)}</div>
+                <div class="stat-label">Total Games</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value">{len(sorted_dates)}</div>
+                <div class="stat-label">Game Days</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value">{report.utilization_pct:.1f}%</div>
+                <div class="stat-label">Ice Utilization</div>
+            </div>
+            <div class="stat-box">
+                <div class="stat-value">{len(config.all_teams)}</div>
+                <div class="stat-label">Teams</div>
+            </div>
+        </div>
+
+        <h2>Division Legend</h2>
+        <div class="legend">
+"""
+
+    for div in config.divisions:
+        html += f"""            <div class="legend-item">
+                <div class="legend-color" style="background: {division_colors[div.division_id]}"></div>
+                <span>{div.division_id} ({len(div.teams)} teams, {div.games_per_team} games each)</span>
+            </div>
+"""
+
+    html += """        </div>
+
+        <h2>Fairness Metrics</h2>
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <h3>Home/Away Balance</h3>
+                <div style="margin-bottom: 10px; font-size: 0.85em;">
+                    <span style="display: inline-block; width: 12px; height: 12px; background: #3498db; border-radius: 2px; margin-right: 4px;"></span>
+                    <span style="margin-right: 12px;">Home</span>
+                    <span style="display: inline-block; width: 12px; height: 12px; background: #e74c3c; border-radius: 2px; margin-right: 4px;"></span>
+                    <span style="margin-right: 12px;">Away</span>
+                </div>
+                <div class="bar-chart">
+"""
+
+    # Calculate max value for scaling
+    max_games = max(max(home, away) for home, away in report.home_away_balance.values())
+
+    for team_name, (home, away) in sorted(report.home_away_balance.items()):
+        # Calculate bar widths as percentages
+        home_width = (home / max_games) * 100
+        away_width = (away / max_games) * 100
+
+        html += f"""                    <div class="bar-row">
+                        <div class="bar-label">{team_name}</div>
+                        <div class="bar-container">
+                            <div class="bar bar-home" style="width: {home_width}%">{home}</div>
+                            <div class="bar bar-away" style="width: {away_width}%">{away}</div>
+                        </div>
+                    </div>
+"""
+
+    html += """                </div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Time Slot Distribution</h3>
+"""
+
+    # Get time slots
+    if report.time_slot_distribution:
+        first_team = list(report.time_slot_distribution.keys())[0]
+        time_slots = sorted(report.time_slot_distribution[first_team].keys())
+
+        # Add a legend showing time slots with different shades
+        colors = ["#2ecc71", "#27ae60", "#16a085", "#1abc9c"]
+        html += """                <div style="margin-bottom: 10px; font-size: 0.85em;">
+"""
+        for i, ts in enumerate(time_slots):
+            color = colors[i % len(colors)]
+            html += f"""                    <span style="display: inline-block; width: 12px; height: 12px; background: {color}; border-radius: 2px; margin-right: 4px;"></span>
+                    <span style="margin-right: 12px;">{ts}</span>
+"""
+        html += """                </div>
+"""
+
+        # Calculate max value for scaling
+        max_slot_games = max(
+            max(slots.values())
+            for slots in report.time_slot_distribution.values()
+        )
+
+        for team_name in sorted(report.time_slot_distribution.keys()):
+            slots = report.time_slot_distribution[team_name]
+
+            html += f"""                <div class="bar-row">
+                    <div class="bar-label">{team_name}</div>
+                    <div class="bar-container">
+"""
+
+            for i, ts in enumerate(time_slots):
+                count = slots.get(ts, 0)
+                width = (count / max_slot_games) * 100 if max_slot_games > 0 else 0
+                color = colors[i % len(colors)]
+                html += f"""                        <div class="bar" style="width: {width}%; background: {color};" title="{ts}">{count}</div>
+"""
+
+            html += """                    </div>
+                </div>
+"""
+
+    html += """            </div>
+
+            <div class="metric-card">
+                <h3>Ice Sheet Distribution</h3>
+"""
+
+    # Get sheets
+    if report.sheet_distribution:
+        first_team = list(report.sheet_distribution.keys())[0]
+        sheets = sorted(report.sheet_distribution[first_team].keys())
+
+        # Add a legend showing sheets with different colors (more contrasting)
+        colors = ["#9b59b6", "#e67e22"]  # Purple and orange for better contrast
+        html += """                <div style="margin-bottom: 10px; font-size: 0.85em;">
+"""
+        for i, sheet in enumerate(sheets):
+            color = colors[i % len(colors)]
+            html += f"""                    <span style="display: inline-block; width: 12px; height: 12px; background: {color}; border-radius: 2px; margin-right: 4px;"></span>
+                    <span style="margin-right: 12px;">{sheet}</span>
+"""
+        html += """                </div>
+"""
+
+        # Calculate max value for scaling
+        max_sheet_games = max(
+            max(sheets_count.values())
+            for sheets_count in report.sheet_distribution.values()
+        )
+
+        for team_name in sorted(report.sheet_distribution.keys()):
+            sheet_counts = report.sheet_distribution[team_name]
+
+            html += f"""                <div class="bar-row">
+                    <div class="bar-label">{team_name}</div>
+                    <div class="bar-container">
+"""
+
+            for i, sheet in enumerate(sheets):
+                count = sheet_counts.get(sheet, 0)
+                width = (count / max_sheet_games) * 100 if max_sheet_games > 0 else 0
+                color = colors[i % len(colors)]
+                html += f"""                        <div class="bar" style="width: {width}%; background: {color};" title="{sheet}">{count}</div>
+"""
+
+            html += """                    </div>
+                </div>
+"""
+
+    html += """            </div>
+
+            <div class="metric-card">
+                <h3>Bye Spread</h3>
+                <div style="margin-bottom: 10px; font-size: 0.85em;">
+                    <span style="display: inline-block; width: 12px; height: 12px; background: #3498db; border-radius: 2px; margin-right: 4px;"></span>
+                    <span style="margin-right: 12px;">1st Half</span>
+                    <span style="display: inline-block; width: 12px; height: 12px; background: #e74c3c; border-radius: 2px; margin-right: 4px;"></span>
+                    <span style="margin-right: 12px;">2nd Half</span>
+                </div>
+                <div class="bar-chart">
+"""
+
+    # Calculate max bye spread for scaling
+    if report.bye_spread:
+        max_bye_half = max(max(first, second) for first, second in report.bye_spread.values()) if report.bye_spread.values() else 0
+
+        for team_name in sorted(report.bye_spread.keys()):
+            first_half, second_half = report.bye_spread[team_name]
+            first_width = (first_half / max_bye_half * 100) if max_bye_half > 0 else 0
+            second_width = (second_half / max_bye_half * 100) if max_bye_half > 0 else 0
+
+            html += f"""                    <div class="bar-row">
+                        <div class="bar-label">{team_name}</div>
+                        <div class="bar-container">
+                            <div class="bar bar-home" style="width: {first_width}%">{first_half}</div>
+                            <div class="bar bar-away" style="width: {second_width}%">{second_half}</div>
+                        </div>
+                    </div>
+"""
+
+    html += """                </div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Team Matchups</h3>
+"""
+
+    # Get sorted team list
+    teams = sorted(report.opponent_distribution.keys())
+
+    # Calculate expected matchups per pair (for 9 teams, 16 games each = 72 total, 36 pairs play 2x each)
+    total_teams = len(teams)
+    if total_teams > 1:
+        expected_matchups = 2  # With 9 teams and 16 games each, each pair should play 2 times
+
+    # Always show the matrix with color coding
+    html += """                <div class="matchup-heatmap">
+                    <table class="matchup-heatmap-table">
+                        <thead>
+                            <tr>
+                                <th></th>
+"""
+    for team in teams:
+        html += f"                                <th>{team}</th>\n"
+
+    html += """                            </tr>
+                        </thead>
+                        <tbody>
+"""
+
+    for i, team1 in enumerate(teams):
+        html += "                            <tr>\n"
+        html += f"                                <td class='team-label'>{team1}</td>\n"
+
+        for j, team2 in enumerate(teams):
+            if j < i:
+                html += "                                <td class='empty-cell'>—</td>\n"
+            elif j == i:
+                html += "                                <td class='empty-cell'>—</td>\n"
+            else:
+                count = report.opponent_distribution.get(team1, {}).get(team2, 0)
+                if count == expected_matchups:
+                    cell_class = "matchup-perfect"
+                elif count < expected_matchups:
+                    cell_class = "matchup-low"
+                else:
+                    cell_class = "matchup-high"
+                html += f"                                <td class='{cell_class}'>{count}</td>\n"
+
+        html += "                            </tr>\n"
+
+    html += """                        </tbody>
+                    </table>
+                </div>
+"""
+
+    html += """            </div>
+        </div>
+"""
+
+    # Schedule rendering (toggle with SHOW_SCHEDULE flag)
+    if SHOW_SCHEDULE:
+        html += """
+        <h2>Schedule</h2>
+        <div class="schedule-grid">
+"""
+
+        # Build a lookup of games by (date, time, sheet)
+        game_lookup: dict[tuple[date, time, str], ScheduledGame] = {}
+        for game in games:
+            key = (game.start_time.date(), game.start_time.time(), game.sheet_id)
+            game_lookup[key] = game
+
+        # Generate all slots and group by date
+        all_slots = _generate_slots(config)
+        slots_by_date: dict[date, list[GameSlot]] = {}
+        for s in all_slots:
+            if s.date not in slots_by_date:
+                slots_by_date[s.date] = []
+            slots_by_date[s.date].append(s)
+
+        # Find the last date with any games scheduled
+        last_game_date = max(game.start_time.date() for game in games) if games else None
+
+        # Only show dates up to the last game
+        if last_game_date:
+            all_sorted_dates = [d for d in sorted(slots_by_date.keys()) if d <= last_game_date]
+        else:
+            all_sorted_dates = sorted(slots_by_date.keys())
+
+        # Get all team names
+        all_team_names = set(config.all_teams[0].name for _ in config.all_teams)
+        all_team_names = sorted([team.name for team in config.all_teams])
+
+        # Track teams with byes from previous week
+        previous_bye_teams = set()
+
+        for game_date in all_sorted_dates:
+            date_slots = slots_by_date[game_date]
+            # Sort slots by time, then sheet
+            date_slots.sort(key=lambda s: (s.time, s.sheet_id))
+
+            # Check if any games on this date
+            games_on_date = [s for s in date_slots if (s.date, s.time, s.sheet_id) in game_lookup]
+
+            if not games_on_date:
+                # No games scheduled on this date - skip it entirely
+                continue
+
+            # Find which teams are playing on this date
+            playing_teams = set()
+            for slot in date_slots:
+                key = (slot.date, slot.time, slot.sheet_id)
+                game = game_lookup.get(key)
+                if game:
+                    playing_teams.add(game.home_team)
+                    playing_teams.add(game.away_team)
+
+            # Teams with byes = all teams - playing teams
+            bye_teams = sorted(set(all_team_names) - playing_teams)
+
+            # Check which bye teams had byes last week (consecutive byes)
+            consecutive_bye_teams = set(bye_teams) & previous_bye_teams
+
+            html += f"""
+        <div class="date-section">
+            <div class="date-header">{game_date.strftime('%A, %B %d, %Y')}</div>
+            <div class="games-list">
+"""
+
+            for slot in date_slots:
+                key = (slot.date, slot.time, slot.sheet_id)
+                game = game_lookup.get(key)
+
+                if game:
+                    html += f"""                <div class="game-line">
+                    <div class="game-time">{game.start_time.strftime('%H:%M')}</div>
+                    <div class="game-sheet">{game.sheet_id}</div>
+                    <div class="game-matchup">{game.home_abbrev} vs {game.away_abbrev}</div>
+                </div>
+"""
+                else:
+                    html += f"""                <div class="game-line unused">
+                    <div class="game-time">{slot.time.strftime('%H:%M')}</div>
+                    <div class="game-sheet">{slot.sheet_id}</div>
+                    <div class="game-matchup">UNUSED</div>
+                </div>
+"""
+
+            html += """            </div>
+"""
+
+            # Add bye section if there are teams with byes
+            if bye_teams:
+                html += """            <div class="bye-section">
+                <div class="bye-label">Byes:</div>
+                <div class="bye-teams">
+"""
+                for team in bye_teams:
+                    consecutive_class = " consecutive" if team in consecutive_bye_teams else ""
+                    html += f"""                    <span class="bye-team{consecutive_class}">{team}</span>
+"""
+                html += """                </div>
+            </div>
+"""
+
+            html += """        </div>
+"""
+
+            # Update previous_bye_teams for next iteration
+            previous_bye_teams = set(bye_teams)
+
+        html += """        </div>
+"""
+
+    html += """    </div>
+</body>
+</html>
+"""
+
+    # Write to file
+    with open(output_path, 'w') as f:
+        f.write(html)
 
 
 def _print_full_schedule(games: list[ScheduledGame], config: ScheduleConfig):

@@ -371,11 +371,31 @@ game_settings:
   game_type: "regular"
 
 solver:
-  timeout_seconds: 60
+  timeout_seconds: 60    # Set to 0 for no timeout (run until Ctrl+C)
   weight_time_slot: 10    # Balance games across time slots
   weight_sheet: 10        # Balance games across sheets
   weight_home_away: 20    # Balance home/away games
   weight_opponent: 5      # Spread games across opponents
+```
+
+### Solver Behavior
+
+**Timeouts:**
+- `timeout_seconds: 60` - Solver stops after 60 seconds and returns best solution found
+- `timeout_seconds: 0` - No timeout, solver runs indefinitely until optimal or interrupted
+
+**Graceful Interruption:**
+- Press `Ctrl+C` at any time to stop the solver and keep the best solution found so far
+- The solver writes HTML snapshots after each improved solution (use `--html` flag)
+- You can let it run overnight, check progress via HTML, then Ctrl+C when satisfied
+
+**Example: Overnight solving**
+```bash
+# Run with no timeout, writes intermediate solutions to schedule.html
+uv run score-schedule examples/schedule.yaml --html schedule.html
+
+# The solver will continuously improve the schedule, updating schedule.html
+# Press Ctrl+C whenever you want to stop and use the current best solution
 ```
 
 ### Fairness Constraints
