@@ -45,6 +45,10 @@ make schedule CONFIG=examples/schedule.yaml
 
 # Or directly
 uv run score-schedule examples/schedule.yaml
+
+# View schedule in interactive Gradio web interface (requires schedule.html)
+uv run score-schedule-gradio
+# Opens at http://localhost:7860
 ```
 
 ### Docker
@@ -407,3 +411,31 @@ The solver optimizes for:
 - **Opponent variety**: Games spread across opponents evenly
 - **No consecutive opponents**: Penalizes playing same opponent in back-to-back weeks
 - **Max consecutive byes**: Hard constraint on weeks without games
+
+### Critical Implementation Details
+
+**Opponent Variety Constraint - Integer Arithmetic:**
+
+The CP-SAT solver requires all arithmetic to use integers only. When balancing opponent variety, the ideal distribution is fractional:
+- For 8 teams, 12 games each: expected = 12/7 ≈ 1.71 games per opponent pair
+- **NEVER use integer division** (`//`) to calculate expected games, as this will optimize for the wrong target
+
+**Correct Implementation:**
+Instead of minimizing `|games - games_per_team/num_opponents|`, we scale to avoid fractions:
+- Minimize `|games × num_opponents - games_per_team|`
+- This is mathematically equivalent but uses only integers
+
+Example: For a team pair with 2 games vs the 1.71 ideal:
+- Wrong: `|2 - 1| = 1` (using `12 // 7 = 1`)
+- Correct: `|2 × 7 - 12| = 2` (scaled integer arithmetic)
+
+**Location:** `src/score/scheduler.py`, `_add_fairness_objective()` function, opponent variety section
+
+**Matchup Generation:**
+
+Generate `games_per_team` copies of each directed matchup (Team A home vs Team B). This gives the solver maximum flexibility:
+- For 8 teams, 12 games: 8 × 7 × 12 = 672 potential matchups
+- Don't optimize this number - the solver needs full flexibility to satisfy all fairness constraints
+- Premature optimization here leads to poor solutions even with high matchup weights
+
+**Location:** `src/score/scheduler.py`, `_generate_matchups()` function

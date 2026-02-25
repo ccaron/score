@@ -1,0 +1,28 @@
+num_teams: 8
+games_per_team: 12
+
+schedule:
+  day_schedules:
+    - day: tuesday
+      slots:
+        - time: "11:00"
+          sheet: "post-it"
+    - day: wednesday
+      slots:
+        - time: "08:40"
+          sheet: "post-it"
+        - time: "09:50"
+          sheet: "post-it"
+        - time: "11:00"
+          sheet: "post-it"
+
+solver:
+  timeout_seconds: 1_000_000
+  weight_matchup: 50       # Strong - what you care about
+  weight_day: 5             # Balance across days of week
+  weight_time: 10            # Balance across times of day
+  weight_bye_distribution: 50
+  weight_consecutive_matchup: 5
+  weight_home_away: 1       # Minimal - just to avoid all home or all away
+  max_consecutive_byes: 0   # Keep teams playing regularly
+  max_consecutive_game_slots: 2

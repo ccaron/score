@@ -287,13 +287,242 @@ function closeModal() {
     document.getElementById('entityModal').style.display = 'none';
 }
 
+// Schedule modal state
+let _scheduleCtx = null;
+let _lastGeneratedGames = null;
+
 function openMultiDivisionScheduleModal(leagueId, seasonId, seasonName, divisions) {
-    showMessage('Schedule modal for: ' + seasonName, 'info');
-    // Full implementation to be added
+    _scheduleCtx = { leagueId, seasonId, seasonName, divisions };
+    _lastGeneratedGames = null;
+
+    document.getElementById('scheduleModalTitle').textContent = 'Generate Schedule — ' + seasonName;
+
+    const divisionRows = divisions.map(d => `
+        <tr>
+            <td>${d.name}</td>
+            <td style="color:#888;">${d.team_count} teams</td>
+            <td><input type="number" id="gpt_${d.division_id}" value="12" min="1" max="40" style="width:60px;"></td>
+        </tr>`).join('');
+
+    document.getElementById('scheduleFormContainer').innerHTML = `
+        <div style="padding:16px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+
+                <div>
+                    <div class="form-group">
+                        <label>Sheets</label>
+                        <div style="padding:6px 0;">{{ sheets_checkboxes_html|safe }}</div>
+                    </div>
+                    <div class="form-group">
+                        <label>Days of week</label>
+                        <div style="display:flex;flex-wrap:wrap;gap:8px;padding:4px 0;">
+                            ${['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'].map(d =>
+                                `<label style="font-weight:normal;display:flex;align-items:center;gap:4px;">
+                                    <input type="checkbox" name="dow" value="${d.toLowerCase()}"
+                                        ${['friday','saturday','sunday'].includes(d.toLowerCase()) ? 'checked' : ''}>
+                                    ${d.slice(0,3)}</label>`
+                            ).join('')}
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Time slots <span style="color:#888;font-weight:normal;">(one per line, HH:MM)</span></label>
+                        <textarea id="sched_timeslots" rows="4" style="font-family:monospace;">18:00\n19:30\n21:00</textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Blackout dates <span style="color:#888;font-weight:normal;">(one per line, YYYY-MM-DD)</span></label>
+                        <textarea id="sched_blackouts" rows="3" style="font-family:monospace;"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>Solver timeout (seconds, 0 = unlimited)</label>
+                        <input type="number" id="sched_timeout" value="30" min="0" max="600" style="width:80px;">
+                    </div>
+                </div>
+
+                <div>
+                    <div class="form-group">
+                        <label>Games per team</label>
+                        <table style="width:100%;font-size:12px;border-collapse:collapse;">
+                            <thead><tr><th style="text-align:left;">Division</th><th style="text-align:left;color:#888;">Teams</th><th style="text-align:left;">Games</th></tr></thead>
+                            <tbody>${divisionRows}</tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div style="display:flex;gap:8px;align-items:center;">
+                <button class="btn-save" onclick="runScheduleGenerate()">Generate Preview</button>
+                <button class="btn-regenerate" onclick="closeScheduleModal()">Cancel</button>
+                <span id="sched_status" style="font-size:12px;color:#888;"></span>
+            </div>
+
+            <div id="sched_preview"></div>
+        </div>`;
+
+    document.getElementById('scheduleModal').style.display = 'flex';
 }
 
 function closeScheduleModal() {
     document.getElementById('scheduleModal').style.display = 'none';
+    _scheduleCtx = null;
+    _lastGeneratedGames = null;
+}
+
+function runScheduleGenerate() {
+    const ctx = _scheduleCtx;
+    if (!ctx) return;
+
+    const sheetIds = [...document.querySelectorAll('input[name="sheet"]:checked')].map(el => el.value);
+    if (!sheetIds.length) { alert('Select at least one sheet.'); return; }
+
+    const daysOfWeek = [...document.querySelectorAll('input[name="dow"]:checked')].map(el => el.value);
+    if (!daysOfWeek.length) { alert('Select at least one day of week.'); return; }
+
+    const timeSlots = document.getElementById('sched_timeslots').value
+        .split('\n').map(s => s.trim()).filter(s => /^\d{2}:\d{2}$/.test(s));
+    if (!timeSlots.length) { alert('Enter at least one valid time slot (HH:MM).'); return; }
+
+    const blackoutDates = document.getElementById('sched_blackouts').value
+        .split('\n').map(s => s.trim()).filter(s => /^\d{4}-\d{2}-\d{2}$/.test(s));
+
+    const timeout = parseInt(document.getElementById('sched_timeout').value) || 30;
+
+    const divisions = ctx.divisions.map(d => ({
+        division_id: d.division_id,
+        games_per_team: parseInt(document.getElementById('gpt_' + d.division_id).value) || 12,
+    }));
+
+    const statusEl = document.getElementById('sched_status');
+    const previewEl = document.getElementById('sched_preview');
+    statusEl.textContent = 'Solving… this may take a moment.';
+    previewEl.innerHTML = '';
+    document.querySelector('#scheduleFormContainer .btn-save').disabled = true;
+
+    fetch('/admin/schedules/generate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            league_id: ctx.leagueId,
+            season_id: ctx.seasonId,
+            divisions,
+            sheet_ids: sheetIds,
+            days_of_week: daysOfWeek,
+            time_slots: timeSlots,
+            blackout_dates: blackoutDates,
+            timeout_seconds: timeout,
+            weight_time_slot: 10,
+            weight_sheet: 10,
+            weight_home_away: 20,
+            weight_opponent: 5,
+            weight_packing: 5,
+            weight_no_consecutive_opponent: 10,
+            max_consecutive_byes: 3,
+        })
+    })
+    .then(r => r.json().then(data => ({ ok: r.ok, data })))
+    .then(({ ok, data }) => {
+        document.querySelector('#scheduleFormContainer .btn-save').disabled = false;
+        if (!ok) {
+            statusEl.textContent = 'Error: ' + (data.detail || 'unknown error');
+            return;
+        }
+        _lastGeneratedGames = data.games;
+        statusEl.textContent = `Generated ${data.games.length} games. Review below, then save.`;
+        renderSchedulePreview(data);
+    })
+    .catch(err => {
+        document.querySelector('#scheduleFormContainer .btn-save').disabled = false;
+        statusEl.textContent = 'Request failed: ' + err.message;
+    });
+}
+
+function renderSchedulePreview(data) {
+    const games = data.games;
+    const fairness = data.fairness || {};
+
+    // Group games by date
+    const byDate = {};
+    games.forEach(g => {
+        const date = g.start_time.slice(0, 10);
+        if (!byDate[date]) byDate[date] = [];
+        byDate[date].push(g);
+    });
+
+    const dateRows = Object.keys(byDate).sort().map(date => {
+        const dayGames = byDate[date];
+        const rows = dayGames.map(g => {
+            const t = g.start_time.slice(11, 16);
+            return `<tr>
+                <td>${t}</td>
+                <td>${g.sheet_name}</td>
+                <td>${g.division_id}</td>
+                <td>${g.home_team} <span style="color:#888;">vs</span> ${g.away_team}</td>
+            </tr>`;
+        }).join('');
+        return `<tr style="background:#f8f9fa;"><td colspan="4" style="font-weight:600;padding:6px 8px;">${date}</td></tr>${rows}`;
+    }).join('');
+
+    const homeAway = fairness.home_away_balance || {};
+    const haRows = Object.entries(homeAway).map(([team, v]) =>
+        `<tr><td>${team}</td><td>${v.home}</td><td>${v.away}</td></tr>`
+    ).join('');
+
+    document.getElementById('sched_preview').innerHTML = `
+        <hr style="margin:16px 0;">
+        <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;">
+            <div>
+                <strong style="font-size:13px;">Schedule Preview (${games.length} games)</strong>
+                <div style="max-height:320px;overflow-y:auto;margin-top:8px;">
+                    <table class="schedule-games-table">
+                        <thead><tr><th>Time</th><th>Sheet</th><th>Division</th><th>Matchup</th></tr></thead>
+                        <tbody>${dateRows}</tbody>
+                    </table>
+                </div>
+            </div>
+            <div>
+                <strong style="font-size:13px;">Fairness — Home/Away</strong>
+                <table class="schedule-games-table" style="margin-top:8px;">
+                    <thead><tr><th>Team</th><th>Home</th><th>Away</th></tr></thead>
+                    <tbody>${haRows}</tbody>
+                </table>
+                <div style="margin-top:8px;font-size:12px;color:#666;">
+                    Slot utilization: ${fairness.utilization_pct || 0}%
+                    (${fairness.used_slots || 0} / ${fairness.total_slots || 0} slots)
+                </div>
+            </div>
+        </div>
+        <div style="margin-top:16px;display:flex;gap:8px;">
+            <button class="btn-save" onclick="saveGeneratedSchedule(false)">Save Schedule</button>
+            <button class="btn-save" style="background:#dc3545;" onclick="saveGeneratedSchedule(true)">Replace Existing &amp; Save</button>
+            <button class="btn-regenerate" onclick="runScheduleGenerate()">Regenerate</button>
+        </div>`;
+}
+
+function saveGeneratedSchedule(clearExisting) {
+    if (!_lastGeneratedGames || !_scheduleCtx) return;
+    const ctx = _scheduleCtx;
+
+    fetch('/admin/schedules/save', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            league_id: ctx.leagueId,
+            season_id: ctx.seasonId,
+            division_id: ctx.divisions.map(d => d.division_id).join(','),
+            games: _lastGeneratedGames,
+            clear_existing: clearExisting,
+        })
+    })
+    .then(r => r.json().then(data => ({ ok: r.ok, data })))
+    .then(({ ok, data }) => {
+        if (!ok) {
+            alert('Save failed: ' + (data.detail || 'unknown error'));
+            return;
+        }
+        closeScheduleModal();
+        showMessage(`Saved ${data.games_created} games.`, 'success');
+        setTimeout(() => location.reload(), 800);
+    })
+    .catch(err => alert('Save failed: ' + err.message));
 }
 
 function removeTeam(registrationId, teamName) {

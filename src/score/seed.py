@@ -15,13 +15,23 @@ logger = logging.getLogger("score.seed")
 
 # ---------- Default Client ----------
 
-DEFAULT_CLIENT_ID = "default"
+DEFAULT_CLIENT_ID = "la-kings"
 DEFAULT_CLIENT = {
     "client_id": DEFAULT_CLIENT_ID,
-    "name": "Default Client",
-    "slug": "default",
-    "contact_email": "admin@example.com",
+    "name": "Los Angeles Kings",
+    "slug": "la-kings",
+    "contact_email": "admin@lakings.example.com",
 }
+
+SECOND_CLIENT_ID = "canadiens"
+SECOND_CLIENT = {
+    "client_id": SECOND_CLIENT_ID,
+    "name": "Montreal Canadiens",
+    "slug": "canadiens",
+    "contact_email": "admin@canadiens.example.com",
+}
+
+SAMPLE_CLIENTS = [DEFAULT_CLIENT, SECOND_CLIENT]
 
 # ---------- Sample Data ----------
 
@@ -33,6 +43,55 @@ SAMPLE_LEAGUES = [
         "description": "Adult recreational hockey league at Toyota Sports Performance Center",
     },
 ]
+
+CLIENT_LEAGUES = {
+    "la-kings": [
+        {
+            "league_id": "lak-rec",
+            "name": "LA Kings Rec League",
+            "league_type": "rec",
+            "description": "Recreational adult hockey under the LA Kings banner",
+        },
+    ],
+    "canadiens": [
+        {
+            "league_id": "mtl-elite",
+            "name": "Canadiens Elite League",
+            "league_type": "amateur",
+            "description": "Competitive amateur hockey league affiliated with the Montreal Canadiens",
+        },
+    ],
+}
+
+# Per-client registrations: (reg_id, team_name, abbreviation, league_id, season_id, division_id, org_name, org_email)
+CLIENT_REGISTRATIONS = {
+    "la-kings": [
+        ("lak-vipers-w26",  "Desert Vipers",   "VIP", "lak-rec",   "winter-2026", "bronze-a",  "Carlos Rivera",  "carlos@vipers.com"),
+        ("lak-sharks-w26",  "Beach Sharks",    "SHK", "lak-rec",   "winter-2026", "bronze-a",  "Nina Patel",     "nina@sharks.com"),
+        ("lak-condors-w26", "SoCal Condors",   "CON", "lak-rec",   "winter-2026", "bronze-a",  "Ray Nguyen",     "ray@condors.com"),
+        ("lak-surge-w26",   "Pacific Surge",   "SRG", "lak-rec",   "winter-2026", "bronze-a",  "Mia Torres",     "mia@surge.com"),
+        ("lak-pucks-w26",   "Lucky Pucks",     "LPK", "lak-rec",   "winter-2026", "bronze-aa", "Derek Wong",     "derek@pucks.com"),
+        ("lak-blades-w26",  "Blizzard Blades", "BLZ", "lak-rec",   "winter-2026", "bronze-aa", "Tara Kim",       "tara@blades.com"),
+        ("lak-rink-w26",    "Rink Rats",       "RNK", "lak-rec",   "winter-2026", "silver-a",  "Pete Russo",     "pete@rinkrats.com"),
+        ("lak-kings-w26",   "Mini Kings",      "MNK", "lak-rec",   "winter-2026", "silver-a",  "Jen Alvarez",    "jen@minikings.com"),
+    ],
+    "canadiens": [
+        ("mtl-habs-w26",    "Les Habitants",   "HAB", "mtl-elite", "winter-2026", "bronze-a",  "Pierre Leblanc", "pierre@habs.com"),
+        ("mtl-nord-w26",    "Nord Express",    "NRD", "mtl-elite", "winter-2026", "bronze-a",  "Marie Tremblay", "marie@nord.com"),
+        ("mtl-fleurs-w26",  "Fleurs de Lys",   "FDL", "mtl-elite", "winter-2026", "bronze-a",  "Luc Gagnon",     "luc@fleurs.com"),
+        ("mtl-rouge-w26",   "Rouge et Blanc",  "RBL", "mtl-elite", "winter-2026", "bronze-a",  "Sophie Cote",    "sophie@rouge.com"),
+        ("mtl-glace-w26",   "Glace Royale",    "GLR", "mtl-elite", "winter-2026", "bronze-aa", "Yves Bouchard",  "yves@glace.com"),
+        ("mtl-nordet-w26",  "Nordet",          "NRT", "mtl-elite", "winter-2026", "bronze-aa", "Chantal Fortin", "chantal@nordet.com"),
+        ("mtl-ours-w26",    "Les Ours",        "OUR", "mtl-elite", "winter-2026", "silver-a",  "Alain Roy",      "alain@ours.com"),
+        ("mtl-aigles-w26",  "Les Aigles",      "AIG", "mtl-elite", "winter-2026", "silver-a",  "Denise Morin",   "denise@aigles.com"),
+    ],
+}
+
+# Player ID offset per client so IDs are unique across clients
+CLIENT_PLAYER_OFFSET = {
+    "la-kings": 1000,
+    "canadiens": 2000,
+}
 
 SAMPLE_SEASONS = [
     {
@@ -87,6 +146,43 @@ SAMPLE_RINK_SHEETS = [
     {"sheet_id": "tspc-nhl", "rink_id": "tspc", "name": "NHL", "surface_type": "NHL"},
     {"sheet_id": "tspc-olympic", "rink_id": "tspc", "name": "Olympic", "surface_type": "Olympic"},
 ]
+
+CLIENT_RINKS = {
+    "la-kings": {
+        "rinks": [
+            {
+                "rink_id": "crypto-arena",
+                "name": "Crypto.com Arena",
+                "address": "1111 S Figueroa St",
+                "city": "Los Angeles",
+                "province_state": "CA",
+                "postal_code": "90015",
+                "country": "USA",
+            },
+        ],
+        "sheets": [
+            {"sheet_id": "crypto-main", "rink_id": "crypto-arena", "name": "Main Ice", "surface_type": "NHL"},
+            {"sheet_id": "crypto-practice", "rink_id": "crypto-arena", "name": "Practice Rink", "surface_type": "NHL"},
+        ],
+    },
+    "canadiens": {
+        "rinks": [
+            {
+                "rink_id": "bell-centre",
+                "name": "Bell Centre",
+                "address": "1909 Avenue des Canadiens-de-Montréal",
+                "city": "Montreal",
+                "province_state": "QC",
+                "postal_code": "H3B 5E8",
+                "country": "Canada",
+            },
+        ],
+        "sheets": [
+            {"sheet_id": "bell-main", "rink_id": "bell-centre", "name": "Main Ice", "surface_type": "NHL"},
+            {"sheet_id": "bell-practice", "rink_id": "bell-centre", "name": "Practice Rink", "surface_type": "NHL"},
+        ],
+    },
+}
 
 # Player name pools for generation
 FIRST_NAMES = [
@@ -191,12 +287,13 @@ def seed_sports(conn: sqlite3.Connection) -> int:
 def seed_client(conn: sqlite3.Connection, client_id: str = DEFAULT_CLIENT_ID) -> int:
     """Seed the default client or create a specific client."""
     now = int(time.time())
-    client = DEFAULT_CLIENT if client_id == DEFAULT_CLIENT_ID else {
+    known = {c["client_id"]: c for c in SAMPLE_CLIENTS}
+    client = known.get(client_id, {
         "client_id": client_id,
         "name": f"Client {client_id}",
         "slug": client_id,
         "contact_email": f"admin@{client_id}.example.com",
-    }
+    })
 
     try:
         conn.execute("""
@@ -219,7 +316,8 @@ def seed_leagues(conn: sqlite3.Connection, client_id: str = DEFAULT_CLIENT_ID) -
     """Seed sample leagues."""
     now = int(time.time())
     count = 0
-    for league in SAMPLE_LEAGUES:
+    leagues = CLIENT_LEAGUES.get(client_id, SAMPLE_LEAGUES)
+    for league in leagues:
         try:
             conn.execute("""
                 INSERT INTO leagues (client_id, league_id, name, league_type, sport_id, description, website, created_at)
@@ -294,7 +392,8 @@ def seed_rinks(conn: sqlite3.Connection, client_id: str = DEFAULT_CLIENT_ID) -> 
     rink_count = 0
     sheet_count = 0
 
-    for rink in SAMPLE_RINKS:
+    client_venues = CLIENT_RINKS.get(client_id, {"rinks": SAMPLE_RINKS, "sheets": SAMPLE_RINK_SHEETS})
+    for rink in client_venues["rinks"]:
         try:
             conn.execute("""
                 INSERT INTO rinks (client_id, rink_id, name, address, city, province_state, postal_code, country, created_at)
@@ -316,7 +415,7 @@ def seed_rinks(conn: sqlite3.Connection, client_id: str = DEFAULT_CLIENT_ID) -> 
         except sqlite3.IntegrityError:
             pass
 
-    for sheet in SAMPLE_RINK_SHEETS:
+    for sheet in client_venues["sheets"]:
         try:
             conn.execute("""
                 INSERT INTO rink_sheets (client_id, rink_id, sheet_id, name, surface_type, created_at)
@@ -343,7 +442,8 @@ def seed_players(conn: sqlite3.Connection, count: int = 120, client_id: str = DE
     created = 0
     sample_names = []
 
-    # Start player IDs from 1001 to avoid conflicts
+    # Start player IDs from client-specific offset to avoid collisions across clients
+    id_offset = CLIENT_PLAYER_OFFSET.get(client_id, 1000)
     for i in range(count):
         first = random.choice(FIRST_NAMES)
         last = random.choice(LAST_NAMES)
@@ -356,7 +456,7 @@ def seed_players(conn: sqlite3.Connection, count: int = 120, client_id: str = DE
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 client_id,
-                1001 + i,
+                id_offset + 1 + i,
                 first,
                 last,
                 full_name,
@@ -383,23 +483,18 @@ def seed_league_seasons(conn: sqlite3.Connection, client_id: str = DEFAULT_CLIEN
     now = int(time.time())
     count = 0
 
-    # TSPC uses adult-rec rules for all seasons
-    links = [
-        (client_id, "tspc", "fall-2025", "adult-rec"),
-        (client_id, "tspc", "winter-2026", "adult-rec"),
-        (client_id, "tspc", "spring-2026", "adult-rec"),
-        (client_id, "tspc", "summer-2026", "adult-rec"),
-    ]
-
-    for cid, league_id, season_id, rule_set_id in links:
-        try:
-            conn.execute("""
-                INSERT INTO league_seasons (client_id, league_id, season_id, rule_set_id, is_active, created_at)
-                VALUES (?, ?, ?, ?, 1, ?)
-            """, (cid, league_id, season_id, rule_set_id, now))
-            count += 1
-        except sqlite3.IntegrityError:
-            pass
+    leagues = CLIENT_LEAGUES.get(client_id, SAMPLE_LEAGUES)
+    for league in leagues:
+        league_id = league["league_id"]
+        for season_id in ["fall-2025", "winter-2026", "spring-2026", "summer-2026"]:
+            try:
+                conn.execute("""
+                    INSERT INTO league_seasons (client_id, league_id, season_id, rule_set_id, is_active, created_at)
+                    VALUES (?, ?, ?, ?, 1, ?)
+                """, (client_id, league_id, season_id, "adult-rec", now))
+                count += 1
+            except sqlite3.IntegrityError:
+                pass
 
     return count
 
@@ -409,7 +504,6 @@ def seed_league_season_divisions(conn: sqlite3.Connection, client_id: str = DEFA
     now = int(time.time())
     count = 0
 
-    # Link all divisions to all seasons for TSPC
     seasons = ["fall-2025", "winter-2026", "spring-2026", "summer-2026"]
     divisions = [
         ("bronze-a", 1),
@@ -420,16 +514,19 @@ def seed_league_season_divisions(conn: sqlite3.Connection, client_id: str = DEFA
         ("gold", 6),
     ]
 
-    for season_id in seasons:
-        for division_id, display_order in divisions:
-            try:
-                conn.execute("""
-                    INSERT INTO league_season_divisions (client_id, league_id, season_id, division_id, display_order, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (client_id, "tspc", season_id, division_id, display_order, now))
-                count += 1
-            except sqlite3.IntegrityError:
-                pass
+    leagues = CLIENT_LEAGUES.get(client_id, SAMPLE_LEAGUES)
+    for league in leagues:
+        league_id = league["league_id"]
+        for season_id in seasons:
+            for division_id, display_order in divisions:
+                try:
+                    conn.execute("""
+                        INSERT INTO league_season_divisions (client_id, league_id, season_id, division_id, display_order, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (client_id, league_id, season_id, division_id, display_order, now))
+                    count += 1
+                except sqlite3.IntegrityError:
+                    pass
 
     return count
 
@@ -439,21 +536,17 @@ def seed_registrations(conn: sqlite3.Connection, client_id: str = DEFAULT_CLIENT
     now = int(time.time())
     count = 0
 
-    # Team registrations for Winter 2026 season across different divisions
-    # Format: (reg_id, team_name, abbreviation, league_id, season_id, division_id, organizer_name, organizer_email)
-    registrations = [
-        # Bronze A teams
-        ("reg-dogs-w26", "Ice Dogs", "DOG", "tspc", "winter-2026", "bronze-a", "John Smith", "john@icedogs.com"),
-        ("reg-bears-w26", "Polar Bears", "PBR", "tspc", "winter-2026", "bronze-a", "Jane Doe", "jane@polarbears.com"),
-        ("reg-fury-w26", "Frozen Fury", "FRZ", "tspc", "winter-2026", "bronze-a", "Mike Johnson", "mike@frozenfury.com"),
-        ("reg-chill-w26", "Chill Factor", "CHL", "tspc", "winter-2026", "bronze-a", "Sarah Williams", "sarah@chillfactor.com"),
-        # Bronze AA teams
-        ("reg-thunder-w26", "Thunder Bay", "THB", "tspc", "winter-2026", "bronze-aa", "Tom Brown", "tom@thunderbay.com"),
-        ("reg-storm-w26", "Ice Storm", "STM", "tspc", "winter-2026", "bronze-aa", "Lisa Chen", "lisa@icestorm.com"),
-        # Silver A teams
-        ("reg-hawks-w26", "Night Hawks", "NHK", "tspc", "winter-2026", "silver-a", "David Lee", "david@nighthawks.com"),
-        ("reg-wolves-w26", "Timber Wolves", "TWF", "tspc", "winter-2026", "silver-a", "Emma Garcia", "emma@timberwolves.com"),
-    ]
+    registrations = CLIENT_REGISTRATIONS.get(client_id, [
+        # Fallback generic registrations using the first available league
+        ("reg-dogs-w26",    "Ice Dogs",      "DOG", "tspc", "winter-2026", "bronze-a",  "John Smith",     "john@icedogs.com"),
+        ("reg-bears-w26",   "Polar Bears",   "PBR", "tspc", "winter-2026", "bronze-a",  "Jane Doe",       "jane@polarbears.com"),
+        ("reg-fury-w26",    "Frozen Fury",   "FRZ", "tspc", "winter-2026", "bronze-a",  "Mike Johnson",   "mike@frozenfury.com"),
+        ("reg-chill-w26",   "Chill Factor",  "CHL", "tspc", "winter-2026", "bronze-a",  "Sarah Williams", "sarah@chillfactor.com"),
+        ("reg-thunder-w26", "Thunder Bay",   "THB", "tspc", "winter-2026", "bronze-aa", "Tom Brown",      "tom@thunderbay.com"),
+        ("reg-storm-w26",   "Ice Storm",     "STM", "tspc", "winter-2026", "bronze-aa", "Lisa Chen",      "lisa@icestorm.com"),
+        ("reg-hawks-w26",   "Night Hawks",   "NHK", "tspc", "winter-2026", "silver-a",  "David Lee",      "david@nighthawks.com"),
+        ("reg-wolves-w26",  "Timber Wolves", "TWF", "tspc", "winter-2026", "silver-a",  "Emma Garcia",    "emma@timberwolves.com"),
+    ])
 
     for reg_id, team_name, abbrev, league_id, season_id, division_id, org_name, org_email in registrations:
         try:

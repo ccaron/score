@@ -7,31 +7,24 @@
 
 <!-- Clients Section -->
 <div class="content">
-    <h2>Clients</h2>
+    <h2 class="collapsible-header" onclick="toggleSection('clients')" style="cursor: pointer; user-select: none;">
+        Clients <span id="clients-arrow" style="font-size: 11px; color: #888;">&#9660;</span>
+    </h2>
     <p class="hint">Manage multi-tenant clients in the system</p>
+    <div id="clients-body">
 
     <!-- Add Client Form -->
     <form method="POST" action="/admin/clients" style="margin-bottom: 20px; padding: 12px; background: #f8f9fa; border-radius: 4px;">
-        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 10px;">
+        <input type="hidden" id="clientId" name="client_id">
+        <input type="hidden" id="clientSlug" name="slug">
+        <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 10px;">
             <div class="form-group">
                 <label>Name <span class="required">*</span></label>
                 <input type="text" id="clientName" name="name" required placeholder="My Client">
-                <small style="font-size: 10px; color: #666;">Display name</small>
-            </div>
-            <div class="form-group">
-                <label>Client ID <span class="required">*</span></label>
-                <input type="text" id="clientId" name="client_id" required placeholder="my-client" readonly style="background: #f5f5f5;">
-                <small style="font-size: 10px; color: #666;">Auto-generated</small>
-            </div>
-            <div class="form-group">
-                <label>Slug <span class="required">*</span></label>
-                <input type="text" id="clientSlug" name="slug" required placeholder="my-client" readonly style="background: #f5f5f5;">
-                <small style="font-size: 10px; color: #666;">Auto-generated</small>
             </div>
             <div class="form-group">
                 <label>Contact Email</label>
                 <input type="email" name="contact_email" placeholder="admin@example.com">
-                <small style="font-size: 10px; color: #666;">Optional</small>
             </div>
         </div>
         <button type="submit" class="btn-save">Create Client</button>
@@ -79,12 +72,16 @@
             {% endif %}
         </tbody>
     </table>
+    </div>
 </div>
 
 <!-- Users Section -->
 <div class="content" style="margin-top: 20px;">
-    <h2>Users</h2>
+    <h2 class="collapsible-header" onclick="toggleSection('users')" style="cursor: pointer; user-select: none;">
+        Users <span id="users-arrow" style="font-size: 11px; color: #888;">&#9660;</span>
+    </h2>
     <p class="hint">User accounts and their access levels</p>
+    <div id="users-body">
 
     <!-- Add User Form -->
     <form method="POST" action="/admin/users" style="margin-bottom: 20px; padding: 12px; background: #f8f9fa; border-radius: 4px;">
@@ -161,36 +158,38 @@
             {% endif %}
         </tbody>
     </table>
+    </div>
 </div>
 
 <!-- Devices Section -->
 <div class="content" style="margin-top: 20px;">
-    <h2>Devices</h2>
+    <h2 class="collapsible-header" onclick="toggleSection('devices')" style="cursor: pointer; user-select: none;">
+        Devices <span id="devices-arrow" style="font-size: 11px; color: #888;">&#9660;</span>
+    </h2>
     <p class="hint">Monitor and manage all devices across clients</p>
+    <div id="devices-body">
 
     <!-- Claim Device Form (Super Admin) -->
-    <form method="POST" action="/admin/devices/claim" style="margin-bottom: 20px; padding: 12px; background: #f3e5f5; border-radius: 4px; border: 1px solid #6a1b9a;">
-        <div style="display: flex; gap: 10px; align-items: flex-end;">
-            <div class="form-group" style="margin: 0; flex: 0 0 200px;">
-                <label style="font-weight: 600; color: #6a1b9a;">Claim Code <span class="required">*</span></label>
-                <input type="text" name="claim_code" required placeholder="ABC-123" maxlength="7" style="text-transform: uppercase; font-family: monospace; font-size: 14px; padding: 8px 12px;">
-            </div>
-            <div class="form-group" style="margin: 0; flex: 0 0 250px;">
-                <label style="font-weight: 600; color: #6a1b9a;">For Client <span class="required">*</span></label>
-                <select name="target_client_id" required style="padding: 8px 12px; font-size: 14px;">
-                    <option value="">Select client...</option>
-                    {% for client in clients %}
-                    <option value="{{ client.client_id }}">{{ client.name }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div class="form-group" style="margin: 0; flex: 0 0 200px;">
-                <label style="font-weight: 600; color: #6a1b9a;">Device Name (optional)</label>
-                <input type="text" name="device_name" placeholder="e.g., Sheet A" style="font-size: 14px; padding: 8px 12px;">
-            </div>
-            <button type="submit" class="btn-save">Claim Device</button>
-            <span style="color: #666; font-size: 12px;">Claim device on behalf of a client</span>
+    <form method="POST" action="/admin/devices/claim" style="margin-bottom: 20px; display: flex; gap: 10px; align-items: flex-end;">
+        <div class="form-group" style="margin: 0; flex: 0 0 200px;">
+            <label>Claim Code <span class="required">*</span></label>
+            <input type="text" name="claim_code" required placeholder="ABC-123" maxlength="7" style="text-transform: uppercase; font-family: monospace;">
         </div>
+        <div class="form-group" style="margin: 0; flex: 0 0 250px;">
+            <label>For Client <span class="required">*</span></label>
+            <select name="target_client_id" required>
+                <option value="">Select client...</option>
+                {% for client in clients %}
+                <option value="{{ client.client_id }}">{{ client.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group" style="margin: 0; flex: 0 0 200px;">
+            <label>Device Name (optional)</label>
+            <input type="text" name="device_name" placeholder="e.g., Sheet A">
+        </div>
+        <button type="submit" class="btn-save">Claim Device</button>
+        <span style="color: #666; font-size: 12px;">Claim device on behalf of a client</span>
     </form>
 
     <table>
@@ -223,6 +222,7 @@
             {% endif %}
         </tbody>
     </table>
+    </div>
 </div>
 
 <!-- Password Reset Modal -->
@@ -254,6 +254,29 @@
 
 {% block extra_scripts %}
 <script>
+// Collapsible sections with localStorage persistence
+const SECTIONS = ['clients', 'users', 'devices'];
+
+function toggleSection(name) {
+    const body = document.getElementById(name + '-body');
+    const arrow = document.getElementById(name + '-arrow');
+    const collapsed = body.style.display === 'none';
+    body.style.display = collapsed ? '' : 'none';
+    arrow.innerHTML = collapsed ? '&#9660;' : '&#9654;';
+    localStorage.setItem('system-section-' + name, collapsed ? 'open' : 'collapsed');
+}
+
+// Restore saved state on load
+SECTIONS.forEach(function(name) {
+    const saved = localStorage.getItem('system-section-' + name);
+    if (saved === 'collapsed') {
+        const body = document.getElementById(name + '-body');
+        const arrow = document.getElementById(name + '-arrow');
+        if (body) body.style.display = 'none';
+        if (arrow) arrow.innerHTML = '&#9654;';
+    }
+});
+
 // Auto-generate client_id and slug from name
 const nameInput = document.getElementById('clientName');
 const clientIdInput = document.getElementById('clientId');
@@ -262,14 +285,12 @@ const slugInput = document.getElementById('clientSlug');
 if (nameInput && clientIdInput && slugInput) {
     nameInput.addEventListener('input', function() {
         const name = this.value;
-        // Create slug: lowercase, replace spaces with hyphens, remove special chars
         const slug = name
             .toLowerCase()
             .trim()
-            .replace(/[^a-z0-9\s-]/g, '')  // Remove special characters
-            .replace(/\s+/g, '-')           // Replace spaces with hyphens
-            .replace(/-+/g, '-');            // Replace multiple hyphens with single
-
+            .replace(/[^a-z0-9\s-]/g, '')
+            .replace(/\s+/g, '-')
+            .replace(/-+/g, '-');
         clientIdInput.value = slug;
         slugInput.value = slug;
     });
@@ -288,7 +309,6 @@ function closeResetPassword() {
     document.getElementById('resetUserEmail').value = '';
 }
 
-// Close modal when clicking outside
 document.getElementById('resetPasswordModal').addEventListener('click', function(e) {
     if (e.target === this) {
         closeResetPassword();
@@ -351,7 +371,6 @@ function unclaimDevice(deviceId) {
         const form = document.createElement('form');
         form.method = 'POST';
         form.action = `/admin/devices/${deviceId}/unclaim`;
-
         document.body.appendChild(form);
         form.submit();
     }

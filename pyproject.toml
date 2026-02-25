@@ -18,6 +18,9 @@ dependencies = [
     "jinja2>=3.1.0",
     "ortools>=9.15.6755",
     "pyyaml>=6.0.3",
+    "gradio>=5.0.0",
+    "beautifulsoup4>=4.12.0",
+    "pandas>=2.0.0",
 ]
 
 [dependency-groups]
@@ -31,6 +34,8 @@ score-app = "score.app:main"
 score-push-events = "score.app:push_events"
 score-cloud = "score.cloud:main"
 score-schedule = "score.scheduler:main"
+score-schedule-fast = "score.fast_scheduler:main"
+score-schedule-gradio = "score.gradio_app:main"
 
 [build-system]
 requires = ["uv_build>=0.9.6,<0.10.0"]

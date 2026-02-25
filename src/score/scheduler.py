@@ -4,6 +4,7 @@ Schedule generation library for Score.
 Uses Google OR-Tools CP-SAT solver to generate fair hockey schedules.
 """
 
+import math
 import uuid
 from dataclasses import dataclass
 from datetime import date, time, datetime, timedelta
@@ -18,10 +19,22 @@ from ortools.sat.python import cp_model
 @dataclass
 class Team:
     """A team in the schedule."""
-    registration_id: str
-    name: str
-    abbreviation: str
-    division_id: str = ""  # Set when loaded as part of a division
+    number: int  # Team number (1, 2, 3, ...)
+
+    @property
+    def team_id(self) -> str:
+        """Unique identifier for the team."""
+        return f"team-{self.number}"
+
+    @property
+    def name(self) -> str:
+        """Display name for the team."""
+        return f"Team {self.number}"
+
+    @property
+    def abbreviation(self) -> str:
+        """Abbreviation for the team."""
+        return f"T{self.number}"
 
 
 @dataclass
@@ -32,18 +45,11 @@ class Sheet:
 
 
 @dataclass
-class Division:
-    """A division within the league."""
-    division_id: str
-    teams: list[Team]
-    games_per_team: int
-
-
-@dataclass
 class GameSlot:
     """A potential slot where a game could be scheduled."""
     slot_id: int
-    date: date
+    week: int  # Week number (1-based)
+    day: int   # Day of week (0=Monday, 6=Sunday)
     time: time
     sheet_id: str
 
@@ -59,21 +65,18 @@ class Matchup:
 
 @dataclass
 class ScheduledGame:
-    """A scheduled game ready for database insertion."""
+    """A scheduled game in the abstract schedule."""
     game_id: str
     division_id: str
-    home_registration_id: str
-    away_registration_id: str
     home_team: str
     away_team: str
     home_abbrev: str
     away_abbrev: str
     sheet_id: str
-    rink_id: str
-    start_time: datetime
-    period_length_min: int
-    num_periods: int
-    game_type: str
+    week: int  # Abstract week number
+    day: int   # Day of week (0=Monday, 6=Sunday)
+    time: time  # Time of day
+    start_time: datetime | None  # Concrete datetime (None for abstract schedules)
 
 
 @dataclass
@@ -81,33 +84,38 @@ class SolverSettings:
     """Settings for the constraint solver."""
     timeout_seconds: float = 60.0  # How long to search for better solutions
     # Constraint weights (higher = more important, 0 = disabled)
-    weight_time_slot: int = 10     # Balance games across time slots
-    weight_sheet: int = 10         # Balance games across sheets
+    weight_day: int = 5            # Balance games across days of week
+    weight_time: int = 5           # Balance games across times of day
     weight_home_away: int = 20     # Balance home/away games
-    weight_opponent: int = 5       # Spread games across opponents
-    weight_packing: int = 1        # Pack games into earlier dates
-    weight_no_consecutive_opponent: int = 50  # Penalize same opponent in back-to-back weeks
-    weight_bye_spread: int = 0     # Spread byes across first/second half of season
+    weight_matchup: int = 5        # Spread games across opponents
+    weight_consecutive_matchup: int = 50  # Penalize same opponent in back-to-back weeks
+    weight_bye_distribution: int = 0     # Spread byes across first/second half of season
     # Hard constraints
     max_consecutive_byes: int = 1  # Max consecutive weeks without a game (0 = disabled)
+    max_consecutive_game_slots: int = 0  # Max consecutive games at same time slot (0 = disabled)
+
+
+@dataclass
+class SlotDefinition:
+    """Explicit (time, sheet) pair for a specific day."""
+    time: time
+    sheet_id: str
+
+
+@dataclass
+class DaySchedule:
+    """Schedule configuration for a specific day of week."""
+    day: int  # 0=Monday, 6=Sunday
+    slots: list[SlotDefinition]
 
 
 @dataclass
 class ScheduleConfig:
     """Parsed configuration for schedule generation."""
-    league_id: str
-    season_id: str
-    rink_id: str
+    num_teams: int
+    games_per_team: int
     sheets: list[Sheet]
-    divisions: list[Division]
-    period_length_min: int
-    num_periods: int
-    game_type: str
-    days_of_week: list[int]  # 0=Monday, 6=Sunday
-    start_date: date
-    end_date: date
-    blackout_dates: set[date]
-    time_slots: list[time]
+    day_schedules: list[DaySchedule]
     solver: SolverSettings = None  # type: ignore
 
     def __post_init__(self):
@@ -115,23 +123,35 @@ class ScheduleConfig:
             self.solver = SolverSettings()
 
     @property
-    def all_teams(self) -> list[Team]:
-        """Get all teams across all divisions."""
-        teams = []
-        for div in self.divisions:
-            teams.extend(div.teams)
-        return teams
+    def teams(self) -> list[Team]:
+        """Generate all teams."""
+        return [Team(number=i+1) for i in range(self.num_teams)]
+
+
+@dataclass
+class SchedulerContext:
+    """Pre-computed indexes for efficient constraint building."""
+    slots_by_week: dict[int, list["GameSlot"]]
+    slots_by_week_day: dict[tuple[int, int], list["GameSlot"]]  # (week, day) -> slots
+    slots_by_time: dict[time, list["GameSlot"]]
+    slots_by_sheet: dict[str, list["GameSlot"]]
+    matchups_by_team: dict[str, list["Matchup"]]  # team_id -> matchups involving team
+    matchups_by_pair: dict[tuple[str, str], list["Matchup"]]  # (team1, team2) -> matchups (ordered pair)
+    sorted_weeks: list[int]
 
 
 @dataclass
 class FairnessReport:
     """Report on schedule fairness metrics."""
-    time_slot_distribution: dict[str, dict[str, int]]  # team -> {time_slot -> count}
+    game_slot_distribution: dict[str, dict[str, int]]  # team -> {game_slot (day+time) -> count}
+    day_distribution: dict[str, dict[str, int]]  # team -> {day -> count}
+    time_distribution: dict[str, dict[str, int]]  # team -> {time -> count}
     sheet_distribution: dict[str, dict[str, int]]  # team -> {sheet -> count}
     home_away_balance: dict[str, tuple[int, int]]  # team -> (home, away)
     opponent_distribution: dict[str, dict[str, int]]  # team -> {opponent -> count}
     bye_weeks: dict[str, int] | None = None  # team -> number of bye weeks
     bye_spread: dict[str, tuple[int, int]] | None = None  # team -> (first_half_byes, second_half_byes)
+    consecutive_time_slots: dict[str, int] | None = None  # team -> max consecutive weeks at same time slot
     # Ice utilization
     total_slots: int = 0
     used_slots: int = 0
@@ -163,16 +183,42 @@ class FairnessReport:
         lines.append(f"    Utilization: {self.utilization_pct:.1f}%")
         lines.append("")
 
-        # Time slot distribution
-        lines.append("  Time Slot Distribution:")
-        if self.time_slot_distribution:
-            first_team = list(self.time_slot_distribution.keys())[0]
-            time_slots = list(self.time_slot_distribution[first_team].keys())
-            header = "              " + "  ".join(f"{ts:>6}" for ts in time_slots)
+        # Game slot distribution (day + time)
+        lines.append("  Game Slot Distribution:")
+        if self.game_slot_distribution:
+            first_team = list(self.game_slot_distribution.keys())[0]
+            game_slots = list(self.game_slot_distribution[first_team].keys())
+            header = "              " + "  ".join(f"{gs:>12}" for gs in game_slots)
             lines.append(header)
 
-            for team, slots in self.time_slot_distribution.items():
-                values = "  ".join(f"{slots.get(ts, 0):>6}" for ts in time_slots)
+            for team, slots in self.game_slot_distribution.items():
+                values = "  ".join(f"{slots.get(gs, 0):>12}" for gs in game_slots)
+                lines.append(f"    {team:12} {values}")
+        lines.append("")
+
+        # Day distribution
+        lines.append("  Day Distribution:")
+        if self.day_distribution:
+            first_team = list(self.day_distribution.keys())[0]
+            days = list(self.day_distribution[first_team].keys())
+            header = "              " + "  ".join(f"{d:>6}" for d in days)
+            lines.append(header)
+
+            for team, day_counts in self.day_distribution.items():
+                values = "  ".join(f"{day_counts.get(d, 0):>6}" for d in days)
+                lines.append(f"    {team:12} {values}")
+        lines.append("")
+
+        # Time distribution
+        lines.append("  Time Distribution:")
+        if self.time_distribution:
+            first_team = list(self.time_distribution.keys())[0]
+            times = list(self.time_distribution[first_team].keys())
+            header = "              " + "  ".join(f"{t:>6}" for t in times)
+            lines.append(header)
+
+            for team, time_counts in self.time_distribution.items():
+                values = "  ".join(f"{time_counts.get(t, 0):>6}" for t in times)
                 lines.append(f"    {team:12} {values}")
         lines.append("")
 
@@ -198,7 +244,10 @@ class FairnessReport:
         # Opponent distribution
         lines.append("  Opponent Distribution:")
         for team, opponents in self.opponent_distribution.items():
-            opp_str = ", ".join(f"{opp} ({count})" for opp, count in opponents.items())
+            # Extract just the team number for compact display (e.g., "Team 5" -> "T5")
+            opp_str = ", ".join(
+                f"T{opp.split()[-1]}({count})" for opp, count in opponents.items()
+            )
             lines.append(f"    {team:12} {opp_str}")
 
         return "\n".join(lines)
@@ -216,10 +265,26 @@ DAY_NAME_TO_INT = {
     "sunday": 6,
 }
 
+DAY_INT_TO_NAME = {
+    0: "Mon",
+    1: "Tue",
+    2: "Wed",
+    3: "Thu",
+    4: "Fri",
+    5: "Sat",
+    6: "Sun",
+}
+
 
 def _parse_day_of_week(day_str: str) -> int:
     """Convert day name to integer (0=Monday, 6=Sunday)."""
     return DAY_NAME_TO_INT[day_str.lower()]
+
+
+def _parse_time(time_str: str) -> time:
+    """Parse time string 'HH:MM' to time object."""
+    parts = time_str.split(":")
+    return time(int(parts[0]), int(parts[1]))
 
 
 # --- Config Loading ---
@@ -229,77 +294,47 @@ def load_config(path: Path) -> ScheduleConfig:
     with open(path) as f:
         data = yaml.safe_load(f)
 
-    # Parse sheets
-    sheets = [
-        Sheet(sheet_id=s["sheet_id"], name=s["name"])
-        for s in data["sheets"]
-    ]
+    # Parse top-level settings
+    num_teams = data["num_teams"]
+    games_per_team = data["games_per_team"]
 
-    # Parse divisions with their teams
-    divisions = []
-    for div_data in data["divisions"]:
-        division_id = div_data["division_id"]
-        teams = [
-            Team(
-                registration_id=t["registration_id"],
-                name=t["name"],
-                abbreviation=t["abbreviation"],
-                division_id=division_id,
-            )
-            for t in div_data["teams"]
-        ]
-        divisions.append(Division(
-            division_id=division_id,
-            teams=teams,
-            games_per_team=div_data["games_per_team"],
-        ))
-
-    # Parse schedule settings
+    # Parse schedule settings - new day_schedules format
     schedule = data["schedule"]
-    days_of_week = [_parse_day_of_week(d) for d in schedule["days_of_week"]]
-    start_date = datetime.strptime(schedule["start_date"], "%Y-%m-%d").date()
-    end_date = datetime.strptime(schedule["end_date"], "%Y-%m-%d").date()
+    day_schedules = []
+    all_sheet_ids = set()
 
-    blackout_dates = set()
-    for d in schedule.get("blackout_dates", []):
-        blackout_dates.add(datetime.strptime(d, "%Y-%m-%d").date())
+    for day_sched in schedule["day_schedules"]:
+        day_int = _parse_day_of_week(day_sched["day"])
+        slot_defs = []
+        for slot in day_sched["slots"]:
+            time_obj = _parse_time(slot["time"])
+            sheet_id = slot["sheet"]
+            all_sheet_ids.add(sheet_id)
+            slot_defs.append(SlotDefinition(time=time_obj, sheet_id=sheet_id))
+        day_schedules.append(DaySchedule(day=day_int, slots=slot_defs))
 
-    time_slots = []
-    for t in schedule["time_slots"]:
-        parts = t.split(":")
-        time_slots.append(time(int(parts[0]), int(parts[1])))
-
-    # Parse game settings
-    game_settings = data["game_settings"]
+    # Build Sheet objects from discovered sheet IDs
+    sheets = [Sheet(sheet_id=sid, name=sid) for sid in sorted(all_sheet_ids)]
 
     # Parse solver settings (optional)
     solver_data = data.get("solver", {})
     solver = SolverSettings(
         timeout_seconds=solver_data.get("timeout_seconds", 60.0),
-        weight_time_slot=solver_data.get("weight_time_slot", 10),
-        weight_sheet=solver_data.get("weight_sheet", 10),
+        weight_day=solver_data.get("weight_day", 5),
+        weight_time=solver_data.get("weight_time", 5),
         weight_home_away=solver_data.get("weight_home_away", 20),
-        weight_opponent=solver_data.get("weight_opponent", 5),
-        weight_packing=solver_data.get("weight_packing", 1),
-        weight_no_consecutive_opponent=solver_data.get("weight_no_consecutive_opponent", 50),
-        weight_bye_spread=solver_data.get("weight_bye_spread", 0),
+        weight_matchup=solver_data.get("weight_matchup", 5),
+        weight_consecutive_matchup=solver_data.get("weight_consecutive_matchup", 50),
+        weight_bye_distribution=solver_data.get("weight_bye_distribution", 0),
         max_consecutive_byes=solver_data.get("max_consecutive_byes", 1),
+        max_consecutive_game_slots=solver_data.get("max_consecutive_game_slots", 0),
     )
 
     return ScheduleConfig(
-        league_id=data["league_id"],
-        season_id=data["season_id"],
-        rink_id=data["rink_id"],
+        num_teams=num_teams,
+        games_per_team=games_per_team,
         sheets=sheets,
-        divisions=divisions,
-        period_length_min=game_settings["period_length_min"],
-        num_periods=game_settings["num_periods"],
-        game_type=game_settings["game_type"],
-        days_of_week=days_of_week,
-        start_date=start_date,
-        end_date=end_date,
-        blackout_dates=blackout_dates,
-        time_slots=time_slots,
+        day_schedules=day_schedules,
         solver=solver,
     )
 
@@ -307,25 +342,35 @@ def load_config(path: Path) -> ScheduleConfig:
 # --- Slot and Matchup Generation ---
 
 def _generate_slots(config: ScheduleConfig) -> list[GameSlot]:
-    """Generate all available game slots from config."""
+    """Generate all available game slots using abstract weeks."""
+
+    # Calculate slots available per week
+    slots_per_week = sum(len(ds.slots) for ds in config.day_schedules)
+
+    if slots_per_week == 0:
+        raise ValueError("No slots defined in day_schedules")
+
+    # Calculate total games needed
+    total_matchups = (config.num_teams * config.games_per_team) // 2
+
+    # Use minimum weeks needed to fit all games (dense schedule)
+    num_weeks = math.ceil(total_matchups / slots_per_week)
+
+    # Generate slots for each week
     slots = []
     slot_id = 0
 
-    current = config.start_date
-    while current <= config.end_date:
-        # Check if this day is allowed
-        if current.weekday() in config.days_of_week and current not in config.blackout_dates:
-            # Add a slot for each time and sheet combination
-            for t in config.time_slots:
-                for sheet in config.sheets:
-                    slots.append(GameSlot(
-                        slot_id=slot_id,
-                        date=current,
-                        time=t,
-                        sheet_id=sheet.sheet_id,
-                    ))
-                    slot_id += 1
-        current += timedelta(days=1)
+    for week in range(1, num_weeks + 1):
+        for day_sched in config.day_schedules:
+            for slot_def in day_sched.slots:
+                slots.append(GameSlot(
+                    slot_id=slot_id,
+                    week=week,
+                    day=day_sched.day,
+                    time=slot_def.time,
+                    sheet_id=slot_def.sheet_id,
+                ))
+                slot_id += 1
 
     return slots
 
@@ -336,30 +381,98 @@ def _generate_matchups(config: ScheduleConfig) -> list[Matchup]:
 
     Creates multiple copies of each matchup to allow repeated games between
     the same teams. The solver will select which matchups to actually schedule.
-    Only creates matchups within each division (no cross-division games).
+
+    We generate games_per_team copies for each directed pair (home vs away).
+    This is the theoretical maximum any pair could need (if a team played
+    only one opponent for all their games). This gives the solver maximum
+    flexibility to satisfy all fairness constraints.
     """
     matchups = []
     matchup_id = 0
 
-    for division in config.divisions:
-        teams = division.teams
-        # Upper bound: all games could be against one opponent
-        max_games_per_opponent = division.games_per_team
+    teams = config.teams
+    games_per_team = config.games_per_team
 
-        for i, home_team in enumerate(teams):
-            for j, away_team in enumerate(teams):
-                if i != j:
-                    # Create multiple copies of this matchup
-                    for _ in range(max_games_per_opponent):
-                        matchups.append(Matchup(
-                            matchup_id=matchup_id,
-                            home_team=home_team,
-                            away_team=away_team,
-                            division_id=division.division_id,
-                        ))
-                        matchup_id += 1
+    for i, home_team in enumerate(teams):
+        for j, away_team in enumerate(teams):
+            if i != j:
+                # Create games_per_team copies of this directed matchup
+                # This is maximum flexibility - solver will use what it needs
+                for _ in range(games_per_team):
+                    matchups.append(Matchup(
+                        matchup_id=matchup_id,
+                        home_team=home_team,
+                        away_team=away_team,
+                        division_id="main",  # Single division
+                    ))
+                    matchup_id += 1
 
     return matchups
+
+
+def _build_context(matchups: list[Matchup], slots: list[GameSlot]) -> SchedulerContext:
+    """Build pre-computed indexes for efficient constraint building."""
+    # Group slots by week
+    slots_by_week: dict[int, list[GameSlot]] = {}
+    for s in slots:
+        if s.week not in slots_by_week:
+            slots_by_week[s.week] = []
+        slots_by_week[s.week].append(s)
+
+    # Group slots by (week, day) tuple
+    slots_by_week_day: dict[tuple[int, int], list[GameSlot]] = {}
+    for s in slots:
+        key = (s.week, s.day)
+        if key not in slots_by_week_day:
+            slots_by_week_day[key] = []
+        slots_by_week_day[key].append(s)
+
+    # Group slots by time
+    slots_by_time: dict[time, list[GameSlot]] = {}
+    for s in slots:
+        if s.time not in slots_by_time:
+            slots_by_time[s.time] = []
+        slots_by_time[s.time].append(s)
+
+    # Group slots by sheet
+    slots_by_sheet: dict[str, list[GameSlot]] = {}
+    for s in slots:
+        if s.sheet_id not in slots_by_sheet:
+            slots_by_sheet[s.sheet_id] = []
+        slots_by_sheet[s.sheet_id].append(s)
+
+    # Index matchups by team
+    matchups_by_team: dict[str, list[Matchup]] = {}
+    for m in matchups:
+        home_id = m.home_team.team_id
+        away_id = m.away_team.team_id
+        if home_id not in matchups_by_team:
+            matchups_by_team[home_id] = []
+        if away_id not in matchups_by_team:
+            matchups_by_team[away_id] = []
+        matchups_by_team[home_id].append(m)
+        matchups_by_team[away_id].append(m)
+
+    # Index matchups by team pair (ordered: smaller ID first)
+    matchups_by_pair: dict[tuple[str, str], list[Matchup]] = {}
+    for m in matchups:
+        t1, t2 = m.home_team.team_id, m.away_team.team_id
+        pair_key = (min(t1, t2), max(t1, t2))
+        if pair_key not in matchups_by_pair:
+            matchups_by_pair[pair_key] = []
+        matchups_by_pair[pair_key].append(m)
+
+    sorted_weeks = sorted(slots_by_week.keys())
+
+    return SchedulerContext(
+        slots_by_week=slots_by_week,
+        slots_by_week_day=slots_by_week_day,
+        slots_by_time=slots_by_time,
+        slots_by_sheet=slots_by_sheet,
+        matchups_by_team=matchups_by_team,
+        matchups_by_pair=matchups_by_pair,
+        sorted_weeks=sorted_weeks,
+    )
 
 
 # --- Constraint Helpers ---
@@ -376,91 +489,110 @@ def _add_matchup_constraints(model: cp_model.CpModel, x: dict, matchups: list[Ma
         model.add_at_most_one(x[m.matchup_id, s.slot_id] for s in slots)
 
 
+def _add_symmetry_breaking(
+    model: cp_model.CpModel,
+    x: dict,
+    slots: list[GameSlot],
+    ctx: SchedulerContext,
+):
+    """
+    Add symmetry breaking constraints to reduce equivalent solutions.
+
+    For equivalent matchups (same directed pair, e.g., multiple copies of A vs B at home),
+    we enforce that copies are used in order: copy 1 before copy 2 before copy 3, etc.
+    This is done by requiring: if copy i+1 is scheduled, then copy i must also be scheduled.
+    """
+    # For each directed pair, get the matchups in order
+    # Group by (home_team_id, away_team_id)
+    directed_pairs: dict[tuple[str, str], list[int]] = {}
+    for pair_key, pair_matchups in ctx.matchups_by_pair.items():
+        for m in pair_matchups:
+            directed_key = (m.home_team.team_id, m.away_team.team_id)
+            if directed_key not in directed_pairs:
+                directed_pairs[directed_key] = []
+            directed_pairs[directed_key].append(m.matchup_id)
+
+    # For each directed pair with multiple copies, enforce ordering
+    for directed_key, matchup_ids in directed_pairs.items():
+        if len(matchup_ids) <= 1:
+            continue
+
+        # Sort matchup IDs to ensure consistent ordering
+        matchup_ids.sort()
+
+        # Enforce: if matchup i+1 is used, matchup i must also be used
+        # This ensures we always use copies in order (1, then 2, then 3, etc.)
+        for i in range(len(matchup_ids) - 1):
+            m1_id = matchup_ids[i]
+            m2_id = matchup_ids[i + 1]
+
+            # sum(x[m2, s]) <= sum(x[m1, s])
+            # If m2 is scheduled (sum=1), m1 must also be scheduled (sum>=1)
+            m1_scheduled = sum(x[m1_id, s.slot_id] for s in slots)
+            m2_scheduled = sum(x[m2_id, s.slot_id] for s in slots)
+            model.add(m2_scheduled <= m1_scheduled)
+
+
 def _add_team_games_constraint(
     model: cp_model.CpModel,
     x: dict,
-    matchups: list[Matchup],
     slots: list[GameSlot],
     config: ScheduleConfig,
+    ctx: SchedulerContext,
 ):
-    """Each team plays exactly games_per_team games (per their division)."""
-    for division in config.divisions:
-        for t in division.teams:
-            team_matchups = [m for m in matchups
-                            if m.home_team.registration_id == t.registration_id
-                            or m.away_team.registration_id == t.registration_id]
-            total_games = sum(
-                x[m.matchup_id, s.slot_id]
-                for m in team_matchups
-                for s in slots
-            )
-            model.add(total_games == division.games_per_team)
+    """Each team plays exactly games_per_team games."""
+    for t in config.teams:
+        team_matchups = ctx.matchups_by_team.get(t.team_id, [])
+        total_games = sum(
+            x[m.matchup_id, s.slot_id]
+            for m in team_matchups
+            for s in slots
+        )
+        model.add(total_games == config.games_per_team)
 
 
 def _add_one_game_per_team_per_day(
     model: cp_model.CpModel,
     x: dict,
-    matchups: list[Matchup],
     slots: list[GameSlot],
     config: ScheduleConfig,
+    ctx: SchedulerContext,
 ):
-    """Each team plays at most one game per day."""
-    # Group slots by date
-    slots_by_date: dict[date, list[GameSlot]] = {}
-    for s in slots:
-        if s.date not in slots_by_date:
-            slots_by_date[s.date] = []
-        slots_by_date[s.date].append(s)
+    """Each team plays at most one game per (week, day) combination."""
+    for t in config.teams:
+        team_matchups = ctx.matchups_by_team.get(t.team_id, [])
 
-    for t in config.all_teams:
-        team_matchups = [m for m in matchups
-                        if m.home_team.registration_id == t.registration_id
-                        or m.away_team.registration_id == t.registration_id]
-
-        for _, date_slots in slots_by_date.items():
-            # At most one game for this team on this date
-            games_on_date = sum(
+        for _, week_day_slots in ctx.slots_by_week_day.items():
+            # At most one game for this team on this (week, day)
+            games_on_week_day = sum(
                 x[m.matchup_id, s.slot_id]
                 for m in team_matchups
-                for s in date_slots
+                for s in week_day_slots
             )
-            model.add(games_on_date <= 1)
+            model.add(games_on_week_day <= 1)
 
 
 def _add_max_consecutive_byes_constraint(
     model: cp_model.CpModel,
     x: dict,
-    matchups: list[Matchup],
-    slots: list[GameSlot],
     config: ScheduleConfig,
+    ctx: SchedulerContext,
 ):
     """Ensure teams don't exceed max_consecutive_byes weeks without a game."""
     max_byes = config.solver.max_consecutive_byes
 
-    # Group slots by date
-    slots_by_date: dict[date, list[GameSlot]] = {}
-    for s in slots:
-        if s.date not in slots_by_date:
-            slots_by_date[s.date] = []
-        slots_by_date[s.date].append(s)
-
-    # Get sorted list of game dates
-    sorted_dates = sorted(slots_by_date.keys())
-
-    # For each team, check each window of (max_byes + 1) consecutive dates
+    # For each team, check each window of (max_byes + 1) consecutive weeks
     # At least one must have a game
     window_size = max_byes + 1
 
-    for t in config.all_teams:
-        team_matchups = [m for m in matchups
-                        if m.home_team.registration_id == t.registration_id
-                        or m.away_team.registration_id == t.registration_id]
+    for t in config.teams:
+        team_matchups = ctx.matchups_by_team.get(t.team_id, [])
 
-        for i in range(len(sorted_dates) - window_size + 1):
-            window_dates = sorted_dates[i:i + window_size]
+        for i in range(len(ctx.sorted_weeks) - window_size + 1):
+            window_weeks = ctx.sorted_weeks[i:i + window_size]
             window_slots = []
-            for d in window_dates:
-                window_slots.extend(slots_by_date[d])
+            for w in window_weeks:
+                window_slots.extend(ctx.slots_by_week[w])
 
             # Games for this team in this window
             games_in_window = sum(
@@ -473,209 +605,173 @@ def _add_max_consecutive_byes_constraint(
             model.add(games_in_window >= 1)
 
 
+def _add_max_consecutive_time_slots_constraint(
+    model: cp_model.CpModel,
+    x: dict,
+    config: ScheduleConfig,
+    ctx: SchedulerContext,
+):
+    """
+    Hard constraint: teams cannot play more than max_consecutive_game_slots
+    consecutive games at the same time slot.
+
+    For example, if max_consecutive_game_slots=2, a team cannot play 3 games
+    in a row all at 18:00.
+    """
+    max_consec = config.solver.max_consecutive_game_slots
+    window_size = max_consec + 1  # If max is 2, check windows of 3
+
+    # Pre-compute: for each time slot, get slots grouped by week
+    time_slots_by_week: dict[time, dict[int, list[GameSlot]]] = {}
+    for ts, ts_slots in ctx.slots_by_time.items():
+        time_slots_by_week[ts] = {}
+        for s in ts_slots:
+            if s.week not in time_slots_by_week[ts]:
+                time_slots_by_week[ts][s.week] = []
+            time_slots_by_week[ts][s.week].append(s)
+
+    for t in config.teams:
+        team_matchups = ctx.matchups_by_team.get(t.team_id, [])
+
+        # For each time slot, check sliding windows across weeks
+        for ts, slots_by_week in time_slots_by_week.items():
+            # Check each window of consecutive weeks
+            for i in range(len(ctx.sorted_weeks) - window_size + 1):
+                window_weeks = ctx.sorted_weeks[i:i + window_size]
+
+                # Get all slots at this time in this window
+                window_slots = [s for w in window_weeks for s in slots_by_week.get(w, [])]
+
+                if not window_slots:
+                    continue
+
+                # Count games at this time slot in this window
+                games_at_time_in_window = sum(
+                    x[m.matchup_id, s.slot_id]
+                    for m in team_matchups
+                    for s in window_slots
+                )
+
+                # Hard constraint: at most max_consec games at this time in this window
+                model.add(games_at_time_in_window <= max_consec)
+
+
 def _add_fairness_objective(
     model: cp_model.CpModel,
     x: dict,
     matchups: list[Matchup],
     slots: list[GameSlot],
     config: ScheduleConfig,
+    ctx: SchedulerContext,
 ):
     """
-    Minimize unfairness across time slots, sheets, home/away, and opponents.
-    Fairness is calculated per-division since each division may have different games_per_team.
+    Minimize unfairness across days, times, home/away, and opponents.
     Weights from config.solver control relative importance of each constraint.
     """
-    time_slots = config.time_slots
-    sheets = config.sheets
     weights = config.solver
 
     # Separate penalty lists for each category
-    time_slot_penalties = []
-    sheet_penalties = []
     home_away_penalties = []
     opponent_penalties = []
 
-    # Group slots by time
-    slots_by_time: dict[time, list[GameSlot]] = {}
-    for s in slots:
-        if s.time not in slots_by_time:
-            slots_by_time[s.time] = []
-        slots_by_time[s.time].append(s)
+    # Calculate fairness penalties for all teams
+    teams = config.teams
+    games_per_team = config.games_per_team
+    num_opponents = len(teams) - 1
 
-    # Group slots by sheet
-    slots_by_sheet: dict[str, list[GameSlot]] = {}
-    for s in slots:
-        if s.sheet_id not in slots_by_sheet:
-            slots_by_sheet[s.sheet_id] = []
-        slots_by_sheet[s.sheet_id].append(s)
+    # Calculate tight bounds for deviation variables
+    max_ha_deviation = (games_per_team + 1) // 2 + 1
+    # For opponent deviation, we use scaled values: games * num_opponents
+    # Maximum possible: games_per_team matchups * num_opponents
+    max_opp_deviation = games_per_team if num_opponents > 0 else 0
 
-    # Process each division separately for fairness
-    for division in config.divisions:
-        teams = division.teams
-        games_per_team = division.games_per_team
+    # --- Home/Away Balance ---
+    expected_home = games_per_team // 2
+    for t in teams:
+        # Filter for home matchups only
+        team_matchups = ctx.matchups_by_team.get(t.team_id, [])
+        home_matchups = [m for m in team_matchups if m.home_team.team_id == t.team_id]
+        home_games = sum(x[m.matchup_id, s.slot_id] for m in home_matchups for s in slots)
 
-        # --- Time Slot Balance ---
-        # Each team should have roughly equal games at each time slot
-        expected_per_time = games_per_team // len(time_slots)
-        for ts in time_slots:
-            time_slots_list = slots_by_time.get(ts, [])
-            for t in teams:
-                team_matchups = [m for m in matchups
-                                if m.home_team.registration_id == t.registration_id
-                                or m.away_team.registration_id == t.registration_id]
+        imbalance = model.new_int_var(0, max_ha_deviation, f"ha_imbalance_{t.team_id}")
+        model.add(imbalance >= home_games - expected_home)
+        model.add(imbalance >= expected_home - home_games)
+        home_away_penalties.append(imbalance)
 
-                games_at_time = sum(
-                    x[m.matchup_id, s.slot_id]
-                    for m in team_matchups
-                    for s in time_slots_list
-                )
+    # --- Opponent Variety ---
+    # Try to spread games across opponents evenly
+    # Since CP-SAT requires integers, we scale the calculation:
+    # Instead of minimizing |games - games_per_team/num_opponents|
+    # We minimize |games * num_opponents - games_per_team|
+    # This avoids fractional expected values while maintaining the same optimization goal
+    # OPTIMIZATION: Only iterate upper triangle to avoid double-counting
+    for i, t in enumerate(teams):
+        for opp in teams[i+1:]:
+            # Use pre-computed pair lookup (ordered pair key)
+            pair_key = (min(t.team_id, opp.team_id),
+                       max(t.team_id, opp.team_id))
+            pair_matchups = ctx.matchups_by_pair.get(pair_key, [])
 
-                # Deviation from expected
-                deviation = model.new_int_var(0, games_per_team, f"ts_dev_{ts}_{t.registration_id}")
-                model.add(deviation >= games_at_time - expected_per_time)
-                model.add(deviation >= expected_per_time - games_at_time)
-                time_slot_penalties.append(deviation)
+            games_vs_opp = sum(x[m.matchup_id, s.slot_id] for m in pair_matchups for s in slots)
 
-        # --- Sheet Balance ---
-        expected_per_sheet = games_per_team // len(sheets)
-        for sheet in sheets:
-            sheet_slots = slots_by_sheet.get(sheet.sheet_id, [])
-            for t in teams:
-                team_matchups = [m for m in matchups
-                                if m.home_team.registration_id == t.registration_id
-                                or m.away_team.registration_id == t.registration_id]
+            # Scaled deviation: |games * num_opponents - games_per_team|
+            # This is equivalent to |games - games_per_team/num_opponents| but uses only integers
+            scaled_games = games_vs_opp * num_opponents
+            scaled_target = games_per_team
 
-                games_on_sheet = sum(
-                    x[m.matchup_id, s.slot_id]
-                    for m in team_matchups
-                    for s in sheet_slots
-                )
-
-                deviation = model.new_int_var(0, games_per_team, f"sheet_dev_{sheet.sheet_id}_{t.registration_id}")
-                model.add(deviation >= games_on_sheet - expected_per_sheet)
-                model.add(deviation >= expected_per_sheet - games_on_sheet)
-                sheet_penalties.append(deviation)
-
-        # --- Home/Away Balance ---
-        expected_home = games_per_team // 2
-        for t in teams:
-            home_matchups = [m for m in matchups if m.home_team.registration_id == t.registration_id]
-            home_games = sum(x[m.matchup_id, s.slot_id] for m in home_matchups for s in slots)
-
-            imbalance = model.new_int_var(0, games_per_team, f"ha_imbalance_{t.registration_id}")
-            model.add(imbalance >= home_games - expected_home)
-            model.add(imbalance >= expected_home - home_games)
-            home_away_penalties.append(imbalance)
-
-        # --- Opponent Variety ---
-        # Try to spread games across opponents evenly (within division)
-        num_opponents = len(teams) - 1
-        expected_per_opponent = games_per_team // num_opponents if num_opponents > 0 else 0
-
-        for t in teams:
-            for opp in teams:
-                if t.registration_id == opp.registration_id:
-                    continue
-
-                # Count games between t and opp (in either direction)
-                pair_matchups = [m for m in matchups
-                                if (m.home_team.registration_id == t.registration_id and
-                                    m.away_team.registration_id == opp.registration_id) or
-                                   (m.home_team.registration_id == opp.registration_id and
-                                    m.away_team.registration_id == t.registration_id)]
-
-                games_vs_opp = sum(x[m.matchup_id, s.slot_id] for m in pair_matchups for s in slots)
-
-                deviation = model.new_int_var(0, games_per_team, f"opp_dev_{t.registration_id}_{opp.registration_id}")
-                model.add(deviation >= games_vs_opp - expected_per_opponent)
-                model.add(deviation >= expected_per_opponent - games_vs_opp)
-                opponent_penalties.append(deviation)
-
-    # --- Packing: Prefer Earlier Slots ---
-    # Add a small penalty for each slot used, weighted by slot index
-    # This encourages the solver to pack games into earlier dates
-    packing_penalty = sum(
-        x[m.matchup_id, s.slot_id] * s.slot_id
-        for m in matchups
-        for s in slots
-    )
+            deviation = model.new_int_var(0, max_opp_deviation * num_opponents, f"opp_dev_{t.team_id}_{opp.team_id}")
+            model.add(deviation >= scaled_games - scaled_target)
+            model.add(deviation >= scaled_target - scaled_games)
+            opponent_penalties.append(deviation)
 
     # --- Consecutive Opponent Penalty ---
     # Penalize playing the same opponent in back-to-back weeks
     consecutive_opponent_penalties = []
-    if weights.weight_no_consecutive_opponent > 0:
-        # Group slots by date
-        slots_by_date: dict[date, list[GameSlot]] = {}
-        for s in slots:
-            if s.date not in slots_by_date:
-                slots_by_date[s.date] = []
-            slots_by_date[s.date].append(s)
-
-        sorted_dates = sorted(slots_by_date.keys())
+    if weights.weight_consecutive_matchup > 0:
+        sorted_weeks = ctx.sorted_weeks
 
         # For each pair of consecutive weeks
-        for i in range(len(sorted_dates) - 1):
-            date1 = sorted_dates[i]
-            date2 = sorted_dates[i + 1]
-            slots_week1 = slots_by_date[date1]
-            slots_week2 = slots_by_date[date2]
+        for i in range(len(sorted_weeks) - 1):
+            week1 = sorted_weeks[i]
+            week2 = sorted_weeks[i + 1]
+            slots_week1 = ctx.slots_by_week[week1]
+            slots_week2 = ctx.slots_by_week[week2]
 
-            # For each division, check each pair of teams
-            for division in config.divisions:
-                teams = division.teams
-                for t1 in teams:
-                    for t2 in teams:
-                        if t1.registration_id >= t2.registration_id:
-                            continue
+            # For each team pair (upper triangle only)
+            for j, t1 in enumerate(config.teams):
+                for t2 in config.teams[j+1:]:
+                    pair_key = (min(t1.team_id, t2.team_id),
+                               max(t1.team_id, t2.team_id))
+                    pair_matchups = ctx.matchups_by_pair.get(pair_key, [])
 
-                        pair_matchups = [m for m in matchups
-                                        if (m.home_team.registration_id == t1.registration_id and
-                                            m.away_team.registration_id == t2.registration_id) or
-                                           (m.home_team.registration_id == t2.registration_id and
-                                            m.away_team.registration_id == t1.registration_id)]
+                    games_week1 = sum(x[m.matchup_id, s.slot_id] for m in pair_matchups for s in slots_week1)
+                    games_week2 = sum(x[m.matchup_id, s.slot_id] for m in pair_matchups for s in slots_week2)
 
-                        games_week1 = sum(x[m.matchup_id, s.slot_id] for m in pair_matchups for s in slots_week1)
-                        games_week2 = sum(x[m.matchup_id, s.slot_id] for m in pair_matchups for s in slots_week2)
-
-                        # Create bool var for "has game in week 1"
-                        has_game_w1 = model.new_bool_var(f"has_w1_{t1.registration_id}_{t2.registration_id}_{i}")
-                        model.add(games_week1 >= 1).only_enforce_if(has_game_w1)
-                        model.add(games_week1 == 0).only_enforce_if(has_game_w1.negated())
-
-                        # Create bool var for "has game in week 2"
-                        has_game_w2 = model.new_bool_var(f"has_w2_{t1.registration_id}_{t2.registration_id}_{i}")
-                        model.add(games_week2 >= 1).only_enforce_if(has_game_w2)
-                        model.add(games_week2 == 0).only_enforce_if(has_game_w2.negated())
-
-                        # Penalty if both weeks have a game (has_game_w1 AND has_game_w2)
-                        both_weeks = model.new_bool_var(f"consec_{t1.registration_id}_{t2.registration_id}_{i}")
-                        model.add_bool_and([has_game_w1, has_game_w2]).only_enforce_if(both_weeks)
-                        model.add_bool_or([has_game_w1.negated(), has_game_w2.negated()]).only_enforce_if(both_weeks.negated())
-                        consecutive_opponent_penalties.append(both_weeks)
+                    # CORRECT formulation: consecutive = 1 iff both weeks have games
+                    # games_week1, games_week2 ∈ {0,1} due to one-game-per-team-per-day constraint
+                    consecutive = model.new_bool_var(f"consec_{t1.team_id}_{t2.team_id}_{i}")
+                    # consecutive <= games_week1: if no game week1, consecutive=0
+                    model.add(consecutive <= games_week1)
+                    # consecutive <= games_week2: if no game week2, consecutive=0
+                    model.add(consecutive <= games_week2)
+                    # consecutive >= games_week1 + games_week2 - 1: if both have games, consecutive=1
+                    model.add(consecutive >= games_week1 + games_week2 - 1)
+                    consecutive_opponent_penalties.append(consecutive)
 
     # --- Bye Spread: Balance Byes Across First/Second Half ---
     bye_spread_penalties = []
-    if weights.weight_bye_spread > 0:
-        # Group slots by date to find midpoint
-        slots_by_date: dict[date, list[GameSlot]] = {}
-        for s in slots:
-            if s.date not in slots_by_date:
-                slots_by_date[s.date] = []
-            slots_by_date[s.date].append(s)
+    if weights.weight_bye_distribution > 0:
+        sorted_weeks = ctx.sorted_weeks
+        midpoint_idx = len(sorted_weeks) // 2
+        first_half_weeks = set(sorted_weeks[:midpoint_idx])
+        second_half_weeks = set(sorted_weeks[midpoint_idx:])
 
-        sorted_dates = sorted(slots_by_date.keys())
-        midpoint_idx = len(sorted_dates) // 2
-        first_half_dates = sorted_dates[:midpoint_idx]
-        second_half_dates = sorted_dates[midpoint_idx:]
-
-        first_half_slots = [s for s in slots if s.date in first_half_dates]
-        second_half_slots = [s for s in slots if s.date in second_half_dates]
+        first_half_slots = [s for s in slots if s.week in first_half_weeks]
+        second_half_slots = [s for s in slots if s.week in second_half_weeks]
 
         # For each team, penalize imbalance between first and second half byes
-        for t in config.all_teams:
-            team_matchups = [m for m in matchups
-                            if m.home_team.registration_id == t.registration_id
-                            or m.away_team.registration_id == t.registration_id]
+        for t in config.teams:
+            team_matchups = ctx.matchups_by_team.get(t.team_id, [])
 
             # Games in first half
             games_first_half = sum(
@@ -691,28 +787,171 @@ def _add_fairness_objective(
                 for s in second_half_slots
             )
 
-            # Byes = available dates - games played
-            byes_first_half = len(first_half_dates) - games_first_half
-            byes_second_half = len(second_half_dates) - games_second_half
+            # Byes = available weeks - games played
+            byes_first_half = len(first_half_weeks) - games_first_half
+            byes_second_half = len(second_half_weeks) - games_second_half
 
             # Penalize difference in byes between halves
-            bye_imbalance = model.new_int_var(0, len(sorted_dates), f"bye_spread_{t.registration_id}")
+            bye_imbalance = model.new_int_var(0, len(sorted_weeks), f"bye_spread_{t.team_id}")
             model.add(bye_imbalance >= byes_first_half - byes_second_half)
             model.add(bye_imbalance >= byes_second_half - byes_first_half)
             bye_spread_penalties.append(bye_imbalance)
 
+    # --- Day Balance: Balance games across days of week ---
+    day_penalties = []
+    if weights.weight_day > 0:
+        # Get unique days from day_schedules
+        unique_days = set(ds.day for ds in config.day_schedules)
+        num_days = len(unique_days)
+        expected_per_day = games_per_team // num_days
+        max_day_deviation = games_per_team  # Max possible deviation
+
+        for day in unique_days:
+            # Get all slots on this day (across all weeks)
+            day_slots = [s for s in slots if s.day == day]
+
+            for t in teams:
+                team_matchups = ctx.matchups_by_team.get(t.team_id, [])
+
+                games_on_day = sum(
+                    x[m.matchup_id, s.slot_id]
+                    for m in team_matchups
+                    for s in day_slots
+                )
+
+                # Deviation from expected
+                day_name = DAY_INT_TO_NAME[day]
+                deviation = model.new_int_var(0, max_day_deviation, f"day_dev_{day_name}_{t.team_id}")
+                model.add(deviation >= games_on_day - expected_per_day)
+                model.add(deviation >= expected_per_day - games_on_day)
+                day_penalties.append(deviation)
+
+    # --- Time Balance: Balance games across times of day ---
+    time_penalties = []
+    if weights.weight_time > 0:
+        # Get unique times from day_schedules
+        unique_times = set()
+        for ds in config.day_schedules:
+            for slot_def in ds.slots:
+                unique_times.add(slot_def.time)
+        num_times = len(unique_times)
+        expected_per_time = games_per_team // num_times
+        max_time_deviation = games_per_team  # Max possible deviation
+
+        for time_val in unique_times:
+            # Get all slots at this time (across all weeks and days)
+            time_slots = [s for s in slots if s.time == time_val]
+
+            for t in teams:
+                team_matchups = ctx.matchups_by_team.get(t.team_id, [])
+
+                games_at_time = sum(
+                    x[m.matchup_id, s.slot_id]
+                    for m in team_matchups
+                    for s in time_slots
+                )
+
+                # Deviation from expected
+                time_str = time_val.strftime("%H:%M")
+                deviation = model.new_int_var(0, max_time_deviation, f"time_dev_{time_str}_{t.team_id}")
+                model.add(deviation >= games_at_time - expected_per_time)
+                model.add(deviation >= expected_per_time - games_at_time)
+                time_penalties.append(deviation)
+
     # Combine all penalties with their respective weights
     total_objective = (
-        weights.weight_time_slot * sum(time_slot_penalties) +
-        weights.weight_sheet * sum(sheet_penalties) +
+        weights.weight_day * sum(day_penalties) +
+        weights.weight_time * sum(time_penalties) +
         weights.weight_home_away * sum(home_away_penalties) +
-        weights.weight_opponent * sum(opponent_penalties) +
-        weights.weight_packing * packing_penalty +
-        weights.weight_no_consecutive_opponent * sum(consecutive_opponent_penalties) +
-        weights.weight_bye_spread * sum(bye_spread_penalties)
+        weights.weight_matchup * sum(opponent_penalties) +
+        weights.weight_consecutive_matchup * sum(consecutive_opponent_penalties) +
+        weights.weight_bye_distribution * sum(bye_spread_penalties)
     )
 
     model.minimize(total_objective)
+
+
+def _add_warmstart_hints(
+    model: cp_model.CpModel,
+    x: dict,
+    matchups: list[Matchup],
+    slots: list[GameSlot],
+    config: ScheduleConfig,
+    ctx: SchedulerContext,
+):
+    """
+    Generate a greedy initial solution and provide it as hints to the solver.
+    This can significantly speed up finding the first feasible solution.
+    """
+    # Track assignments: (matchup_id, slot_id) pairs that are selected
+    assignments: set[tuple[int, int]] = set()
+    used_slots: set[int] = set()
+    used_matchups: set[int] = set()
+    team_games_on_week_day: dict[str, set[tuple[int, int]]] = {t.team_id: set() for t in config.teams}
+    team_game_count: dict[str, int] = {t.team_id: 0 for t in config.teams}
+
+    # Get target games per team
+    games_per_team = config.games_per_team
+
+    # Sort slots by (week, day, time) for greedy assignment
+    sorted_slots = sorted(slots, key=lambda s: (s.week, s.day, s.time, s.slot_id))
+
+    # Group matchups by team pair for efficient lookup
+    matchups_by_undirected_pair: dict[frozenset, list[Matchup]] = {}
+    for m in matchups:
+        pair = frozenset([m.home_team.team_id, m.away_team.team_id])
+        if pair not in matchups_by_undirected_pair:
+            matchups_by_undirected_pair[pair] = []
+        matchups_by_undirected_pair[pair].append(m)
+
+    # Greedy assignment: for each slot, try to assign a valid matchup
+    for slot in sorted_slots:
+        if slot.slot_id in used_slots:
+            continue
+
+        best_matchup = None
+        best_score = float('-inf')
+
+        # Find best matchup for this slot
+        for pair, pair_matchups in matchups_by_undirected_pair.items():
+            for m in pair_matchups:
+                if m.matchup_id in used_matchups:
+                    continue
+
+                home_id = m.home_team.team_id
+                away_id = m.away_team.team_id
+
+                # Check constraints
+                week_day = (slot.week, slot.day)
+                if week_day in team_games_on_week_day[home_id] or week_day in team_games_on_week_day[away_id]:
+                    continue
+                if team_game_count[home_id] >= games_per_team or team_game_count[away_id] >= games_per_team:
+                    continue
+
+                # Score: prefer teams with fewer games
+                score = -(team_game_count[home_id] + team_game_count[away_id])
+                if score > best_score:
+                    best_score = score
+                    best_matchup = m
+
+        if best_matchup:
+            assignments.add((best_matchup.matchup_id, slot.slot_id))
+            used_slots.add(slot.slot_id)
+            used_matchups.add(best_matchup.matchup_id)
+            home_id = best_matchup.home_team.team_id
+            away_id = best_matchup.away_team.team_id
+            week_day = (slot.week, slot.day)
+            team_games_on_week_day[home_id].add(week_day)
+            team_games_on_week_day[away_id].add(week_day)
+            team_game_count[home_id] += 1
+            team_game_count[away_id] += 1
+
+    # Provide hints to solver
+    for (m_id, s_id), var in x.items():
+        if (m_id, s_id) in assignments:
+            model.add_hint(var, 1)
+        else:
+            model.add_hint(var, 0)
 
 
 # --- Solution Callback for Progress ---
@@ -767,28 +1006,24 @@ class ScheduleProgressCallback(cp_model.CpSolverSolutionCallback):
             for s in self.slots:
                 if self.value(self.x[m.matchup_id, s.slot_id]):
                     # This matchup is scheduled in this slot
-                    start_time = datetime.combine(s.date, s.time)
                     game_id = str(uuid.uuid4())[:8]
 
                     games.append(ScheduledGame(
                         game_id=game_id,
                         division_id=m.division_id,
-                        home_registration_id=m.home_team.registration_id,
-                        away_registration_id=m.away_team.registration_id,
                         home_team=m.home_team.name,
                         away_team=m.away_team.name,
                         home_abbrev=m.home_team.abbreviation,
                         away_abbrev=m.away_team.abbreviation,
                         sheet_id=s.sheet_id,
-                        rink_id=self.config.rink_id,
-                        start_time=start_time,
-                        period_length_min=self.config.period_length_min,
-                        num_periods=self.config.num_periods,
-                        game_type=self.config.game_type,
+                        week=s.week,
+                        day=s.day,
+                        time=s.time,
+                        start_time=None,  # Abstract schedule has no concrete datetime
                     ))
 
-        # Sort by start time
-        games.sort(key=lambda g: g.start_time)
+        # Sort by (week, day, time)
+        games.sort(key=lambda g: (g.week, g.day, g.time))
         return games
 
     def stop(self):
@@ -813,28 +1048,24 @@ def _extract_solution(
         for s in slots:
             if solver.value(x[m.matchup_id, s.slot_id]):
                 # This matchup is scheduled in this slot
-                start_time = datetime.combine(s.date, s.time)
                 game_id = str(uuid.uuid4())[:8]
 
                 games.append(ScheduledGame(
                     game_id=game_id,
                     division_id=m.division_id,
-                    home_registration_id=m.home_team.registration_id,
-                    away_registration_id=m.away_team.registration_id,
                     home_team=m.home_team.name,
                     away_team=m.away_team.name,
                     home_abbrev=m.home_team.abbreviation,
                     away_abbrev=m.away_team.abbreviation,
                     sheet_id=s.sheet_id,
-                    rink_id=config.rink_id,
-                    start_time=start_time,
-                    period_length_min=config.period_length_min,
-                    num_periods=config.num_periods,
-                    game_type=config.game_type,
+                    week=s.week,
+                    day=s.day,
+                    time=s.time,
+                    start_time=None,  # Abstract schedule has no concrete datetime
                 ))
 
-    # Sort by start time
-    games.sort(key=lambda g: g.start_time)
+    # Sort by (week, day, time)
+    games.sort(key=lambda g: (g.week, g.day, g.time))
     return games
 
 
@@ -856,24 +1087,26 @@ def generate_schedule(config: ScheduleConfig, html_output: Path = None) -> list[
     matchups = _generate_matchups(config)
     slots = _generate_slots(config)
 
-    # Calculate total games across all divisions
-    total_teams = len(config.all_teams)
-    total_games = sum(len(d.teams) * d.games_per_team // 2 for d in config.divisions)
+    # 1.5. Build pre-computed indexes for efficient constraint building
+    ctx = _build_context(matchups, slots)
 
-    print(f"Divisions: {len(config.divisions)}")
-    print(f"Total teams: {total_teams}")
-    for d in config.divisions:
-        print(f"  {d.division_id}: {len(d.teams)} teams, {d.games_per_team} games each")
+    # Calculate total games
+    total_teams = len(config.teams)
+    total_games = (config.num_teams * config.games_per_team) // 2
+
+    print(f"Teams: {total_teams}")
+    print(f"Games per team: {config.games_per_team}")
     print(f"Total games to schedule: {total_games}")
     print(f"Available slots: {len(slots)}")
     print(f"Potential matchups: {len(matchups)}")
     timeout_str = f"{config.solver.timeout_seconds}s" if config.solver.timeout_seconds > 0 else "none (infinite)"
     print(f"Solver timeout: {timeout_str}")
-    print(f"Weights: time_slot={config.solver.weight_time_slot}, sheet={config.solver.weight_sheet}, "
-          f"home_away={config.solver.weight_home_away}, opponent={config.solver.weight_opponent}, "
-          f"packing={config.solver.weight_packing}, no_consecutive_opponent={config.solver.weight_no_consecutive_opponent}, "
-          f"bye_spread={config.solver.weight_bye_spread}")
-    print(f"Hard constraints: max_consecutive_byes={config.solver.max_consecutive_byes}")
+    print(f"Weights: day={config.solver.weight_day}, time={config.solver.weight_time}, "
+          f"home_away={config.solver.weight_home_away}, matchup={config.solver.weight_matchup}, "
+          f"consecutive_matchup={config.solver.weight_consecutive_matchup}, "
+          f"bye_distribution={config.solver.weight_bye_distribution}")
+    print(f"Hard constraints: max_consecutive_byes={config.solver.max_consecutive_byes}, "
+          f"max_consecutive_game_slots={config.solver.max_consecutive_game_slots}")
 
     # 2. Create decision variables
     # x[m, s] = 1 if matchup m is assigned to slot s
@@ -885,21 +1118,36 @@ def generate_schedule(config: ScheduleConfig, html_output: Path = None) -> list[
     # 3. Add constraints
     _add_slot_constraints(model, x, matchups, slots)
     _add_matchup_constraints(model, x, matchups, slots)
-    _add_team_games_constraint(model, x, matchups, slots, config)
-    _add_one_game_per_team_per_day(model, x, matchups, slots, config)
+    _add_symmetry_breaking(model, x, slots, ctx)
+    _add_team_games_constraint(model, x, slots, config, ctx)
+    _add_one_game_per_team_per_day(model, x, slots, config, ctx)
     if config.solver.max_consecutive_byes > 0:
-        _add_max_consecutive_byes_constraint(model, x, matchups, slots, config)
+        _add_max_consecutive_byes_constraint(model, x, config, ctx)
+    if config.solver.max_consecutive_game_slots > 0:
+        _add_max_consecutive_time_slots_constraint(model, x, config, ctx)
 
     # 4. Add fairness objective
-    _add_fairness_objective(model, x, matchups, slots, config)
+    _add_fairness_objective(model, x, matchups, slots, config, ctx)
+
+    # 4.5. Generate greedy warmstart hints
+    _add_warmstart_hints(model, x, matchups, slots, config, ctx)
 
     # 5. Solve
     solver = cp_model.CpSolver()
+
+    # Performance optimizations
+    import os
+    num_workers = os.cpu_count() or 8
+    solver.parameters.num_workers = num_workers
+    solver.parameters.log_search_progress = False  # Reduce logging overhead
+    solver.parameters.cp_model_presolve = True     # Enable presolve
+    solver.parameters.linearization_level = 2      # Better LP relaxation
+
     if config.solver.timeout_seconds > 0:
         solver.parameters.max_time_in_seconds = config.solver.timeout_seconds
-        print(f"\nSolving with {config.solver.timeout_seconds}s timeout (Ctrl+C to stop early and use best solution found)...")
+        print(f"\nSolving with {config.solver.timeout_seconds}s timeout, {num_workers} workers (Ctrl+C to stop early)...")
     else:
-        print("\nSolving with no timeout (Ctrl+C to stop and use best solution found)...")
+        print(f"\nSolving with no timeout, {num_workers} workers (Ctrl+C to stop and use best solution)...")
     callback = ScheduleProgressCallback(x, matchups, slots, config, html_output)
 
     # Handle Ctrl+C gracefully
@@ -944,37 +1192,68 @@ def generate_schedule(config: ScheduleConfig, html_output: Path = None) -> list[
 
 def analyze_fairness(games: list[ScheduledGame], config: ScheduleConfig) -> FairnessReport:
     """Analyze fairness metrics for a generated schedule."""
-    time_slots = [t.strftime("%H:%M") for t in config.time_slots]
+    # Get unique game slots (day + time), days, and times from config
+    game_slots_set = set()
+    days_set = set()
+    times_set = set()
+    for day_sched in config.day_schedules:
+        day_name = DAY_INT_TO_NAME[day_sched.day]
+        days_set.add(day_name)
+        for slot_def in day_sched.slots:
+            time_str = slot_def.time.strftime("%H:%M")
+            times_set.add(time_str)
+            game_slot = f"{day_name} {time_str}"
+            game_slots_set.add(game_slot)
+    game_slots = sorted(game_slots_set)
+    days = sorted(days_set)
+    times = sorted(times_set)
     sheet_ids = [s.sheet_id for s in config.sheets]
 
     # Initialize structures
-    time_slot_dist: dict[str, dict[str, int]] = {}
+    game_slot_dist: dict[str, dict[str, int]] = {}
+    day_dist: dict[str, dict[str, int]] = {}
+    time_dist: dict[str, dict[str, int]] = {}
     sheet_dist: dict[str, dict[str, int]] = {}
     home_away: dict[str, tuple[int, int]] = {}
     opponent_dist: dict[str, dict[str, int]] = {}
 
-    for t in config.all_teams:
-        time_slot_dist[t.name] = {ts: 0 for ts in time_slots}
+    for t in config.teams:
+        game_slot_dist[t.name] = {gs: 0 for gs in game_slots}
+        day_dist[t.name] = {d: 0 for d in days}
+        time_dist[t.name] = {tm: 0 for tm in times}
         sheet_dist[t.name] = {s: 0 for s in sheet_ids}
         home_away[t.name] = (0, 0)
         opponent_dist[t.name] = {}
 
-    # Track games by date for utilization analysis
-    games_by_date: dict[date, int] = {}
+    # Track games by week for utilization analysis
+    games_by_week: dict[int, int] = {}
 
     # Count metrics
     for game in games:
-        time_str = game.start_time.strftime("%H:%M")
-        game_date = game.start_time.date()
+        day_name = DAY_INT_TO_NAME[game.day]
+        time_str = game.time.strftime("%H:%M")
+        game_slot = f"{day_name} {time_str}"
 
-        # Games by date
-        games_by_date[game_date] = games_by_date.get(game_date, 0) + 1
+        # Games by week
+        games_by_week[game.week] = games_by_week.get(game.week, 0) + 1
 
-        # Time slot counts
-        if time_str in time_slot_dist[game.home_team]:
-            time_slot_dist[game.home_team][time_str] += 1
-        if time_str in time_slot_dist[game.away_team]:
-            time_slot_dist[game.away_team][time_str] += 1
+        # Game slot counts (day + time)
+        if game_slot in game_slot_dist[game.home_team]:
+            game_slot_dist[game.home_team][game_slot] += 1
+        if game_slot in game_slot_dist[game.away_team]:
+            game_slot_dist[game.away_team][game_slot] += 1
+
+        # Day counts
+        if day_name in day_dist[game.home_team]:
+            day_dist[game.home_team][day_name] += 1
+        if day_name in day_dist[game.away_team]:
+            day_dist[game.away_team][day_name] += 1
+
+        # Time counts
+        if time_str in time_dist[game.home_team]:
+            time_dist[game.home_team][time_str] += 1
+        if time_str in time_dist[game.away_team]:
+            time_dist[game.away_team][time_str] += 1
 
         # Sheet counts
         if game.sheet_id in sheet_dist[game.home_team]:
@@ -997,61 +1276,113 @@ def analyze_fairness(games: list[ScheduledGame], config: ScheduleConfig) -> Fair
             opponent_dist[game.away_team][game.home_team] = 0
         opponent_dist[game.away_team][game.home_team] += 1
 
-    # Calculate ice utilization (only up to last game date)
+    # Calculate ice utilization (only up to last game week)
     slots = _generate_slots(config)
-    last_game_date = max(game.start_time.date() for game in games) if games else None
-    if last_game_date:
-        slots = [s for s in slots if s.date <= last_game_date]
+    last_game_week = max(game.week for game in games) if games else None
+    if last_game_week:
+        slots = [s for s in slots if s.week <= last_game_week]
 
     total_slots = len(slots)
     used_slots = len(games)
 
-    # Count total game days (unique dates in slots up to last game)
-    total_game_days = len(set(s.date for s in slots))
-    used_game_days = len(games_by_date)
+    # Count total game weeks (unique weeks in slots up to last game)
+    total_game_days = len(set(s.week for s in slots))  # Really "weeks" not "days"
+    used_game_days = len(games_by_week)
 
     # Calculate bye weeks for each team
     bye_weeks: dict[str, int] = {}
-    game_dates = set(s.date for s in slots)  # All available game dates
+    game_weeks = set(s.week for s in slots)  # All available game weeks
 
-    for team in config.all_teams:
-        # Find all dates where this team has a game
-        team_game_dates = set()
+    for team in config.teams:
+        # Find all weeks where this team has a game
+        team_game_weeks = set()
         for game in games:
             if game.home_team == team.name or game.away_team == team.name:
-                team_game_dates.add(game.start_time.date())
+                team_game_weeks.add(game.week)
 
-        # Bye weeks = available game dates minus dates where team played
-        bye_weeks[team.name] = len(game_dates - team_game_dates)
+        # Bye weeks = available game weeks minus weeks where team played
+        bye_weeks[team.name] = len(game_weeks - team_game_weeks)
 
     # Calculate bye spread (first half vs second half)
     bye_spread: dict[str, tuple[int, int]] = {}
-    sorted_game_dates = sorted(game_dates)
-    midpoint_idx = len(sorted_game_dates) // 2
-    first_half_dates = set(sorted_game_dates[:midpoint_idx])
-    second_half_dates = set(sorted_game_dates[midpoint_idx:])
+    sorted_game_weeks = sorted(game_weeks)
+    midpoint_idx = len(sorted_game_weeks) // 2
+    first_half_weeks = set(sorted_game_weeks[:midpoint_idx])
+    second_half_weeks = set(sorted_game_weeks[midpoint_idx:])
 
-    for team in config.all_teams:
-        # Find all dates where this team has a game
-        team_game_dates = set()
+    for team in config.teams:
+        # Find all weeks where this team has a game
+        team_game_weeks = set()
         for game in games:
             if game.home_team == team.name or game.away_team == team.name:
-                team_game_dates.add(game.start_time.date())
+                team_game_weeks.add(game.week)
 
-        # Byes in first half = first half dates - dates team played in first half
-        first_half_byes = len(first_half_dates - team_game_dates)
-        # Byes in second half = second half dates - dates team played in second half
-        second_half_byes = len(second_half_dates - team_game_dates)
+        # Byes in first half = first half weeks - weeks team played in first half
+        first_half_byes = len(first_half_weeks - team_game_weeks)
+        # Byes in second half = second half weeks - weeks team played in second half
+        second_half_byes = len(second_half_weeks - team_game_weeks)
 
         bye_spread[team.name] = (first_half_byes, second_half_byes)
 
+    # Calculate max consecutive weeks at same time slot for each team
+    # Only counts as consecutive if games are in consecutive weeks
+    consecutive_time_slots: dict[str, int] = {}
+    sorted_game_weeks_list = sorted(game_weeks)
+
+    for team in config.teams:
+        # Get this team's games sorted by (week, day, time)
+        team_games = sorted(
+            [g for g in games if g.home_team == team.name or g.away_team == team.name],
+            key=lambda g: (g.week, g.day, g.time)
+        )
+
+        if len(team_games) < 2:
+            consecutive_time_slots[team.name] = 1 if team_games else 0
+            continue
+
+        # Track consecutive runs at same time slot
+        # Only count as consecutive if in consecutive weeks
+        max_consecutive = 1
+        current_consecutive = 1
+        prev_time = team_games[0].time.strftime("%H:%M")
+        prev_week = team_games[0].week
+
+        for i in range(1, len(team_games)):
+            curr_time = team_games[i].time.strftime("%H:%M")
+            curr_week = team_games[i].week
+
+            # Check if this is a consecutive week
+            try:
+                prev_idx = sorted_game_weeks_list.index(prev_week)
+                curr_idx = sorted_game_weeks_list.index(curr_week)
+                is_consecutive_week = (curr_idx == prev_idx + 1)
+            except ValueError:
+                is_consecutive_week = False
+
+            if curr_time == prev_time and is_consecutive_week:
+                current_consecutive += 1
+                max_consecutive = max(max_consecutive, current_consecutive)
+            else:
+                current_consecutive = 1
+
+            prev_time = curr_time
+            prev_week = curr_week
+
+        consecutive_time_slots[team.name] = max_consecutive
+
+    # Convert games_by_week to games_by_date for compatibility (using None as placeholder)
+    games_by_date = None  # No longer meaningful for abstract schedules
+
     return FairnessReport(
-        time_slot_distribution=time_slot_dist,
+        game_slot_distribution=game_slot_dist,
+        day_distribution=day_dist,
+        time_distribution=time_dist,
         sheet_distribution=sheet_dist,
         home_away_balance=home_away,
         opponent_distribution=opponent_dist,
         bye_weeks=bye_weeks,
         bye_spread=bye_spread,
+        consecutive_time_slots=consecutive_time_slots,
         total_slots=total_slots,
         used_slots=used_slots,
         total_game_days=total_game_days,
@@ -1088,9 +1419,7 @@ def main():
     print(f"Loading config from: {config_path}")
     config = load_config(config_path)
 
-    div_names = ", ".join(d.division_id for d in config.divisions)
-    print(f"\nGenerating schedule for: {config.league_id} - {config.season_id}")
-    print(f"Divisions: {div_names}")
+    print(f"\nGenerating schedule with {config.num_teams} teams, {config.games_per_team} games each")
 
     games = generate_schedule(config, html_output)
     print(f"\nGenerated {len(games)} games")
@@ -1114,25 +1443,22 @@ def _write_html_schedule(games: list[ScheduledGame], config: ScheduleConfig, rep
     # Toggle to show/hide the full schedule rendering
     SHOW_SCHEDULE = True
 
-    # Group games by date
-    games_by_date: dict[date, list[ScheduledGame]] = {}
+    # Day names for display
+    DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+    # Group games by (week, day)
+    games_by_week_day: dict[tuple[int, int], list[ScheduledGame]] = {}
     for game in games:
-        game_date = game.start_time.date()
-        if game_date not in games_by_date:
-            games_by_date[game_date] = []
-        games_by_date[game_date].append(game)
+        key = (game.week, game.day)
+        if key not in games_by_week_day:
+            games_by_week_day[key] = []
+        games_by_week_day[key].append(game)
 
-    # Sort each day's games by time, then sheet
-    for date_games in games_by_date.values():
-        date_games.sort(key=lambda g: (g.start_time.time(), g.sheet_id))
+    # Sort each week/day's games by time, then sheet
+    for week_day_games in games_by_week_day.values():
+        week_day_games.sort(key=lambda g: (g.time, g.sheet_id))
 
-    sorted_dates = sorted(games_by_date.keys())
-
-    # Assign colors to divisions
-    division_colors = {
-        div.division_id: f"hsl({i * 137.5 % 360}, 65%, 85%)"
-        for i, div in enumerate(config.divisions)
-    }
+    sorted_week_days = sorted(games_by_week_day.keys())
 
     # Build HTML
     html = f"""<!DOCTYPE html>
@@ -1140,7 +1466,7 @@ def _write_html_schedule(games: list[ScheduledGame], config: ScheduleConfig, rep
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Schedule: {config.league_id} - {config.season_id}</title>
+    <title>Hockey Schedule - {config.num_teams} Teams</title>
     <style>
         * {{
             margin: 0;
@@ -1177,6 +1503,42 @@ def _write_html_schedule(games: list[ScheduledGame], config: ScheduleConfig, rep
             font-size: 1.5em;
             border-bottom: 2px solid #3498db;
             padding-bottom: 5px;
+        }}
+
+        details {{
+            margin: 20px 0;
+        }}
+
+        details summary {{
+            cursor: pointer;
+            color: #34495e;
+            font-size: 1.5em;
+            font-weight: 600;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 5px;
+            margin-bottom: 15px;
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }}
+
+        details summary::-webkit-details-marker {{
+            display: none;
+        }}
+
+        details summary::before {{
+            content: "▶";
+            font-size: 0.7em;
+            transition: transform 0.2s;
+        }}
+
+        details[open] summary::before {{
+            transform: rotate(90deg);
+        }}
+
+        details summary:hover {{
+            color: #3498db;
         }}
 
         h3 {{
@@ -1610,7 +1972,7 @@ def _write_html_schedule(games: list[ScheduledGame], config: ScheduleConfig, rep
 <body>
     <div class="container">
         <h1>Hockey Schedule</h1>
-        <div class="subtitle">{config.league_id} - {config.season_id}</div>
+        <div class="subtitle">{config.num_teams} teams, {config.games_per_team} games each</div>
 
         <div class="stats">
             <div class="stat-box">
@@ -1618,34 +1980,53 @@ def _write_html_schedule(games: list[ScheduledGame], config: ScheduleConfig, rep
                 <div class="stat-label">Total Games</div>
             </div>
             <div class="stat-box">
-                <div class="stat-value">{len(sorted_dates)}</div>
+                <div class="stat-value">{len(sorted_week_days)}</div>
                 <div class="stat-label">Game Days</div>
             </div>
             <div class="stat-box">
-                <div class="stat-value">{report.utilization_pct:.1f}%</div>
-                <div class="stat-label">Ice Utilization</div>
+                <div class="stat-value">{config.num_teams}</div>
+                <div class="stat-label">Teams</div>
             </div>
             <div class="stat-box">
-                <div class="stat-value">{len(config.all_teams)}</div>
-                <div class="stat-label">Teams</div>
+                <div class="stat-value">{config.games_per_team}</div>
+                <div class="stat-label">Games per Team</div>
             </div>
         </div>
 
-        <h2>Division Legend</h2>
-        <div class="legend">
-"""
-
-    for div in config.divisions:
-        html += f"""            <div class="legend-item">
-                <div class="legend-color" style="background: {division_colors[div.division_id]}"></div>
-                <span>{div.division_id} ({len(div.teams)} teams, {div.games_per_team} games each)</span>
+        <details>
+            <summary>Solver Settings</summary>
+            <div class="stats">
+            <div class="stat-box">
+                <div class="stat-value">""" + (f"{config.solver.timeout_seconds:.0f}s" if config.solver.timeout_seconds > 0 else "∞") + """</div>
+                <div class="stat-label">Timeout</div>
             </div>
-"""
+        </div>
 
-    html += """        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 30px;">
+            <div style="background: #f8f9fa; padding: 20px; border-radius: 8px;">
+                <h3 style="margin-top: 0; margin-bottom: 15px; color: #2c3e50; font-size: 1.1em; border-bottom: 2px solid #3498db; padding-bottom: 5px;">Soft Constraints (Weights)</h3>
+                <table style="width: 100%; font-size: 0.9em;">
+                    <tr><td style="padding: 5px 0;">Day Balance</td><td style="text-align: right; font-weight: 600;">""" + str(config.solver.weight_day) + """</td></tr>
+                    <tr><td style="padding: 5px 0;">Time Balance</td><td style="text-align: right; font-weight: 600;">""" + str(config.solver.weight_time) + """</td></tr>
+                    <tr><td style="padding: 5px 0;">Home/Away Balance</td><td style="text-align: right; font-weight: 600;">""" + str(config.solver.weight_home_away) + """</td></tr>
+                    <tr><td style="padding: 5px 0;">Matchup Variety</td><td style="text-align: right; font-weight: 600;">""" + str(config.solver.weight_matchup) + """</td></tr>
+                    <tr><td style="padding: 5px 0;">Consecutive Matchup Penalty</td><td style="text-align: right; font-weight: 600;">""" + str(config.solver.weight_consecutive_matchup) + """</td></tr>
+                    <tr><td style="padding: 5px 0;">Bye Distribution</td><td style="text-align: right; font-weight: 600;">""" + str(config.solver.weight_bye_distribution) + """</td></tr>
+                </table>
+            </div>
+            <div style="background: #f8f9fa; padding: 20px; border-radius: 8px;">
+                <h3 style="margin-top: 0; margin-bottom: 15px; color: #2c3e50; font-size: 1.1em; border-bottom: 2px solid #e74c3c; padding-bottom: 5px;">Hard Constraints</h3>
+                <table style="width: 100%; font-size: 0.9em;">
+                    <tr><td style="padding: 5px 0;">Max Consecutive Byes</td><td style="text-align: right; font-weight: 600;">""" + (str(config.solver.max_consecutive_byes) if config.solver.max_consecutive_byes > 0 else "disabled") + """</td></tr>
+                    <tr><td style="padding: 5px 0;">Max Consecutive Time Slots</td><td style="text-align: right; font-weight: 600;">""" + (str(config.solver.max_consecutive_game_slots) if config.solver.max_consecutive_game_slots > 0 else "disabled") + """</td></tr>
+                </table>
+            </div>
+        </div>
+        </details>
 
-        <h2>Fairness Metrics</h2>
-        <div class="metrics-grid">
+        <details open>
+            <summary>Fairness Metrics</summary>
+            <div class="metrics-grid">
             <div class="metric-card">
                 <h3>Home/Away Balance</h3>
                 <div style="margin-bottom: 10px; font-size: 0.85em;">
@@ -1664,9 +2045,10 @@ def _write_html_schedule(games: list[ScheduledGame], config: ScheduleConfig, rep
         # Calculate bar widths as percentages
         home_width = (home / max_games) * 100
         away_width = (away / max_games) * 100
+        team_num = team_name.split()[-1]  # Extract number from "Team 1" -> "1"
 
         html += f"""                    <div class="bar-row">
-                        <div class="bar-label">{team_name}</div>
+                        <div class="bar-label">{team_num}</div>
                         <div class="bar-container">
                             <div class="bar bar-home" style="width: {home_width}%">{home}</div>
                             <div class="bar bar-away" style="width: {away_width}%">{away}</div>
@@ -1678,45 +2060,95 @@ def _write_html_schedule(games: list[ScheduledGame], config: ScheduleConfig, rep
             </div>
 
             <div class="metric-card">
-                <h3>Time Slot Distribution</h3>
+                <h3>Day Distribution</h3>
 """
 
-    # Get time slots
-    if report.time_slot_distribution:
-        first_team = list(report.time_slot_distribution.keys())[0]
-        time_slots = sorted(report.time_slot_distribution[first_team].keys())
+    # Get days
+    if report.day_distribution:
+        first_team = list(report.day_distribution.keys())[0]
+        days = sorted(report.day_distribution[first_team].keys())
 
-        # Add a legend showing time slots with different shades
-        colors = ["#2ecc71", "#27ae60", "#16a085", "#1abc9c"]
+        # Add a legend showing days with different colors
+        colors = ["#e74c3c", "#f39c12", "#f1c40f", "#2ecc71", "#3498db", "#9b59b6", "#e91e63"]
         html += """                <div style="margin-bottom: 10px; font-size: 0.85em;">
 """
-        for i, ts in enumerate(time_slots):
+        for i, day in enumerate(days):
             color = colors[i % len(colors)]
             html += f"""                    <span style="display: inline-block; width: 12px; height: 12px; background: {color}; border-radius: 2px; margin-right: 4px;"></span>
-                    <span style="margin-right: 12px;">{ts}</span>
+                    <span style="margin-right: 12px;">{day}</span>
 """
         html += """                </div>
 """
 
         # Calculate max value for scaling
-        max_slot_games = max(
-            max(slots.values())
-            for slots in report.time_slot_distribution.values()
+        max_day_games = max(
+            max(day_counts.values())
+            for day_counts in report.day_distribution.values()
         )
 
-        for team_name in sorted(report.time_slot_distribution.keys()):
-            slots = report.time_slot_distribution[team_name]
+        for team_name in sorted(report.day_distribution.keys()):
+            day_counts = report.day_distribution[team_name]
+            team_num = team_name.split()[-1]  # Extract number from "Team 1" -> "1"
 
             html += f"""                <div class="bar-row">
-                    <div class="bar-label">{team_name}</div>
+                    <div class="bar-label">{team_num}</div>
                     <div class="bar-container">
 """
 
-            for i, ts in enumerate(time_slots):
-                count = slots.get(ts, 0)
-                width = (count / max_slot_games) * 100 if max_slot_games > 0 else 0
+            for i, day in enumerate(days):
+                count = day_counts.get(day, 0)
+                width = (count / max_day_games) * 100 if max_day_games > 0 else 0
                 color = colors[i % len(colors)]
-                html += f"""                        <div class="bar" style="width: {width}%; background: {color};" title="{ts}">{count}</div>
+                html += f"""                        <div class="bar" style="width: {width}%; background: {color};" title="{day}">{count}</div>
+"""
+
+            html += """                    </div>
+                </div>
+"""
+
+    html += """            </div>
+
+            <div class="metric-card">
+                <h3>Time Distribution</h3>
+"""
+
+    # Get times
+    if report.time_distribution:
+        first_team = list(report.time_distribution.keys())[0]
+        times = sorted(report.time_distribution[first_team].keys())
+
+        # Add a legend showing times with different shades
+        colors = ["#2ecc71", "#27ae60", "#16a085", "#1abc9c"]
+        html += """                <div style="margin-bottom: 10px; font-size: 0.85em;">
+"""
+        for i, tm in enumerate(times):
+            color = colors[i % len(colors)]
+            html += f"""                    <span style="display: inline-block; width: 12px; height: 12px; background: {color}; border-radius: 2px; margin-right: 4px;"></span>
+                    <span style="margin-right: 12px;">{tm}</span>
+"""
+        html += """                </div>
+"""
+
+        # Calculate max value for scaling
+        max_time_games = max(
+            max(time_counts.values())
+            for time_counts in report.time_distribution.values()
+        )
+
+        for team_name in sorted(report.time_distribution.keys()):
+            time_counts = report.time_distribution[team_name]
+            team_num = team_name.split()[-1]  # Extract number from "Team 1" -> "1"
+
+            html += f"""                <div class="bar-row">
+                    <div class="bar-label">{team_num}</div>
+                    <div class="bar-container">
+"""
+
+            for i, tm in enumerate(times):
+                count = time_counts.get(tm, 0)
+                width = (count / max_time_games) * 100 if max_time_games > 0 else 0
+                color = colors[i % len(colors)]
+                html += f"""                        <div class="bar" style="width: {width}%; background: {color};" title="{tm}">{count}</div>
 """
 
             html += """                    </div>
@@ -1754,9 +2186,10 @@ def _write_html_schedule(games: list[ScheduledGame], config: ScheduleConfig, rep
 
         for team_name in sorted(report.sheet_distribution.keys()):
             sheet_counts = report.sheet_distribution[team_name]
+            team_num = team_name.split()[-1]  # Extract number from "Team 1" -> "1"
 
             html += f"""                <div class="bar-row">
-                    <div class="bar-label">{team_name}</div>
+                    <div class="bar-label">{team_num}</div>
                     <div class="bar-container">
 """
 
@@ -1792,12 +2225,45 @@ def _write_html_schedule(games: list[ScheduledGame], config: ScheduleConfig, rep
             first_half, second_half = report.bye_spread[team_name]
             first_width = (first_half / max_bye_half * 100) if max_bye_half > 0 else 0
             second_width = (second_half / max_bye_half * 100) if max_bye_half > 0 else 0
+            team_num = team_name.split()[-1]  # Extract number from "Team 1" -> "1"
 
             html += f"""                    <div class="bar-row">
-                        <div class="bar-label">{team_name}</div>
+                        <div class="bar-label">{team_num}</div>
                         <div class="bar-container">
                             <div class="bar bar-home" style="width: {first_width}%">{first_half}</div>
                             <div class="bar bar-away" style="width: {second_width}%">{second_half}</div>
+                        </div>
+                    </div>
+"""
+
+    html += """                </div>
+            </div>
+
+            <div class="metric-card">
+                <h3>Consecutive Time Slots</h3>
+                <div class="bar-chart">
+"""
+
+    # Calculate max consecutive for scaling
+    if report.consecutive_time_slots:
+        max_consec = max(report.consecutive_time_slots.values()) if report.consecutive_time_slots.values() else 0
+
+        for team_name in sorted(report.consecutive_time_slots.keys()):
+            consec = report.consecutive_time_slots[team_name]
+            width = (consec / max_consec * 100) if max_consec > 0 else 0
+            team_num = team_name.split()[-1]  # Extract number from "Team 1" -> "1"
+            # Color coding: green for 1-2, yellow for 3, red for 4+
+            if consec <= 2:
+                bar_color = "#27ae60"  # green
+            elif consec == 3:
+                bar_color = "#f39c12"  # orange/yellow
+            else:
+                bar_color = "#e74c3c"  # red
+
+            html += f"""                    <div class="bar-row">
+                        <div class="bar-label">{team_num}</div>
+                        <div class="bar-container">
+                            <div class="bar" style="width: {width}%; background: {bar_color};">{consec}</div>
                         </div>
                     </div>
 """
@@ -1812,10 +2278,16 @@ def _write_html_schedule(games: list[ScheduledGame], config: ScheduleConfig, rep
     # Get sorted team list
     teams = sorted(report.opponent_distribution.keys())
 
-    # Calculate expected matchups per pair (for 9 teams, 16 games each = 72 total, 36 pairs play 2x each)
+    # Calculate expected matchups per pair
+    # Total games = num_teams * games_per_team / 2
+    # Number of pairs = num_teams * (num_teams - 1) / 2
+    # Expected per pair = games_per_team / (num_teams - 1)
     total_teams = len(teams)
+    games_per_team = config.games_per_team
     if total_teams > 1:
-        expected_matchups = 2  # With 9 teams and 16 games each, each pair should play 2 times
+        expected_matchups_float = games_per_team / (total_teams - 1)
+        # Round to nearest integer for color coding
+        expected_matchups = round(expected_matchups_float)
 
     # Always show the matrix with color coding
     html += """                <div class="matchup-heatmap">
@@ -1825,7 +2297,8 @@ def _write_html_schedule(games: list[ScheduledGame], config: ScheduleConfig, rep
                                 <th></th>
 """
     for team in teams:
-        html += f"                                <th>{team}</th>\n"
+        team_num = team.split()[-1]  # Extract number from "Team 1" -> "1"
+        html += f"                                <th>{team_num}</th>\n"
 
     html += """                            </tr>
                         </thead>
@@ -1833,8 +2306,9 @@ def _write_html_schedule(games: list[ScheduledGame], config: ScheduleConfig, rep
 """
 
     for i, team1 in enumerate(teams):
+        team1_num = team1.split()[-1]  # Extract number from "Team 1" -> "1"
         html += "                            <tr>\n"
-        html += f"                                <td class='team-label'>{team1}</td>\n"
+        html += f"                                <td class='team-label'>{team1_num}</td>\n"
 
         for j, team2 in enumerate(teams):
             if j < i:
@@ -1860,61 +2334,63 @@ def _write_html_schedule(games: list[ScheduledGame], config: ScheduleConfig, rep
 
     html += """            </div>
         </div>
+        </details>
 """
 
     # Schedule rendering (toggle with SHOW_SCHEDULE flag)
     if SHOW_SCHEDULE:
         html += """
-        <h2>Schedule</h2>
-        <div class="schedule-grid">
+        <details open>
+            <summary>Schedule</summary>
+            <div class="schedule-grid">
 """
 
-        # Build a lookup of games by (date, time, sheet)
-        game_lookup: dict[tuple[date, time, str], ScheduledGame] = {}
+        # Build a lookup of games by (week, day, time, sheet)
+        game_lookup: dict[tuple[int, int, time, str], ScheduledGame] = {}
         for game in games:
-            key = (game.start_time.date(), game.start_time.time(), game.sheet_id)
+            key = (game.week, game.day, game.time, game.sheet_id)
             game_lookup[key] = game
 
-        # Generate all slots and group by date
+        # Generate all slots and group by (week, day)
         all_slots = _generate_slots(config)
-        slots_by_date: dict[date, list[GameSlot]] = {}
+        slots_by_week_day: dict[tuple[int, int], list[GameSlot]] = {}
         for s in all_slots:
-            if s.date not in slots_by_date:
-                slots_by_date[s.date] = []
-            slots_by_date[s.date].append(s)
+            key = (s.week, s.day)
+            if key not in slots_by_week_day:
+                slots_by_week_day[key] = []
+            slots_by_week_day[key].append(s)
 
-        # Find the last date with any games scheduled
-        last_game_date = max(game.start_time.date() for game in games) if games else None
+        # Find the last week with any games scheduled
+        last_game_week = max(game.week for game in games) if games else None
 
-        # Only show dates up to the last game
-        if last_game_date:
-            all_sorted_dates = [d for d in sorted(slots_by_date.keys()) if d <= last_game_date]
+        # Only show weeks up to the last game
+        if last_game_week:
+            all_sorted_week_days = [(w, d) for (w, d) in sorted(slots_by_week_day.keys()) if w <= last_game_week]
         else:
-            all_sorted_dates = sorted(slots_by_date.keys())
+            all_sorted_week_days = sorted(slots_by_week_day.keys())
 
         # Get all team names
-        all_team_names = set(config.all_teams[0].name for _ in config.all_teams)
-        all_team_names = sorted([team.name for team in config.all_teams])
+        all_team_names = sorted([team.name for team in config.teams])
 
         # Track teams with byes from previous week
         previous_bye_teams = set()
 
-        for game_date in all_sorted_dates:
-            date_slots = slots_by_date[game_date]
+        for week, day in all_sorted_week_days:
+            week_day_slots = slots_by_week_day[(week, day)]
             # Sort slots by time, then sheet
-            date_slots.sort(key=lambda s: (s.time, s.sheet_id))
+            week_day_slots.sort(key=lambda s: (s.time, s.sheet_id))
 
-            # Check if any games on this date
-            games_on_date = [s for s in date_slots if (s.date, s.time, s.sheet_id) in game_lookup]
+            # Check if any games on this (week, day)
+            games_on_week_day = [s for s in week_day_slots if (s.week, s.day, s.time, s.sheet_id) in game_lookup]
 
-            if not games_on_date:
-                # No games scheduled on this date - skip it entirely
+            if not games_on_week_day:
+                # No games scheduled on this week/day - skip it entirely
                 continue
 
-            # Find which teams are playing on this date
+            # Find which teams are playing on this week/day
             playing_teams = set()
-            for slot in date_slots:
-                key = (slot.date, slot.time, slot.sheet_id)
+            for slot in week_day_slots:
+                key = (slot.week, slot.day, slot.time, slot.sheet_id)
                 game = game_lookup.get(key)
                 if game:
                     playing_teams.add(game.home_team)
@@ -1928,17 +2404,17 @@ def _write_html_schedule(games: list[ScheduledGame], config: ScheduleConfig, rep
 
             html += f"""
         <div class="date-section">
-            <div class="date-header">{game_date.strftime('%A, %B %d, %Y')}</div>
+            <div class="date-header">Week {week}, {DAY_NAMES[day]}</div>
             <div class="games-list">
 """
 
-            for slot in date_slots:
-                key = (slot.date, slot.time, slot.sheet_id)
+            for slot in week_day_slots:
+                key = (slot.week, slot.day, slot.time, slot.sheet_id)
                 game = game_lookup.get(key)
 
                 if game:
                     html += f"""                <div class="game-line">
-                    <div class="game-time">{game.start_time.strftime('%H:%M')}</div>
+                    <div class="game-time">{game.time.strftime('%H:%M')}</div>
                     <div class="game-sheet">{game.sheet_id}</div>
                     <div class="game-matchup">{game.home_abbrev} vs {game.away_abbrev}</div>
                 </div>
@@ -1975,6 +2451,7 @@ def _write_html_schedule(games: list[ScheduledGame], config: ScheduleConfig, rep
             previous_bye_teams = set(bye_teams)
 
         html += """        </div>
+        </details>
 """
 
     html += """    </div>
@@ -1989,51 +2466,55 @@ def _write_html_schedule(games: list[ScheduledGame], config: ScheduleConfig, rep
 
 def _print_full_schedule(games: list[ScheduledGame], config: ScheduleConfig):
     """Print the full schedule showing all slots, with unused slots marked."""
-    # Build a lookup of games by (date, time, sheet)
-    game_lookup: dict[tuple[date, time, str], ScheduledGame] = {}
+    # Day names for display
+    DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+    # Build a lookup of games by (week, day, time, sheet)
+    game_lookup: dict[tuple[int, int, time, str], ScheduledGame] = {}
     for game in games:
-        key = (game.start_time.date(), game.start_time.time(), game.sheet_id)
+        key = (game.week, game.day, game.time, game.sheet_id)
         game_lookup[key] = game
 
-    # Generate all slots and group by date
+    # Generate all slots and group by (week, day)
     slots = _generate_slots(config)
-    slots_by_date: dict[date, list[GameSlot]] = {}
+    slots_by_week_day: dict[tuple[int, int], list[GameSlot]] = {}
     for s in slots:
-        if s.date not in slots_by_date:
-            slots_by_date[s.date] = []
-        slots_by_date[s.date].append(s)
+        key = (s.week, s.day)
+        if key not in slots_by_week_day:
+            slots_by_week_day[key] = []
+        slots_by_week_day[key].append(s)
 
-    # Sort dates
-    sorted_dates = sorted(slots_by_date.keys())
+    # Sort by (week, day)
+    sorted_week_days = sorted(slots_by_week_day.keys())
 
-    # Find the last date with any games scheduled
-    last_game_date = max(game.start_time.date() for game in games) if games else None
+    # Find the last week with any games scheduled
+    last_game_week = max(game.week for game in games) if games else None
 
-    # Only show dates up to the last game
-    if last_game_date:
-        sorted_dates = [d for d in sorted_dates if d <= last_game_date]
+    # Only show weeks up to the last game
+    if last_game_week:
+        sorted_week_days = [(w, d) for w, d in sorted_week_days if w <= last_game_week]
 
     print("\n" + "=" * 100)
     print("FULL SCHEDULE")
     print("=" * 100)
 
-    for game_date in sorted_dates:
-        date_slots = slots_by_date[game_date]
+    for week, day in sorted_week_days:
+        week_day_slots = slots_by_week_day[(week, day)]
         # Sort slots by time, then sheet
-        date_slots.sort(key=lambda s: (s.time, s.sheet_id))
+        week_day_slots.sort(key=lambda s: (s.time, s.sheet_id))
 
-        # Check if any games on this date
-        games_on_date = [s for s in date_slots if (s.date, s.time, s.sheet_id) in game_lookup]
+        # Check if any games on this (week, day)
+        games_on_week_day = [s for s in week_day_slots if (s.week, s.day, s.time, s.sheet_id) in game_lookup]
 
-        if not games_on_date:
-            # No games scheduled on this date
-            print(f"\n{game_date.strftime('%Y-%m-%d (%A)')}: NO GAMES SCHEDULED")
+        if not games_on_week_day:
+            # No games scheduled on this week/day
+            print(f"\nWeek {week}, {DAY_NAMES[day]}: NO GAMES SCHEDULED")
             continue
 
-        print(f"\n{game_date.strftime('%Y-%m-%d (%A)')}:")
+        print(f"\nWeek {week}, {DAY_NAMES[day]}:")
 
-        for slot in date_slots:
-            key = (slot.date, slot.time, slot.sheet_id)
+        for slot in week_day_slots:
+            key = (slot.week, slot.day, slot.time, slot.sheet_id)
             game = game_lookup.get(key)
 
             time_str = slot.time.strftime("%H:%M")

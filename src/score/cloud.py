@@ -1448,7 +1448,7 @@ async def list_devices(request: Request):
             <h2 style="font-size: 14px; margin-bottom: 8px;">Claim New Device</h2>
             <form method="POST" action="/admin/devices/claim" style="display: flex; gap: 8px; align-items: center;">
                 <div style="flex: 0 0 200px;">
-                    <input type="text" name="claim_code" required placeholder="ABC-123" maxlength="7" style="text-transform: uppercase; font-family: monospace; font-size: 14px; padding: 6px 10px;">
+                    <input type="text" name="claim_code" required placeholder="ABC-123" maxlength="7" style="text-transform: uppercase; font-family: monospace;">
                 </div>
                 <button type="submit" class="btn-save">Claim Device</button>
                 <span style="color: #666; font-size: 12px;">Enter the 6-character code shown on the device</span>
@@ -3642,19 +3642,17 @@ async def list_rinks_admin(request: Request, format: Optional[str] = Query(None)
         <div class="content" style="margin-bottom: 20px;">
             <h2>Claim New Device</h2>
             <p class="hint">Enter the claim code shown on your device screen</p>
-            <form method="POST" action="/admin/devices/claim" style="padding: 12px; background: #f3e5f5; border-radius: 4px; border: 1px solid #6a1b9a;">
-                <div style="display: flex; gap: 10px; align-items: flex-end;">
+            <form method="POST" action="/admin/devices/claim" style="display: flex; gap: 10px; align-items: flex-end;">
                     <div class="form-group" style="margin: 0; flex: 0 0 200px;">
-                        <label style="font-weight: 600; color: #6a1b9a;">Claim Code <span class="required">*</span></label>
-                        <input type="text" name="claim_code" required placeholder="ABC-123" maxlength="7" style="text-transform: uppercase; font-family: monospace; font-size: 14px; padding: 8px 12px;">
+                        <label>Claim Code <span class="required">*</span></label>
+                        <input type="text" name="claim_code" required placeholder="ABC-123" maxlength="7" style="text-transform: uppercase; font-family: monospace;">
                     </div>
                     <div class="form-group" style="margin: 0; flex: 0 0 250px;">
-                        <label style="font-weight: 600; color: #6a1b9a;">Device Name (optional)</label>
-                        <input type="text" name="device_name" placeholder="e.g., Sheet A Scoreboard" style="font-size: 14px; padding: 8px 12px;">
+                        <label>Device Name (optional)</label>
+                        <input type="text" name="device_name" placeholder="e.g., Sheet A Scoreboard">
                     </div>
                     <button type="submit" class="btn-save">Claim Device</button>
                     <span style="color: #666; font-size: 12px;">After claiming, assign the device to a sheet below</span>
-                </div>
             </form>
         </div>
         '''
@@ -3701,49 +3699,64 @@ class ClearRequest(PydanticBaseModel):
 async def execute_seed(request: SeedRequest):
     """Execute database seeding."""
     from score.seed import (
-        seed_leagues, seed_seasons, seed_divisions, seed_rinks,
+        seed_client, seed_leagues, seed_seasons, seed_divisions, seed_rinks,
         seed_players, seed_league_seasons, seed_league_season_divisions,
-        seed_registrations, seed_rosters, seed_games
+        seed_registrations, seed_rosters, seed_games, SAMPLE_CLIENTS
     )
 
     db = get_db()
     results = {}
 
     try:
-        if request.seed_all:
-            # Seed everything in order
-            results["leagues"] = seed_leagues(db)
-            results["seasons"] = seed_seasons(db)
-            results["divisions"] = seed_divisions(db)
-            results["rinks"] = seed_rinks(db)
-            results["players"] = seed_players(db, request.player_count)
-            results["league_seasons"] = seed_league_seasons(db)
-            results["league_season_divisions"] = seed_league_season_divisions(db)
-            results["registrations"] = seed_registrations(db)
-            results["rosters"] = seed_rosters(db)
-            if not request.exclude_games:
-                results["games"] = seed_games(db, request.game_count)
-        else:
-            # Seed only selected categories (in dependency order)
-            if "leagues" in request.categories:
-                results["leagues"] = seed_leagues(db)
-            if "seasons" in request.categories:
-                results["seasons"] = seed_seasons(db)
-            if "divisions" in request.categories:
-                results["divisions"] = seed_divisions(db)
-            if "rinks" in request.categories:
-                results["rinks"] = seed_rinks(db)
-            if "players" in request.categories:
-                results["players"] = seed_players(db, request.player_count)
-            # League seasons and league_season_divisions are implicit when seeding registrations
-            if "registrations" in request.categories:
-                results["league_seasons"] = seed_league_seasons(db)
-                results["league_season_divisions"] = seed_league_season_divisions(db)
-                results["registrations"] = seed_registrations(db)
-            if "rosters" in request.categories:
-                results["rosters"] = seed_rosters(db)
-            if "games" in request.categories:
-                results["games"] = seed_games(db, request.game_count)
+        # Always seed all clients first
+        results["clients"] = sum(seed_client(db, c["client_id"]) for c in SAMPLE_CLIENTS)
+        db.commit()
+
+        for client in SAMPLE_CLIENTS:
+            cid = client["client_id"]
+            if request.seed_all:
+                # Seed everything in order for this client
+                results.setdefault("leagues", 0)
+                results.setdefault("seasons", 0)
+                results.setdefault("divisions", 0)
+                results.setdefault("rinks", 0)
+                results.setdefault("players", 0)
+                results.setdefault("league_seasons", 0)
+                results.setdefault("league_season_divisions", 0)
+                results.setdefault("registrations", 0)
+                results.setdefault("rosters", 0)
+                results.setdefault("games", 0)
+                results["leagues"] += seed_leagues(db, cid)
+                results["seasons"] += seed_seasons(db, cid)
+                results["divisions"] += seed_divisions(db, cid)
+                results["rinks"] += seed_rinks(db, cid)
+                results["players"] += seed_players(db, request.player_count, cid)
+                results["league_seasons"] += seed_league_seasons(db, cid)
+                results["league_season_divisions"] += seed_league_season_divisions(db, cid)
+                results["registrations"] += seed_registrations(db, cid)
+                results["rosters"] += seed_rosters(db, cid)
+                if not request.exclude_games:
+                    results["games"] += seed_games(db, request.game_count, cid)
+            else:
+                # Seed only selected categories (in dependency order)
+                if "leagues" in request.categories:
+                    results["leagues"] = results.get("leagues", 0) + seed_leagues(db, cid)
+                if "seasons" in request.categories:
+                    results["seasons"] = results.get("seasons", 0) + seed_seasons(db, cid)
+                if "divisions" in request.categories:
+                    results["divisions"] = results.get("divisions", 0) + seed_divisions(db, cid)
+                if "rinks" in request.categories:
+                    results["rinks"] = results.get("rinks", 0) + seed_rinks(db, cid)
+                if "players" in request.categories:
+                    results["players"] = results.get("players", 0) + seed_players(db, request.player_count, cid)
+                if "registrations" in request.categories:
+                    results["league_seasons"] = results.get("league_seasons", 0) + seed_league_seasons(db, cid)
+                    results["league_season_divisions"] = results.get("league_season_divisions", 0) + seed_league_season_divisions(db, cid)
+                    results["registrations"] = results.get("registrations", 0) + seed_registrations(db, cid)
+                if "rosters" in request.categories:
+                    results["rosters"] = results.get("rosters", 0) + seed_rosters(db, cid)
+                if "games" in request.categories:
+                    results["games"] = results.get("games", 0) + seed_games(db, request.game_count, cid)
 
         db.commit()
 
@@ -3861,13 +3874,19 @@ class ScheduleGenerateRequest(PydanticBaseModel):
 
 
 @app.post("/admin/schedules/generate")
-async def generate_division_schedule(request: ScheduleGenerateRequest):
+async def generate_division_schedule(http_request: Request, body: ScheduleGenerateRequest):
     """Generate a schedule preview for one or more divisions using OR-Tools scheduler."""
     from score.scheduler import (
         ScheduleConfig, Division, Team, Sheet, SolverSettings,
         generate_schedule, analyze_fairness, _generate_slots
     )
     from datetime import datetime, time as dt_time
+
+    session = require_auth(http_request)
+    client_id = auth.get_current_client(session)
+
+    # Alias so the rest of the function can still use `request`
+    request = body
 
     db = get_db()
 
@@ -3905,8 +3924,8 @@ async def generate_division_schedule(request: ScheduleGenerateRequest):
             teams_rows = db.execute("""
                 SELECT registration_id, team_name, abbreviation
                 FROM team_registrations
-                WHERE league_id = ? AND season_id = ? AND division_id = ?
-            """, (request.league_id, request.season_id, div_spec.division_id)).fetchall()
+                WHERE client_id = ? AND league_id = ? AND season_id = ? AND division_id = ?
+            """, (client_id, request.league_id, request.season_id, div_spec.division_id)).fetchall()
 
             if len(teams_rows) < 2:
                 db.close()
@@ -3939,8 +3958,8 @@ async def generate_division_schedule(request: ScheduleGenerateRequest):
         sheets_info = []
         for sheet_id in request.sheet_ids:
             sheet_row = db.execute(
-                "SELECT sheet_id, rink_id, name FROM rink_sheets WHERE sheet_id = ?",
-                (sheet_id,)
+                "SELECT sheet_id, rink_id, name FROM rink_sheets WHERE client_id = ? AND sheet_id = ?",
+                (client_id, sheet_id,)
             ).fetchone()
             if sheet_row:
                 if rink_id is None:
@@ -4045,8 +4064,8 @@ async def generate_division_schedule(request: ScheduleGenerateRequest):
     sheet_names = {}
     for sheet_id in request.sheet_ids:
         sheet_row = db.execute(
-            "SELECT sheet_id, name FROM rink_sheets WHERE sheet_id = ?",
-            (sheet_id,)
+            "SELECT sheet_id, name FROM rink_sheets WHERE client_id = ? AND sheet_id = ?",
+            (client_id, sheet_id,)
         ).fetchone()
         if sheet_row:
             sheet_names[sheet_row["sheet_id"]] = sheet_row["name"]
@@ -4169,8 +4188,12 @@ class SaveScheduleRequest(PydanticBaseModel):
 
 
 @app.post("/admin/schedules/save")
-async def save_schedule(request: SaveScheduleRequest):
+async def save_schedule(http_request: Request, body: SaveScheduleRequest):
     """Save a generated schedule to the database."""
+    session = require_auth(http_request)
+    client_id = auth.get_current_client(session)
+
+    request = body
     db = get_db()
     current_time = int(time.time())
 
@@ -4194,43 +4217,32 @@ async def save_schedule(request: SaveScheduleRequest):
                 db.execute(f"DELETE FROM games WHERE game_id IN ({placeholders})", game_id_list)
                 logger.info(f"Cleared {len(game_id_list)} existing games for division {request.division_id}")
 
-        # Get rink_id and sheet_ids for validation
-        sheet_ids = set()
-        rink_id = None
-        for game in request.games:
-            # Fetch sheet info to get rink_id
-            sheet_row = db.execute(
-                "SELECT sheet_id, rink_id FROM rink_sheets WHERE sheet_id = (SELECT sheet_id FROM rink_sheets WHERE name = ?)",
-                (game["sheet_name"],)
-            ).fetchone()
-            if sheet_row:
-                if rink_id is None:
-                    rink_id = sheet_row["rink_id"]
-                sheet_ids.add(sheet_row["sheet_id"])
-
-        # Need to look up sheet_id from sheet_name
-        # Build mapping
-        all_sheets = db.execute("SELECT sheet_id, name FROM rink_sheets").fetchall()
-        sheet_name_to_id = {row["name"]: row["sheet_id"] for row in all_sheets}
+        # Build sheet name → (sheet_id, rink_id) mapping for this client
+        all_sheets = db.execute(
+            "SELECT sheet_id, rink_id, name FROM rink_sheets WHERE client_id = ?", (client_id,)
+        ).fetchall()
+        sheet_name_to_info = {row["name"]: (row["sheet_id"], row["rink_id"]) for row in all_sheets}
 
         # Insert games
         games_created = 0
         for game_data in request.games:
-            sheet_id = sheet_name_to_id.get(game_data["sheet_name"])
-            if not sheet_id:
+            sheet_info = sheet_name_to_info.get(game_data["sheet_name"])
+            if not sheet_info:
                 continue
+            sheet_id, rink_id = sheet_info
 
             db.execute("""
                 INSERT INTO games (
-                    game_id, rink_id, sheet_id,
+                    client_id, game_id, rink_id, sheet_id,
                     home_registration_id, away_registration_id,
                     home_team, away_team, home_abbrev, away_abbrev,
                     scheduled_start, start_time,
                     period_length_min, num_periods, game_type,
                     created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
+                client_id,
                 game_data["game_id"],
                 rink_id,
                 sheet_id,
